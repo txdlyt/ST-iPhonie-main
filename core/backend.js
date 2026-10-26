@@ -19,8 +19,7 @@ import { bookId, emptyBook, cleanBook, removeNode, pruneBook } from './memory.js
 import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer.js';
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
-import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
-import { normalizeSfxPresets } from './sfx-presets.js';
+import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, writeBackup, readBackup, sealKeys, openKeys } from './backup.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, SHOP_GIFTS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
@@ -1502,19 +1501,10 @@ export class TTSBackend {
         return found ? { origin: 'source', source: found.source, songId: found.id, title: found.title, artist: found.artist, ...(match ? {} : { standIn: true }) } : null;
     }
     saveSounds(patch) {
-        const next = this.getState(), allowed = ['enabled', 'ambienceVolume', 'sfxVolume', 'vary', 'tapOnly', 'generate', 'versions', 'pack', 'packHidden'];
+        const next = this.getState(), allowed = ['enabled', 'ambienceVolume', 'sfxVolume', 'vary', 'tapOnly', 'generate', 'versions', 'pack', 'packHidden', 'anchors'];
         next.sounds = normalizeSounds({ ...next.sounds, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
         return this.save(next).sounds;
     }
-    // 音效设定（声临其境移植）: 预设/资源/触发配置。整段替换由 core/sfx-presets.js 归一化。
-    saveSfxPresets(patch) {
-        const next = this.getState();
-        next.sfxPresets = normalizeSfxPresets({ ...next.sfxPresets, ...(patch || {}) });
-        return this.save(next).sfxPresets;
-    }
-    /** The shipped pack's rows, as kept by core/sounds.js (no audio loaded): for the 音效设定 to resolve builtin names. */
-    packRows() { return this.packAll(); }
-
     /** The shipped pack, read once (none when the plugin has no sounds folder or it cannot be read). */
     packAll() {
         if (!this.soundPack) return Promise.resolve([]);
@@ -1538,7 +1528,28 @@ export class TTSBackend {
             if (!r.ok) throw Error('读不到自带的声音（' + r.status + '）');
             return r.blob();
         }
-        const row = await this.sounds.get(id); return row?.kind === 'sound' ? row.blob : null;
+        const row = await this.sounds.get(id);
+        if (row?.kind !== 'sound') return null;
+        return row.url && !row.blob ? this.linkBlob(row.url) : row.blob;
+    }
+    /** 链接 sounds: fetched when they play and kept for this session (some hosts refuse other sites: then the tavern's /proxy/ is tried). */
+    linkBlob(url) {
+        this.linkCache ||= new Map();
+        if (this.linkCache.has(url)) { const hit = this.linkCache.get(url); this.linkCache.delete(url); this.linkCache.set(url, hit); return hit; }
+        const job = (async () => {
+            let r;
+            try { r = await this.assetFetch(url); }
+            catch { try { r = await this.proxyFetch('/proxy/' + url); } catch { throw Error('读不到这个链接的声音（对方网站不让别的网站读取，或链接失效）'); } }
+            if (!r.ok) throw Error('读不到这个链接的声音（' + r.status + '）');
+            const blob = await r.blob();
+            if (!blob.size) throw Error('这个链接里没有声音');
+            if (blob.size > SOUND_LIMITS.file) throw Error(`这个链接的声音太大了（最多 ${SOUND_LIMITS.file / 1024 / 1024} MB）`);
+            return blob;
+        })();
+        this.linkCache.set(url, job);
+        job.catch(() => { if (this.linkCache.get(url) === job) this.linkCache.delete(url); });
+        while (this.linkCache.size > 24) this.linkCache.delete(this.linkCache.keys().next().value);
+        return job;
     }
     /** How many of the shipped sounds there are, and how many were taken out. */
     async packInfo() { const all = await this.packAll(); return { names: new Set(all.map(r => r.type + '|' + r.name)).size, count: all.length, hidden: (this.settings.sounds.packHidden || []).length }; }
@@ -1548,6 +1559,7 @@ export class TTSBackend {
         const at = Date.now(), rows = (Array.isArray(list) ? list : [list]).map((value, i) => {
             const row = soundRow(value);
             if (!row.name) throw Error('给声音起个名字');
+            if (row.url && !value?.blob) return { ...row, source: 'link', id: crypto.randomUUID(), kind: 'sound', at: at + i, mime: '', size: 0 };
             // Files selected in the phone iframe belong to another window, so instanceof Blob rejects them.
             // Native slice validates Blob's internal data across realms and gives storage a local Blob.
             let blob;
@@ -1565,14 +1577,24 @@ export class TTSBackend {
         this.emit('sounds', {});
         return rows.map(({ blob, kind, ...row }) => row);
     }
-    /** Renames or re-sorts a sound: name, type, layer, strength, describe. */
+    /** 导入链接: lines as 名字=链接=上传者=音量=震动 (声临其境's way) become 链接 sounds; one with the same name, kind and link is skipped. */
+    async importSoundLinks(text) {
+        const { rows, music, bad } = parseLinkLines(text);
+        const have = new Set((await this.sounds.list('sound')).filter(r => r.url).map(r => [r.type, r.name, r.url].join('|')));
+        const add = rows.filter(r => { const key = [r.type, r.name, r.url].join('|'); if (have.has(key)) return false; have.add(key); return true; });
+        if (add.length) await this.addSounds(add);
+        return { added: add.length, skipped: rows.length - add.length, music, bad };
+    }
+    /** Renames or re-sorts a sound: name, type, layer, strength, describe, volume (and the link of a 链接 sound). */
     async updateSound(id, patch = {}) {
-        const allowed = ['name', 'type', 'layer', 'strength', 'describe'];
+        const allowed = ['name', 'type', 'layer', 'strength', 'describe', 'volume', 'url'];
         if (String(id).startsWith('pack:')) throw Error('自带的声音不能改：可以删掉它，再自己传一个');
         const row = await this.sounds.change(id, doc => {
             if (doc.kind !== 'sound') throw Error('这个声音已经不在了');
-            const next = soundRow({ ...doc, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
+            const own = Object.entries(patch || {}).filter(([key]) => allowed.includes(key) && (key !== 'url' || doc.source === 'link'));
+            const next = soundRow({ ...doc, ...Object.fromEntries(own) });
             if (!next.name) throw Error('给声音起个名字');
+            if (doc.source === 'link' && !next.url) throw Error('链接要以 http:// 或 https:// 开头');
             Object.assign(doc, next);
         });
         await this.sounds.remove(missingKey(row.type, row.name));
@@ -1617,15 +1639,22 @@ export class TTSBackend {
         const rows = (await this.sounds.list('sound')).filter(r => !wanted || wanted.has(r.id)).reverse();
         if (!rows.length) throw Error('还没有声音可以导出');
         const sounds = [];
-        for (const r of rows) sounds.push({ ...soundRow(r), mime: r.mime, data: await this.base64(r.blob) });
+        for (const r of rows) sounds.push(r.url && !r.blob ? { ...soundRow(r), mime: r.mime } : { ...soundRow(r), mime: r.mime, data: await this.base64(r.blob) });
         return new Blob([JSON.stringify({ format: PACK_FORMAT, version: 1, name: String(name || '').slice(0, 60), at: Date.now(), sounds })], { type: 'application/json' });
     }
     /** 导入音效包: adds the pack's sounds (one already here, same name, kind and size, is skipped). source: who made them (自带 for the shipped pack). */
     async importSounds(file, { source = '' } = {}) {
         const pack = readPack(typeof file === 'string' ? file : await file.text());
-        const have = new Set((await this.sounds.list('sound')).map(r => [r.type, r.name, r.layer, r.size].join('|')));
+        const have = new Set((await this.sounds.list('sound')).map(r => r.url && !r.blob ? [r.type, r.name, r.layer, 'url:' + r.url].join('|') : [r.type, r.name, r.layer, r.size].join('|')));
         const add = [];
         for (const s of pack.sounds) {
+            if (s.url && !s.data) {
+                const linkKey = [s.type, s.name, s.layer, 'url:' + s.url].join('|');
+                if (have.has(linkKey)) continue;
+                have.add(linkKey);
+                add.push({ ...s, source: 'link' });
+                continue;
+            }
             let bytes;
             try { bytes = Uint8Array.from(atob(s.data), c => c.charCodeAt(0)); } catch { continue; }
             const key = [s.type, s.name, s.layer, bytes.length].join('|');
@@ -2297,9 +2326,7 @@ export class TTSBackend {
             saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId) => this.searchMusic(query, clone(sourceId)), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
             listSongs: () => this.listSongs(), songBlob: id => this.songBlob(id), addSongs: list => this.addSongs(list), updateSong: (id, patch) => this.updateSong(id, clone(patch || {})), deleteSongs: ids => this.deleteSongs([...(ids || [])]),
             saveSounds: patch => this.saveSounds(clone(patch)), listSounds: () => this.listSounds(), soundBlob: id => this.soundBlob(id), addSounds: list => this.addSounds(list), updateSound: (id, patch) => this.updateSound(id, clone(patch || {})), deleteSounds: ids => this.deleteSounds([...(ids || [])]),
-            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})),
-            // 音效设定（声临其境移植）: 预设/资源配置, 以及自带音效包的条目（供检测名称和资源解析用）。
-            saveSfxPresets: patch => this.saveSfxPresets(clone(patch || {})), sfxPackRows: () => this.packRows(),
+            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')),
             saveText: patch => this.saveText(clone(patch)), setTextKey: (id, key) => this.setTextKey(id, key), clearTextKey: id => this.clearTextKey(id), textKeyHint: id => this.textKeyHint(id), textModels: draft => this.textModels(clone(draft || {})),
             syncStatus: () => this.syncStatus(), saveSync: patch => this.saveSync(clone(patch)), syncNow: () => this.syncNow().then(() => this.syncStatus()), clearSyncFiles: () => this.clearSyncFiles(),
             listMoments: async () => { const here = this.here(); return (await this.moments.list()).filter(p => inSpace(p, here)); }, getMoment: id => this.moments.get(id),

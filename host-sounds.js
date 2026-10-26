@@ -5,7 +5,7 @@
 // - An ambience loops (its 底子, faded in and out) with its 点缀 now and then, until the next one or 停.
 // - A name the library has none of: ElevenLabs makes it when that is on and the tag has an English description,
 //   else it is noted under 缺的声音 in the 音效 App.
-import {parseSounds, findSounds, pickSound, variation, soundNames, soundRule, soundPromptPlan, readingGaps, latestAmbience} from './core/sounds.js';
+import {parseSounds, planSounds, findSounds, pickSound, variation, soundNames, soundRule, soundPromptPlan, readingGaps, latestAmbience} from './core/sounds.js';
 
 const FADE = 2.5, DOT_GAP = [8, 25], KEEP_BUFFERS = 40, LATE = 15000, VOICE_AGAIN = 60000;
 
@@ -78,7 +78,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     if (closed || !running()) return null;
     const v = variation({strength, vary: opts().vary !== false, random});
     const src = ctx.createBufferSource(), level = ctx.createGain();
-    src.buffer = data; src.playbackRate.value = v.rate; level.gain.value = v.gain * gain;
+    src.buffer = data; src.playbackRate.value = v.rate; level.gain.value = v.gain * gain * (Number(row.volume) > 0 ? Number(row.volume) : 1);
     src.connect(level);
     let tail = level;
     if (pan && ctx.createStereoPanner) { const p = ctx.createStereoPanner(); p.pan.value = pan; level.connect(p); tail = p; }
@@ -152,7 +152,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
         gain = ctx.createGain(); gain.gain.value = 0; gain.connect(ambienceOut);
         // Each time from somewhere else in the recording, so the same rain does not always start the same way.
         src = loopBed(data, gain, opts().vary !== false ? random() * data.duration : 0);
-        ramp(gain.gain, 1, FADE);
+        ramp(gain.gain, Number(bed.volume) > 0 ? Number(bed.volume) : 1, FADE);
       }
     }
     if (ticket !== ambienceTicket) return;
@@ -198,6 +198,8 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
   // ---------- One sound of a reply ----------
   async function cue(tag) {
     if (!on() || closed) return;
+    // The end of an ambience written @开始~结束 stops that ambience only: not a later one that replaced it.
+    if (tag.implicit && tag.owner && ambience.name !== tag.owner && wanted !== tag.owner) return;
     if (tag.kind === 'ambience') return setAmbience(tag.stop ? '' : tag.name, {describe: tag.describe});
     if (!running()) { if (!told) { told = true; notice('点一下页面任意位置，就能放出氛围音和音效（浏览器要先点一下才允许出声）'); } return; }
     if (loading) await loading;
@@ -212,7 +214,16 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     const row = pickSound(list, {strength: tag.strength, last: last.get('s:' + tag.name), random});
     if (!row) return;
     last.set('s:' + tag.name, row.id);
-    await shot(row, {strength: tag.strength});
+    return shot(row, {strength: tag.strength});
+  }
+  /** Resolves when a playing sound has ended (or after its length, should the end never be heard of). */
+  function ended(src) {
+    return new Promise(resolve => {
+      if (!src) return resolve();
+      const limit = Math.min(20000, ((src.buffer?.duration || 0) / (src.playbackRate?.value || 1)) * 1000 + 800);
+      const timer = setTimer(resolve, limit), before = src.onended;
+      src.onended = (...args) => { try { before?.(...args); } catch {} clearTimer(timer); resolve(); };
+    });
   }
   /** Whether this sound of this reply already played lately (a reply read, then voiced: not twice). */
   function once(id, raw, tag, within = Infinity) {
@@ -249,7 +260,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     if (raw !== null) read(id, raw);
   }
   function read(id, raw) {
-    const tags = parseSounds(raw);
+    const tags = planSounds(raw);
     cancel(id);
     if (!tags.length) return;
     const gaps = readingGaps(raw, tags), plan = {cancelled: false, timer: 0};
@@ -261,9 +272,11 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
       const tag = tags[i];
       if (below(id, tag.index) && waited < 60000) { waited += 500; plan.timer = setTimer(step, 500); return; }
       waited = 0;
-      if (byItself(tag) && once(id, raw, tag)) cue(tag);
-      if (++i >= tags.length) { plans.delete(id); return; }
-      plan.timer = setTimer(step, gaps[i] * 1000);
+      const started = byItself(tag) && once(id, raw, tag) ? cue(tag) : null;
+      const next = () => { if (plan.cancelled || closed) return; if (++i >= tags.length) { plans.delete(id); return; } plan.timer = setTimer(step, gaps[i] * 1000); };
+      // A sound written 等 (or SFX_WAIT): the reading goes on when it has played.
+      if (tag.wait && started) { Promise.resolve(started).then(ended).then(next); return; }
+      next();
     };
     plan.timer = setTimer(step, gaps[0] * 1000);
   }
@@ -277,18 +290,20 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     if (!on() || !snap || closed) return;
     const line = status?.line;
     if (status.phase === 'playing' && line && Number.isFinite(line.start)) {
-      if (!voicing || voicing.id !== snap.id || voicing.raw !== snap.raw) { voicing = {id: snap.id, raw: snap.raw, tags: parseSounds(snap.raw), start: -1, index: -1}; cancel(snap.id); }
+      if (!voicing || voicing.id !== snap.id || voicing.raw !== snap.raw) { voicing = {id: snap.id, raw: snap.raw, tags: planSounds(snap.raw), start: -1, index: -1}; cancel(snap.id); }
       if (voicing.start === line.start) return;
       voicing.start = line.start;
       const k = Number.isInteger(line.uiIndex) ? line.uiIndex : lines.findIndex(l => l.start === line.start);
       voicing.index = k;
       const from = k > 0 && lines[k - 1] ? lines[k - 1].end : 0;
-      for (const tag of voicing.tags) if (tag.start >= from && tag.start < line.start && byItself(tag) && once(snap.id, snap.raw, tag, VOICE_AGAIN)) cue(tag);
+      // A sound told to play at some words (@) plays as the line with those words starts.
+      const lineEnd = lines[k]?.end ?? line.end ?? line.start;
+      for (const tag of voicing.tags) { const at = tag.pos ?? tag.start; if (at >= from && at < (tag.anchor ? lineEnd : line.start) && byItself(tag) && once(snap.id, snap.raw, tag, VOICE_AGAIN)) cue(tag); }
       return;
     }
     if (status.phase === 'idle' && voicing && voicing.id === snap.id && voicing.raw === snap.raw && /^播放完成/.test(status.message || '')) {
       const lastLine = lines.at(-1);
-      if (lastLine && voicing.index === lines.length - 1) for (const tag of voicing.tags) if (tag.start >= lastLine.end && byItself(tag) && once(snap.id, snap.raw, tag, VOICE_AGAIN)) cue(tag);
+      if (lastLine && voicing.index === lines.length - 1) for (const tag of voicing.tags) if ((tag.pos ?? tag.start) >= lastLine.end && byItself(tag) && once(snap.id, snap.raw, tag, VOICE_AGAIN)) cue(tag);
       voicing = null;
     }
   }
@@ -346,7 +361,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
   /** The rule for the story model ([] while 音效 is off, or there is nothing to play). */
   function promptPlan() {
     if (!on()) return [];
-    return soundPromptPlan(soundRule({names: soundNames(rows), generate: canMake(), now: ambience.name || wanted || ''}));
+    return soundPromptPlan(soundRule({names: soundNames(rows), generate: canMake(), now: ambience.name || wanted || '', anchors: opts().anchors !== false}));
   }
   function close() {
     closed = true; cancelAll(); unsubscribe?.();
