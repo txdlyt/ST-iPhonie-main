@@ -18,6 +18,7 @@ import {tokenBudget, counterNow, estimateTokens, countField, tagCost} from './to
 import {strength as vibeStrength} from './vibes.js';
 import {DRAW_ENGINES, DRAW_ENGINE_NAMES, defaultGpt, normalizeGpt, defaultComfy, normalizeComfy} from './image-engines.js';
 import {escapeHTML, isPlaceholderRole} from './protocol.js';
+import {baibaiDrawPreset, baibaiMessages, baibaiBodies, isBaibai} from './draw-baibai.js';
 
 const BLOCK = ['<img>', '画幅：竖 / 横 / 方', '场景：英文 tag', '角色：名字｜这一刻的 tag｜不要出现的 tag｜站位（画面里每个人单独一行，每一行都以「角色：」开头）', '新外貌：名字｜固定外貌 tag（只在名单外的新角色第一次出现时写）', '</img>'];
 export const PIC_TAG_FORMAT = BLOCK.join('\n');
@@ -348,7 +349,7 @@ const entryEngines = value => { const list = DRAW_ENGINES.filter(x => Array.isAr
 export const forEngine = (entry, engine) => !entry.engines?.length || entry.engines.includes(engine);
 export function normalizeDraw(value) {
   const base = defaultDraw();
-  if (!value || typeof value !== 'object') return base;
+  if (!value || typeof value !== 'object') return normalizeDraw({});
   const d = {...base, ...structuredClone(value)};
   d.enabled = !!d.enabled;
   d.auto = d.auto !== false;
@@ -411,9 +412,16 @@ export function normalizeDraw(value) {
       id: String(p.id || crypto.randomUUID()), name: text(p.name, 60) || '出图规则', rev: PRESET_REV,
       count: Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1)),
       injection: {...DEFAULT_PRESET.injection, ...p.injection},
+      // 柏宝绘: the preset that plans and reads pictures its own way, with its two switches.
+      ...(p.logic === 'baibai' ? {logic: 'baibai', baibai: {nl: p.baibai?.nl !== false, negative: p.baibai?.negative === true}} : {}),
       entries: entries.map(e => ({id: String(e.id || crypto.randomUUID()), title: text(e.title, 80), enabled: e.enabled !== false, text: text(e.text, 20000), ...entryEngines(e.engines), ...(e.injection ? {injection: {...DEFAULT_PRESET.injection, ...e.injection}} : {})}))
     };
   });
+  // 柏宝绘 is added once, next to the others, for everyone to choose; deleting it sticks.
+  if (!d.baibaiSeeded) {
+    if (!d.presets.some(p => p.logic === 'baibai')) d.presets.push({...structuredClone(baibaiDrawPreset()), id: 'baibai', rev: PRESET_REV});
+    d.baibaiSeeded = true;
+  }
   d.activePreset = d.presets.some(p => p.id === d.activePreset) ? d.activePreset : d.presets[0].id;
   return d;
 }
@@ -478,7 +486,9 @@ function ruleText(settings, p, format, contract, only = null) {
  * and the NovelAI length budget. A block written this way draws exactly like one in the story.
  */
 export function assistantDrawGuide(settings) {
-  const draw = settings.draw, p = activePreset(draw);
+  const draw = settings.draw;
+  // 柏宝绘 answers in its own JSON: the assistant writes blocks by the first ordinary preset.
+  const p = draw && (isBaibai(activePreset(draw)) ? draw.presets.find(x => !isBaibai(x)) || DEFAULT_PRESET : activePreset(draw));
   if (!draw || !p) return '';
   const engine = draw.engine || 'nai', style = activeStyle(draw) || {}, format = promptTemplate(settings.promptRules, 'draw-story', 'format');
   const {entries, fill} = ruleText(settings, {...p, count: 1}, format, () => '');
@@ -512,7 +522,7 @@ export function drawPromptPlan(settings, preset, only = null) {
   const draw = settings.draw;
   if (!preset && (!draw?.enabled || draw.mode !== 'inline')) return [];
   const p = activePreset(draw, preset);
-  if (!p) return [];
+  if (!p || isBaibai(p)) return [];
   const {entries, fill, tail} = ruleText(settings, p, promptTemplate(settings.promptRules, 'draw-story', 'format'), drawContract, only);
   return entries.map((e, index) => {
     const i = e.injection || p.injection;
@@ -602,6 +612,7 @@ export function paragraphs(message) {
 /** Chat-style request asking for the picture blocks of one reply. before: [{name, text}] earlier messages. */
 export function planRequest(settings, {message, before = [], preset, only = null, lore = ''} = {}) {
   const p = activePreset(settings.draw, preset);
+  if (isBaibai(p)) return baibaiRequest(settings, p, {message, before, only, lore});
   const {entries, fill, tail} = ruleText(settings, p, promptTemplate(settings.promptRules, 'draw-story', 'planFormat'), planContract, only);
   const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail;
   // 世界书: the entries the tavern would turn on for this story (the phone's choice of books), for era, places and looks.
@@ -609,6 +620,22 @@ export function planRequest(settings, {message, before = [], preset, only = null
     '正文': paragraphs(message).map((x, i) => `[P${i + 1}] ${x.text}`).join('\n'), '出图数量': countOf(p)});
   return [{role: 'system', content: system}, {role: 'user', content: ask}];
 }
+/**
+ * 柏宝绘: the request in BaiBai's way (its prompts and JSON contract). The library is the 角色 App: the people of this
+ * story that have a look, one line each, for the model to copy; the others are for it to 建档 (saved to the 角色 App).
+ */
+function baibaiRequest(settings, p, {message, before = [], only = null, lore = ''}) {
+  const d = settings.draw, wanted = Array.isArray(only) ? new Set(only.map(n => String(n).trim())) : null;
+  const library = drawable(settings).filter(r => !wanted || wanted.has(r.name)).map(r => `- ${r.name}: tag=${r.appearance.trim().replace(/\s*\n+\s*/g, ' ')}`);
+  return baibaiMessages({preset: p, engine: d.engine || 'nai', model: d.params?.model, story: paragraphs(message), library, lore, count: countOf(p),
+    previous: before.map(m => `${m.name}：${m.text}`).join('\n')});
+}
+/** True when the preset in use is 柏宝绘: its pictures are planned in a request of their own (after the reply). */
+export const usesBaibai = draw => isBaibai(draw?.presets?.find(x => x.id === draw.activePreset) || draw?.presets?.[0]);
+/** Pictures are planned after the reply: the draw mode, or a preset (柏宝绘) that can only work that way. */
+export const drawSeparate = draw => draw?.mode === 'separate' || usesBaibai(draw);
+export {baibaiDrawPreset};
+
 /** 「从剧情生成」 in the drawing app: a request of its own (no story preset, no chain of thought), worded for the engine. */
 export function suggestRequest(settings, {before = [], only = null} = {}) {
   const gpt = settings.draw?.engine === 'gpt';
@@ -703,6 +730,8 @@ export function promptLength(settings) {
  */
 export function planLength(settings, count = 1) {
   const n = settings.draw?.engine === 'gpt' ? null : budgetNumbers(settings);
+  // 柏宝绘 thinks first (a checklist), then writes the JSON: more room.
+  if (usesBaibai(settings.draw)) return Math.min(10000, 3500 + Math.max(1, count) * 1200);
   return Math.min(8000, 1500 + Math.max(1, count) * (n ? Math.round(n.left * 1.5) + 300 : 600));
 }
 /** The follow-up asking for a fuller line: what it holds now and how much room is left. */
@@ -726,9 +755,10 @@ export function insertPlanned(message, reply) {
   const source = String(message), paras = paragraphs(source), blocks = [];
   // A model that thinks out loud may write sample blocks in its thinking: only the answer counts.
   const answer = String(reply ?? '').replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
-  const bodies = [...answer.matchAll(/<img\b[^<>]*>([^<]*)<\/img\s*>/gi)].map(m => m[1]);
+  // 柏宝绘 answers in JSON: its images become blocks here, and all the rest (placing, queue, drawing) is the phone's.
+  const bodies = baibaiBodies(answer) || [...answer.matchAll(/<img\b[^<>]*>([^<]*)<\/img\s*>/gi)].map(m => m[1]);
   // Cut off at the length limit: the last block, without its unfinished line, when it is the only one.
-  const open = !bodies.length && answer.match(/<img\b[^<>]*>([^<]*)$/i);
+  const open = !bodies.length && !/"images"/.test(answer) && answer.match(/<img\b[^<>]*>([^<]*)$/i);
   if (open) bodies.push(/\n\s*$/.test(open[1]) ? open[1] : open[1].replace(/\n[^\n]*$/, ''));
   for (const raw of bodies) {
     const at = raw.match(/(?:^|\n)\s*位置\s*[:：]\s*P?\s*(\d+)/i);
@@ -760,11 +790,11 @@ export function hashText(value) {
   return h.toString(36);
 }
 
-const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at'};
+const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at', 负面: 'negative', 原样: 'whole'};
 const split = value => value.split(/[|｜]/).map(x => x.trim());
 /** Reads a block body; null when it has none of the field lines (an older one-line tag). */
 export function parseBlock(body) {
-  const spec = {size: '', tags: '', nl: '', cast: [], register: []};
+  const spec = {size: '', tags: '', nl: '', negative: '', whole: false, cast: [], register: []};
   let found = false, list = '';
   for (const raw of String(body).split(/\r?\n/)) {
     // 「- 」「1. 」 in front of a line, 「角色1」「角色 2」 as its name.
@@ -787,6 +817,8 @@ export function parseBlock(body) {
       if (name) spec.cast.push(c);
     }
     else if (key === 'register') { const [name, ...rest] = split(value); if (name && rest.join(', ').trim()) spec.register.push({name, appearance: rest.join(', ').trim()}); }
+    // 原样：是 — the tags already hold everyone's looks (柏宝绘 blocks without 角色 lines): the phone adds none of its own.
+    else if (key === 'whole') spec.whole = /^(?:是|true|yes|1)/i.test(value);
     else if (key !== 'at') spec[key] = spec[key] ? spec[key] + ', ' + value : value;
   }
   return found ? spec : null;
@@ -945,6 +977,19 @@ export function sizeFor(params, size) {
  * names: the people in the picture. text: the message, used by older one-line tags that name nobody we know.
  */
 export function pictureInputs(settings, tag, text = '') {
+  const spec = tag.spec, out = spec?.whole && !spec.cast.length ? wholeInputs(settings, spec) : pictureInputsOf(settings, tag, text);
+  // The block's own 负面 line (柏宝绘 writes one for each picture) joins the 画风's negative.
+  if (spec?.negative) out.negative = mergeTags(out.negative, spec.negative);
+  return out;
+}
+/** A block that holds everyone's looks in its own tags (原样): drawn as written, with no looks added from the 角色 App. */
+function wholeInputs(settings, spec) {
+  const draw = settings.draw, style = activeStyle(draw);
+  const sized = {...draw.params, ...sizeFor(draw.params, spec.size)}, params = draw.guard ? guardParams(sized) : sized;
+  const head = [style.artist, style.positive].map(x => (x || '').trim()).filter(Boolean);
+  return {prompt: [...head, spec.tags, spec.nl].filter(Boolean).join(', '), negative: style.negative.trim(), characters: [], names: [], params};
+}
+function pictureInputsOf(settings, tag, text = '') {
   const draw = settings.draw, style = activeStyle(draw), spec = tag.spec;
   const sized = {...draw.params, ...sizeFor(draw.params, spec?.size)};
   const params = draw.guard ? guardParams(sized) : sized;

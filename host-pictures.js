@@ -11,7 +11,7 @@
 // When the last version is deleted the record becomes {removed: true, versions: []}, so it is not drawn again
 // automatically. Older records ({url, seed, …}) read as a single version.
 import {storyReply} from './core/outgoing.js';
-import {parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
+import {drawSeparate, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
 import {openImageViewer} from './image-viewer.js';
 import {editTags} from './host-ask.js';
@@ -254,7 +254,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     let message = context().chat[id];
     if (!message || message.is_user || message.is_system) return;
     const wantVoice = !!voice?.wanted() && !voice.has(message.mes);
-    const wantPictures = s.draw.enabled && s.draw.mode === 'separate' && !parsePictures(message.mes).length;
+    const wantPictures = s.draw.enabled && drawSeparate(s.draw) && !parsePictures(message.mes).length;
     if (wantVoice || wantPictures) {
       let done;
       try { done = await planReply(id, {voiced: wantVoice, pictured: wantPictures, phoned: true}); } catch (error) { notice(error.message); return; }

@@ -190,7 +190,7 @@ class DrawSettings {
         // 'separate' mode: the request made after a reply, with a stand-in for the reply.
         // The 名单 of the card open now (who speaks next is not known here: they are added when the request is made).
         const only = this.drawCast();
-        if (draw.mode === 'separate') {
+        if (draw.mode === 'separate' || used.logic === 'baibai') {
             const lore = activeChatPreset(this.settings.chat).lore === false ? '' : '（这里是酒馆这次会触发的世界书条目，按手机「读哪些世界书」的选择）';
             return planRequest(this.settings, { message: '（这里是刚写好的正文，第一段）\n（第二段……每一段前面会标上 [P1]、[P2]）', preset: used, only, lore })
                 .map(m => `【${m.role}】\n${m.content}`).join('\n\n');

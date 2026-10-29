@@ -191,7 +191,7 @@ export interface AssistantThreadSummary extends Omit<AssistantThread, 'messages'
 /** 画风预设: artist and fixed tags sent to NovelAI. */
 export interface DrawStyle { id: string; name: string; artist: string; positive: string; negative: string; }
 /** 绘图预设: rules injected into the chat request so the model writes <img> tags. */
-export interface DrawPreset { id: string; name: string; /** Pictures per reply, 1 to drawCountMax. */ count: number; injection: Injection; entries: PresetEntry[]; }
+export interface DrawPreset { id: string; name: string; /** Pictures per reply, 1 to drawCountMax. */ count: number; injection: Injection; entries: PresetEntry[]; /** 'baibai': plans and reads pictures the way ST-BaiBai-Image does (its own prompts and JSON), in a request after the reply. */ logic?: 'baibai'; /** 柏宝绘: also write English sentences (nl); write a negative line for each picture. */ baibai?: { nl: boolean; negative: boolean }; }
 export interface DrawSettings {
     connections: Record<'nai' | 'gpt', {active: string; presets: ImageConnection[]}>;
     /** Inject the drawing preset into chat requests. */
@@ -209,7 +209,7 @@ export interface DrawSettings {
     queue: DrawQueueSettings;
     params: DrawParams;
     styles: DrawStyle[]; activeStyle: string;
-    presets: DrawPreset[]; activePreset: string;
+    presets: DrawPreset[]; activePreset: string; /** 柏宝绘 was added once; deleting it sticks. */ baibaiSeeded?: boolean;
     /** A NovelAI relay ('' = NovelAI itself); assumeOpus counts small pictures as free when the relay gives no subscription. */
     relay: { url: string; assumeOpus: boolean };
     /** Vibe Transfer for every picture (V4/V4.5): what is in use and the groups; the vibes are in the local library. */
@@ -555,6 +555,8 @@ export interface BackendFacade {
     readonly defaultVoicePreset: Omit<Preset, 'id'>;
     /** The shipped drawing preset (without id), for 恢复默认. */
     readonly defaultDrawPreset: Omit<DrawPreset, 'id'>;
+    /** The shipped 柏宝绘 preset (what 「＋ 柏宝绘」 adds). */
+    readonly baibaiDrawPreset: Omit<DrawPreset, 'id'>;
     readonly drawCatalog: { readonly models: readonly string[]; readonly modelNames: Readonly<Record<string, string>>; readonly samplers: readonly string[]; readonly schedules: readonly string[];
         readonly engines: readonly DrawEngine[]; readonly engineNames: Readonly<Record<DrawEngine, string>>; readonly gptModels: readonly string[]; readonly gptQualities: readonly string[]; readonly comfyWorkflow: string };
     getState(): Settings;

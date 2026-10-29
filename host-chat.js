@@ -5,7 +5,7 @@
 import {currentDm, currentWindow} from './core/chats.js';
 import {buildChatRequest, parseChatReply, bringText, plainStory, activeChatPreset, messageLine, cleanTagged, chatContacts, storyTextRule, phoneAfterRule, phoneParts, inSpace} from './core/chat.js';
 import {worldInfoFor, loreOptions} from './host-lore.js';
-import {pictureInputs, photoCast, photoTags, tagTextRequest, tagTextAnswer} from './core/draw.js';
+import {drawSeparate, pictureInputs, photoCast, photoTags, tagTextRequest, tagTextAnswer} from './core/draw.js';
 import {storyLines} from './core/moments.js';
 import {forumContext} from './core/forum.js';
 import {promptOn} from './core/prompt-rules.js';
@@ -315,7 +315,7 @@ export function createChatHost({context, settings, backend, notice, memory = nul
    */
   function phoneAfter() {
     const s = settings();
-    return s.chat.proactive?.on === true && ((s.general.voiceEnabled !== false && s.general.voiceMode === 'separate') || (s.draw.enabled && s.draw.mode === 'separate'));
+    return s.chat.proactive?.on === true && ((s.general.voiceEnabled !== false && s.general.voiceMode === 'separate') || (s.draw.enabled && drawSeparate(s.draw)));
   }
   /** The phone part's rule for that request; '' when there is no one to send anything, or it is not the phone's turn. */
   async function phoneAfterPlan() {

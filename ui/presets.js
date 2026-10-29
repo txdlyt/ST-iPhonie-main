@@ -85,6 +85,12 @@ export function presetsApp(ctx) {
     v.draw(heading('预设', btn('add-menu', icon('add'), 'round-button', `aria-label="新增${label}预设"`), 'Preset · 3 类') + tabs + `<button class="list-row" data-action="system-rules">${icon('sliders')}<span><strong>系统提示词</strong><small>输出格式、附加规则与请求模板</small></span>${icon('next')}</button>` + body);
   }
 
+  /** 柏宝绘: what the preset says about itself, and its two switches. */
+  function baibaiFields(p) {
+    return `<p class="hint">这是柏宝绘预设：规划图片用柏宝绘的提示词（破限、规范、思维链），模型按它的 JSON 回答，再换成手机自己的出图块来画。固定在「回复后单独配图」里工作；角色外貌用「角色」App 里的，新角色按柏宝绘的建档写进「角色」App。下面的条目可以改，按出图引擎自动选用对应的规范和思维链（没有哪条对应时用柏宝绘原文）。</p>
+      ${toggle('baibai.nl', '同时写自然语言（nl）', p.baibai?.nl !== false, 'NovelAI V4.5 / V5、ComfyUI、GPT 才有：模型除了 tag 还写一两句英文描述。V3 / V4 只吃 tag，这个开关对它们无效。')}
+      ${toggle('baibai.negative', '每张图单独写负面词', p.baibai?.negative === true, '模型为每张图写专用的负面 tag（只排除正文冲突的内容），加在画风的负面词后面。')}`;
+  }
   /** The 世界书 line: how much is left out (picked in a sheet), and the tags cleaned away (status bars). */
   function loreFields(p) {
     const books = (p.loreSkipBooks || []).length, entries = (p.loreSkipEntries || []).length;
@@ -192,7 +198,7 @@ export function presetsApp(ctx) {
     const used = p.id && p.id === o.active();
     const books = (p.loreSkipBooks || []).length, entries = (p.loreSkipEntries || []).length;
     const basics = chat ? ''
-      : draw ? field('每条回复出图数量', input('count', p.count ?? 1, 'number', `min="1" max="${api.drawCountMax}" step="1"`), '每条回复固定出这么多张图。规则里写 {{出图数量}} 会换成这个数字；插件还会在规则最后加一段硬性要求，让张数更稳定。张数越多，出图越久。\n\n规则里写 {{出图格式}} 会换成下面这段（回复后单独配图时，还会多一行「位置」）；{{角色列表}} 会换成已登记的角色和他们的固定外貌。别的插件要排除出图内容时，排除标签填 <img></img>。\n\n' + api.picTagFormat)
+      : draw ? field('每条回复出图数量', input('count', p.count ?? 1, 'number', `min="1" max="${api.drawCountMax}" step="1"`), '每条回复固定出这么多张图。规则里写 {{出图数量}} 会换成这个数字；插件还会在规则最后加一段硬性要求，让张数更稳定。张数越多，出图越久。\n\n规则里写 {{出图格式}} 会换成下面这段（回复后单独配图时，还会多一行「位置」）；{{角色列表}} 会换成已登记的角色和他们的固定外貌。别的插件要排除出图内容时，排除标签填 <img></img>。\n\n' + api.picTagFormat) + (p.logic === 'baibai' ? baibaiFields(p) : '')
       : field('正文显示', select('voiceLayout', p.format===FREE_FORMAT?'free':'paired', [['paired','译文与原文配对'],['free','自由正文 · 只渲染 tts 标签']]), '自由正文保留对白的语言和排版，英语、双语括号都可以。标签内仍写角色、情绪、朗读原文。') + field('台词格式', textArea('format', p.format, 'class="code short" rows="3"'), '配对模式：{译文}、{角色}、{情绪}、{文本} 各保留一次。自由正文模式：<tts>{角色}|{情绪}|{文本}</tts>，前面的正文不限制格式。译文供阅读，原语言供语音生成。默认格式是成对的 <tts></tts>，别的插件要排除语音原文时，排除标签填 <tts></tts>。\n\n这里的格式只管正文；手机里的语音消息和电话固定用默认格式，不跟着改。');
     const marks = p.marks || {inner: [], phone: []}, marked = (marks.inner || []).length + (marks.phone || []).length;
     const folds = chat
@@ -278,7 +284,8 @@ export function presetsApp(ctx) {
       const entry = current.entries[Number(index)];
       if (key === 'customInjection') { if (el.checked) entry.injection = structuredClone(current.injection); else delete entry.injection; }
       else entry[key] = el.type === 'checkbox' ? el.checked : el.value;
-    } else if (key.startsWith('memory.')) { current.memory = {...current.memory}; current.memory[key.slice(7)] = el.type === 'checkbox' ? el.checked : Number(el.value); }
+    } else if (key.startsWith('baibai.')) { current.baibai = {...current.baibai, [key.slice(7)]: el.type === 'checkbox' ? el.checked : el.value}; }
+    else if (key.startsWith('memory.')) { current.memory = {...current.memory}; current.memory[key.slice(7)] = el.type === 'checkbox' ? el.checked : Number(el.value); }
     else current[key] = el.type === 'checkbox' ? el.checked : el.value;
     mark();
     if (redraw) render();
@@ -346,8 +353,18 @@ export function presetsApp(ctx) {
         const label = KINDS.find(k => k[0] === kind)[1];
         const d = ctx.dialog('新增' + label + '预设', `<div class="pick-list">
           <button type="button" class="list-row" data-pick="new">${icon('add')}<span><strong>新建</strong><small>从默认内容开始改</small></span></button>
+          ${kind === 'draw' ? `<button type="button" class="list-row" data-pick="baibai">${icon('image')}<span><strong>柏宝绘</strong><small>柏宝绘的提示词和出图逻辑，一起当一个预设用</small></span></button>` : ''}
           <label class="list-row file-button">${icon('import')}<span><strong>从文件导入</strong><small>导出过的预设文件，或 AI 改好的</small></span><input type="file" accept=".json,application/json,text/plain" aria-label="选择预设文件"></label></div>`);
         d.body.querySelector('[data-pick=new]').addEventListener('click', () => { d.close(); newPreset(); });
+        d.body.querySelector('[data-pick=baibai]')?.addEventListener('click', () => {
+          d.close();
+          const names = ops('draw').list().map(x => x.name), base = structuredClone(api.baibaiDrawPreset);
+          let name = base.name, n = 2;
+          while (names.includes(name)) name = `${base.name}（${n++}）`;
+          const saved = ops('draw').save({...base, name});
+          ctx.notify(`已添加预设「${saved.name}」`);
+          render();
+        });
         d.body.querySelector('input[type=file]').addEventListener('change', async e => {
           const file = e.target.files?.[0];
           if (!file) return;
@@ -424,7 +441,7 @@ export function presetsApp(ctx) {
   // Puts the shipped rules, format and insertion back into this preset; its name stays. Saving makes it stick.
   async function resetContent() {
     if (!await ctx.confirm('恢复成默认内容？', '这个预设的条目、格式和插入位置会换成默认的，名字不变。保存之后才生效，不保存就不会改动。')) return;
-    current = {...shipped(currentKind), id: current.id, name: current.name};
+    current = {...(currentKind === 'draw' && current.logic === 'baibai' ? structuredClone(api.baibaiDrawPreset) : shipped(currentKind)), id: current.id, name: current.name};
     drafts.set(currentKind + ':' + (current.id || 'new'), current);
     render();
     mark();

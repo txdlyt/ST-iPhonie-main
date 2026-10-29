@@ -25,7 +25,7 @@ export function settingsApp(ctx) {
     const d = ctx.dialog('正文联动手机', '');
     const paint = () => {
       if (!d.live) return;
-      const s = api.getState(), o = s.chat.proactive, after = (s.general.voiceEnabled !== false && s.general.voiceMode === 'separate') || (s.draw.enabled && s.draw.mode === 'separate');
+      const s = api.getState(), o = s.chat.proactive, after = (s.general.voiceEnabled !== false && s.general.voiceMode === 'separate') || (s.draw.enabled && (s.draw.mode === 'separate' || s.draw.presets.find(p => p.id === s.draw.activePreset)?.logic === 'baibai'));
       d.body.innerHTML = `<div class="group pad">${toggle('p-on', '正文里的事发到手机', o.on, '打开后，正文里有人用手机联系你——发消息、发照片、转账、发红包、送礼物、分享歌曲、打电话，或者发了朋友圈、在群里说话——这些事会真的出现在小手机上：消息进聊天，电话会响，动态进朋友圈。正文里只留一行「📱 谁给你发了消息」。\n\n照片：能出图时会画出来；没开出图就是一张文字照片，写着拍到了什么，以后也能点「画出来」。\n\n只有角色 App 里的角色和手机里的联系人能发；群消息只发到已经有的群。什么时候发、怎么发，在预设 App 的聊天预设里改「正文里主动发消息」这条规则（用在「正文」）。')}
         ${o.on ? `<p class="hint">${after ? '现在开着「回复后单独配音 / 配图」：手机上的事在那次请求里一起写，正文请求不变，也不多花一次请求。' : '正文模型写回复时顺手写在最后，不多花一次请求。开了「回复后单独配音 / 配图」的话，会改成在那次请求里一起写。'}</p>` : ''}
         <div class="field"><span>每几条正文，手机这边来找你一次${help('0：每条正文都可以顺手用手机联系你，发不发由正文自己决定。设成几：每隔这么多条正文才有一次机会——这一条正文可以顺手发；没发的话，再单独问一个角色（优先是当前卡的角色）这时会不会主动找你，问一次用文字模型请求一次，TA 觉得没理由就不发。其余几条正文不会被告知可以用手机，所以不会每轮都来消息（手动加的联系人也一样）。什么时候会发由聊天预设里「正文里主动发消息」这条规则决定。')}</span><input data-field="p-every" type="number" min="0" max="100" value="${o.every}" ${o.on ? '' : 'disabled'}></div>
