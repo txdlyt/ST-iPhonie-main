@@ -2729,3 +2729,19 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 /* 视觉小说 › 立绘 whose file is gone from the tavern. */
 :is(.vn-look-pic,.vn-sprite-thumb).lost img{display:none}
 :is(.vn-look-pic,.vn-sprite-thumb).lost::after{content:'图丢了';display:grid;place-items:center;width:100%;height:100%;font-size:11px;font-weight:700;color:var(--danger);background:var(--card2)}
+
+/* 相册 by card */
+.photo-group{margin:6px 0 10px}
+.photo-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.group-toggle{display:flex;align-items:baseline;gap:8px;padding:8px 2px;min-width:0;flex:1;text-align:left;background:none;border:0;color:inherit;font:inherit}
+.group-toggle strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-toggle small{color:var(--muted,rgba(128,128,128,.9));white-space:nowrap}
+.group-chevron{width:14px;display:inline-block;opacity:.7}
+
+/* 角色 by card, 外貌库 */
+.role-other{margin:8px 0}
+.role-other>summary{cursor:pointer;padding:8px 2px;list-style:none}
+.look-row{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;padding:8px 2px;border-bottom:1px solid rgba(128,128,128,.18)}
+.look-row>div:first-child{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1}
+.look-row small{opacity:.75;overflow-wrap:anywhere}
+.look-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:46%}

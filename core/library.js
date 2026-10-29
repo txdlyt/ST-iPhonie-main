@@ -149,12 +149,18 @@ export class LocalLibrary {
  async listPhotos(){return this.#list('photos',true);}
  /** info: how a drawn picture was made, [[label, value]] (shown under 参数 when it is opened). */
  async addPhoto(input){
-  fields(input,['name','blob','info']);const name=string(input.name??'图片','图片名称',512,true),blob=blobValue(input.blob,LIBRARY_LIMITS.photo,'图片','image');
+  fields(input,['name','blob','info','card','cardName']);const name=string(input.name??'图片','图片名称',512,true),card=typeof input.card==='string'?input.card.slice(0,300):'',cardName=typeof input.cardName==='string'?input.cardName.slice(0,80):'',blob=blobValue(input.blob,LIBRARY_LIMITS.photo,'图片','image');
   const info=(Array.isArray(input.info)?input.info:[]).filter(r=>Array.isArray(r)&&r[1]!==undefined&&r[1]!==null&&String(r[1]).trim()).slice(0,20).map(([k,v])=>[String(k).slice(0,20),String(v).slice(0,4000)]);
-  return this.#saveMedia('photos',{id:this.#makeId(),name,blob,info});
+  return this.#saveMedia('photos',{id:this.#makeId(),name,blob,info,...(card?{card,cardName}:{})});
  }
- async #saveMedia(store,{id,name,blob,info}){
-  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,name,blob,type:blob.type,size:blob.size,...(info?.length?{info}:{}),createdAt:rows[store].get(id)?.createdAt??now,updatedAt:now};put(store,row);return publicRow(row);});
+ async #saveMedia(store,{id,name,blob,info,card,cardName}){
+  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,name,blob,type:blob.type,size:blob.size,...(info?.length?{info}:{}),...(card?{card,cardName:cardName||''}:{}),createdAt:rows[store].get(id)?.createdAt??now,updatedAt:now};put(store,row);return publicRow(row);});
+ }
+ /** Moves photos under a card (card '' = 未分类): the album groups by it. Their dates stay. */
+ async movePhotos(input){
+  fields(input,['ids','card','cardName']);if(!Array.isArray(input.ids)||input.ids.length>5000)throw fail('请选择要移动的照片');
+  const card=string(input.card??'','角色卡',300),cardName=string(input.cardName??'','角色卡名称',80);
+  return this.#mutate(({rows,put})=>{let moved=0;for(const id of input.ids){const row=rows.photos.get(identifier(id));if(!row)continue;const next={...row};if(card){next.card=card;next.cardName=cardName;}else{delete next.card;delete next.cardName;}put('photos',next);moved++;}return moved;});
  }
  async getPhoto(id){return publicRow(await this.#read('photos',identifier(id)));}
  async deletePhoto(id){

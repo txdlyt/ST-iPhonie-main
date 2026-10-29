@@ -237,7 +237,9 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const route = settings().routes.find(x => sameExact(x.name, r.name));
       if (route?.appearance?.trim() || added.includes(r.name)) continue;
       try {
-        backend.saveRoute(route ? {...route, appearance: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', appearance: r.appearance});
+        // With a card open the new look is that card's own (本卡, like BaiBai's 本聊天库); with none it is the role's.
+        if (backend.cardKey?.()) backend.saveLook({name: r.name, appearance: r.appearance, source: 'ai'});
+        else backend.saveRoute(route ? {...route, appearance: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', appearance: r.appearance});
         added.push(r.name);
       } catch { /* an unusable name is skipped */ }
     }

@@ -20,6 +20,7 @@ import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
+import { withLooks, LOOK_LIMITS } from './looks.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, writeBackup, readBackup, sealKeys, openKeys } from './backup.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, SHOP_GIFTS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
@@ -1211,7 +1212,7 @@ export class TTSBackend {
                 this.assertOpen();
                 const ext = made.blob.type === 'image/jpeg' ? 'jpg' : made.blob.type === 'image/webp' ? 'webp' : 'png';
                 const info = this.pictureInfo(engine, made, picture);
-                const photo = await this.library.addPhoto({ name: (name || DRAW_ENGINE_NAMES[engine]) + '-' + (made.seed >= 0 ? made.seed : Date.now()) + '.' + ext, blob: made.blob, info });
+                const photo = await this.library.addPhoto({ name: (name || DRAW_ENGINE_NAMES[engine]) + '-' + (made.seed >= 0 ? made.seed : Date.now()) + '.' + ext, blob: made.blob, info, card: this.cardKey(), cardName: this.space.name });
                 this.emit('library', { collection: 'photos' });
                 this.emit('draw', { phase: 'done' });
                 return { photoId: photo.id, seed: made.seed, params: made.params, prompt: made.prompt, engine, blob: made.blob, info };
@@ -1239,7 +1240,7 @@ export class TTSBackend {
             const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, { negative, characters });
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
             if (request.refs) info.push(['角色参考', `${request.refs} 张`]);
-            const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + '.png', blob, info });
+            const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + '.png', blob, info, card: this.cardKey(), cardName: this.space.name });
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
             // Paid images change the Anlas balance and V5 images use up the allowance: read the subscription again next time.
@@ -1269,7 +1270,7 @@ export class TTSBackend {
             const blob = tool === 'upscale' ? await this.novelai.upscale(body, signal) : await this.novelai.augment(body, signal);
             this.assertOpen();
             const info = [['引擎', 'NovelAI'], ['工具', label], ['原图', `${width} × ${height}`], ...(body.prompt ? [['说明', body.prompt.replace(';;', ' · ')]] : []), ['画于', new Date().toLocaleString('zh-CN', { hour12: false })]];
-            const photo = await this.library.addPhoto({ name: `${name}-${label}-${Date.now()}.png`, blob, info });
+            const photo = await this.library.addPhoto({ name: `${name}-${label}-${Date.now()}.png`, blob, info, card: this.cardKey(), cardName: this.space.name });
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
             if (this.subscription) this.subscription.checkedAt = 0;
@@ -1851,6 +1852,7 @@ export class TTSBackend {
         this.space = next;
         // The card's own characters belong to it (so they do not show up in other cards as roles no story has met).
         if (next.key && next.members.length) this.tagRoles(next.members, next.key);
+        if (next.key && next.name) this.noteCard(next.key, next.name);
         this.emit('space', { space: clone(next) });
         if (!this.here()) return;
         this.emit('chat', { threadId: '' }); this.emit('moments', {}); this.emit('forum', {}); this.emit('peek', {});
@@ -1863,7 +1865,7 @@ export class TTSBackend {
      *  later sorts them. ('' when no card is open: shared.) */
     cardKey() { return this.space.key || ''; }
     /** Who the picture rules name: the open card's people and the given speakers (null: everyone). */
-    drawCast(speakers = []) { return drawCast(this.settings, this.space, speakers); }
+    drawCast(speakers = []) { return drawCast(this.drawSettings(), this.space, speakers); }
     /** The roles that speak in a card's story belong to that card's contacts. Saved only when something changed. */
     tagRoles(names, key = this.space.key) {
         if (!key || !names?.length) return false;
@@ -1879,6 +1881,70 @@ export class TTSBackend {
     }
     /** Contacts of the card open now (all of them when 分区 is off). */
     contacts() { return chatContacts(this.settings, this.here()); }
+    // ---------- 外貌库 by card (core/looks.js) ----------
+    /** The settings as the card open sees them (its own looks in place of the global ones): pictures are planned and drawn from it. */
+    drawSettings() { return withLooks(this.settings, this.cardKey()); }
+    /** Remembers a card's name, to show where things came from. */
+    noteCard(key, name) {
+        if (!key || !name || this.settings.cardNames?.[key] === name) return;
+        const next = this.getState();
+        next.cardNames = { ...next.cardNames, [key]: String(name).slice(0, 80) };
+        this.save(next);
+    }
+    /** The cards known by name: [{key, name}] (the open one first). */
+    cardList() {
+        const names = { ...this.settings.cardNames }, here = this.space;
+        if (here.key && here.name) names[here.key] = here.name;
+        return Object.entries(names).map(([key, name]) => ({ key, name, open: key === here.key })).sort((a, b) => (b.key === here.key) - (a.key === here.key) || a.name.localeCompare(b.name));
+    }
+    listLooks() { return clone(this.settings.looks || []); }
+    /** Saves a look of a card (the open one unless card says another): {id?, name, appearance, card?, source?}. */
+    saveLook(value) {
+        const name = String(value?.name ?? '').trim().slice(0, LOOK_LIMITS.name), appearance = String(value?.appearance ?? '').trim().slice(0, LOOK_LIMITS.appearance);
+        const card = String(value?.card ?? this.cardKey()).slice(0, 300);
+        if (!name) throw Error('给角色起个名字');
+        if (!appearance) throw Error('外貌 tag 不能是空的');
+        if (!card) throw Error('先在酒馆里打开一张角色卡：本卡外貌记在那张卡下面');
+        const next = this.getState(), looks = next.looks ||= [], id = String(value?.id || crypto.randomUUID()), index = looks.findIndex(l => l.id === id);
+        if (looks.some(l => l.id !== id && l.card === card && l.name === name)) throw Error('这张卡里已经有这个名字的外貌了');
+        if (index < 0 && looks.length >= LOOK_LIMITS.entries) throw Error('外貌条目太多了，先删掉一些');
+        const row = { id, name, card, appearance, source: value?.source === 'ai' ? 'ai' : 'manual', at: index >= 0 ? looks[index].at : Date.now() };
+        if (index >= 0) looks[index] = row; else looks.push(row);
+        if (card === this.space.key && this.space.name) next.cardNames = { ...next.cardNames, [card]: this.space.name };
+        this.save(next);
+        return clone(row);
+    }
+    deleteLook(id) {
+        const next = this.getState(), before = next.looks?.length || 0;
+        next.looks = (next.looks || []).filter(l => l.id !== id);
+        if (next.looks.length === before) return false;
+        this.save(next);
+        return true;
+    }
+    /** 升为全局: the look becomes the appearance of the role of that name (a role without a voice is made when there is none), and leaves the card. */
+    promoteLook(id) {
+        const look = (this.settings.looks || []).find(l => l.id === id);
+        if (!look) throw Error('这条外貌已经不在了');
+        const route = this.settings.routes.find(r => r.name === look.name);
+        this.saveRoute(route ? { ...route, appearance: look.appearance } : { name: look.name, engine: 'fish', voice: '', model: '', language: '', appearance: look.appearance });
+        this.deleteLook(id);
+        return true;
+    }
+    /** 复制到本卡: the look of a role (its global one, or another card's) is copied under the card open now, to be changed there. */
+    copyLook(source) {
+        if (!this.cardKey()) throw Error('先在酒馆里打开一张角色卡');
+        const look = source?.look ? (this.settings.looks || []).find(l => l.id === source.look) : null;
+        const route = source?.role ? this.settings.routes.find(r => r.id === source.role) : null;
+        const name = look?.name ?? route?.name, appearance = look?.appearance ?? route?.appearance;
+        if (!name || !appearance?.trim()) throw Error('没有可以复制的外貌');
+        return this.saveLook({ name, appearance });
+    }
+    /** Moves album photos under a card (key '' = 未分类). */
+    async movePhotos(ids, key, name = '') {
+        const moved = await this.mutateLibrary('photos', 'movePhotos', { ids: (Array.isArray(ids) ? ids : [ids]).map(String), card: String(key || ''), cardName: String(name || '') });
+        if (key && name && this.settings.cardNames?.[key] !== name) this.noteCard(key, name);
+        return moved;
+    }
     /** Who 论坛 and 朋友圈 write about. With 分区 on: the open card's own people (its characters, roles met in its
      *  story or added to it, contacts added under it), not the roles no story has met yet, which can be added from
      *  联系人 →「＋」. All contacts when that leaves no one. */
@@ -2303,7 +2369,8 @@ export class TTSBackend {
             getFavorite: id => this.library.getFavorite(id), playFavorite: id => this.playFavorite(id),
             deleteFavorite: id => this.mutateLibrary('favorites', 'deleteFavorite', id),
             listPhotos: () => this.library.listPhotos(), addPhoto: value => this.mutateLibrary('photos', 'addPhoto', value),
-            getPhoto: id => this.library.getPhoto(id), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids),
+            getPhoto: id => this.library.getPhoto(id), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
+            listLooks: () => this.listLooks(), saveLook: value => this.saveLook(clone(value)), deleteLook: id => this.deleteLook(String(id)), promoteLook: id => this.promoteLook(String(id)), copyLook: source => this.copyLook(clone(source || {})), cardList: () => this.cardList(),
             listNotes: () => this.library.listNotes(), saveNote: value => this.mutateLibrary('notes', 'saveNote', value), deleteNote: id => this.mutateLibrary('notes', 'deleteNote', id),
             getPhone: () => this.getPhone(), savePhone: patch => this.savePhone(patch), libraryStats: () => this.library.stats(), storageBudget: () => this.budget.read(),
             generatedPhotos: () => this.generatedPhotos().then(({ count, bytes, sources }) => ({ count, bytes, sources: Object.fromEntries(Object.entries(sources).map(([k, { ids, ...rest }]) => [k, rest])) })), deleteGeneratedPhotos: sources => this.deleteGeneratedPhotos(sources),

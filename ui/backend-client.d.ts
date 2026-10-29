@@ -311,6 +311,7 @@ export interface CallsSettings { auto: boolean; every: number; dailyMax: number;
 /** 音效: volumes 0..1; vary: each playing a little different; generate: missing sounds made by ElevenLabs, at most `versions` of a name. */
 export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
+export interface CardLook { id: string; name: string; card: string; appearance: string; source: 'manual' | 'ai'; at: number; }
 export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
 /** A name the story asked for that the library has none of. */
 export interface MissingSound { type: 'sfx' | 'ambience'; name: string; describe: string; count: number; at: number; }
@@ -494,7 +495,7 @@ export interface MediaMetadata extends LocalTimestamps {
     type: string;
     size: number;
 }
-export interface Photo extends MediaMetadata { blob: Blob; }
+export interface Photo extends MediaMetadata { blob: Blob; /** the card it was drawn under (none: 未分类) */ card?: string; cardName?: string; }
 export interface PhotoInput { name?: string; blob: Blob; }
 export type ReferenceMetadata = MediaMetadata;
 export interface FavoriteMetadata extends LocalTimestamps {
@@ -780,6 +781,18 @@ export interface BackendFacade {
     exportSounds(ids?: string[] | null, name?: string): Promise<Blob>;
     importSounds(file: Blob | string, options?: { source?: 'pack' | 'mine' | 'eleven' }): Promise<{ added: number; skipped: number; name: string }>;
     importSoundLinks(text: string): Promise<{ added: number; skipped: number; music: number; bad: number }>;
+    /** 外貌库 by card: a 本卡 look is used, in its card, in place of the global one (the role's appearance) with the same name. */
+    listLooks(): Promise<CardLook[]> | CardLook[];
+    saveLook(value: { id?: string; name: string; appearance: string; card?: string; source?: 'manual' | 'ai' }): CardLook;
+    deleteLook(id: string): boolean;
+    /** 升为全局: the look becomes the role's own appearance and leaves the card. */
+    promoteLook(id: string): boolean;
+    /** 复制到本卡: a look (a card's: look, or a role's global one: role) is copied under the card open now. */
+    copyLook(source: { look?: string; role?: string }): CardLook;
+    /** The cards known by name, the open one first. */
+    cardList(): Array<{ key: string; name: string; open: boolean }>;
+    /** Moves album photos under a card (key '' = 未分类). */
+    movePhotos(ids: string[], key: string, name?: string): Promise<number>;
     saveText(patch: TextPatch): TextSettings;
     saveEmbed(patch: Partial<EmbedSettings>): EmbedSettings;
     embedReady(): boolean;
