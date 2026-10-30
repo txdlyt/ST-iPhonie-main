@@ -142,6 +142,10 @@ a{color:var(--accent-ink)}
 .apps-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px 6px;padding:4px 14px 8px}
 .app-icon{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:0;min-height:84px;color:inherit}
 .app-icon:active .icon-tile{transform:scale(.88);transition-duration:.1s}
+/* An app whose code is still coming (a tap in the first moment after the phone opened): the icon breathes. */
+.icon-tile[data-loading]{animation:icon-coming .9s ease-in-out infinite}
+@keyframes icon-coming{50%{transform:scale(.9);filter:brightness(.94)}}
+@media (prefers-reduced-motion:reduce){.icon-tile[data-loading]{animation:none;opacity:.75}}
 .icon-tile{position:relative;width:60px;height:60px;border-radius:19px;display:grid;place-items:center;overflow:hidden;color:#fff;transition:transform .3s var(--spring);background:linear-gradient(160deg,var(--t1),var(--t2));box-shadow:inset 0 2px 0 rgba(255,255,255,.55),inset 0 -3px 0 rgba(0,0,0,.08),0 6px 14px -6px color-mix(in srgb,var(--t2) 80%,#000)}
 .icon-tile:after{content:"";position:absolute;inset:3px 3px 50% 3px;border-radius:16px 16px 40% 40%;background:linear-gradient(rgba(255,255,255,.33),rgba(255,255,255,0));pointer-events:none}
 .icon-tile .glyph{width:46px;height:46px}
@@ -409,6 +413,9 @@ details>div{padding-bottom:10px}
 /* ---------- Roles ---------- */
 .role-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding-bottom:10px}
 .role-card{position:relative;display:flex;flex-direction:column;min-height:186px;text-align:left;overflow:hidden;background:var(--card);border-radius:22px;box-shadow:var(--shadow)}
+/* Cards off screen are not laid out until they scroll near: with dozens of roles, laying them all out was most of
+   what opening 角色 cost. */
+.role-card:not(.add){content-visibility:auto;contain-intrinsic-size:auto 186px}
 .role-card:active{transform:scale(.98)}
 .role-top{position:relative;height:72px;background:repeating-linear-gradient(-45deg,rgba(255,255,255,.15) 0 8px,transparent 8px 16px),linear-gradient(135deg,var(--e),color-mix(in srgb,var(--e) 45%,#fff))}
 :root[data-theme=dark] .role-top{background:repeating-linear-gradient(-45deg,rgba(255,255,255,.08) 0 8px,transparent 8px 16px),linear-gradient(135deg,var(--e),color-mix(in srgb,var(--e) 45%,var(--card)))}
@@ -784,6 +791,8 @@ details>div{padding-bottom:10px}
 .msgs::-webkit-scrollbar{display:none}
 .chat-empty{margin:auto;text-align:center;font-size:13px;color:var(--ink2);padding:24px;max-width:260px;line-height:1.7}
 .day{align-self:center;font-size:11px;font-weight:800;color:var(--ink2);background:var(--card);padding:3px 12px;border-radius:999px;letter-spacing:.05em}
+.chat-older{align-self:center;display:flex;align-items:center;gap:4px;margin:2px 0 6px;padding:5px 14px;border:0;border-radius:999px;font:inherit;font-size:12px;font-weight:800;color:var(--ink2);background:var(--card);cursor:pointer}
+.chat-older .icon{width:14px;height:14px;transform:rotate(90deg)}
 .msg{display:flex;gap:8px;align-items:flex-end;max-width:86%}
 .msg .avatar{--s:34px}
 .msg.me{align-self:flex-end;flex-direction:row-reverse}
@@ -941,13 +950,14 @@ details>div{padding-bottom:10px}
 .screen[data-opening=true] .app-content>.view>:nth-child(5){animation-delay:.16s}
 .screen[data-opening=true] .app-content>.view>:nth-child(6){animation-delay:.2s}
 .screen[data-opening=true] .app-content>.view>:nth-child(n+7){animation-delay:.24s}
-.screen[data-home-in] .home-page .app-icon{animation:pop-in .4s var(--spring) both}
-.screen[data-home-in] .home-page .app-icon:nth-child(2){animation-delay:.03s}
-.screen[data-home-in] .home-page .app-icon:nth-child(3){animation-delay:.06s}
-.screen[data-home-in] .home-page .app-icon:nth-child(4){animation-delay:.09s}
-.screen[data-home-in] .home-page .app-icon:nth-child(5){animation-delay:.12s}
-.screen[data-home-in] .home-page .app-icon:nth-child(6){animation-delay:.15s}
-.screen[data-home-in] .home-page .app-icon:nth-child(n+7){animation-delay:.18s}
+/* Only the page in view (homeIn marks it): the other page's icons came in too, out of sight, each a layer to draw. */
+.screen[data-home-in] .home-page[data-in] .app-icon{animation:pop-in .4s var(--spring) both}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(2){animation-delay:.03s}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(3){animation-delay:.06s}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(4){animation-delay:.09s}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(5){animation-delay:.12s}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(6){animation-delay:.15s}
+.screen[data-home-in] .home-page[data-in] .app-icon:nth-child(n+7){animation-delay:.18s}
 .screen[data-home-in] .widget{animation:rise-in .34s var(--spring-soft) both}
 .screen[data-home-in] .widget+.widget{animation-delay:.06s}
 .view[data-switching] .qq-page{animation:rise-in .34s cubic-bezier(.2,.8,.2,1)}
@@ -1016,6 +1026,8 @@ html[data-keyboard=true] *{animation:none!important;transition:none!important}
 .wall-motion{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .wall-motion i,.wall-motion b,.call-motion i,.call-motion b{position:absolute;display:block;will-change:transform,opacity;animation-delay:var(--delay,0s)}
 .screen[data-wall-motion=off] .wall-motion,.screen[data-view=app] .wall-motion{display:none}
+/* Under a sheet nothing behind moves: the sheet's frosted glass would blur the whole screen again on every frame. */
+.screen:has(>.overlay) .wall-motion *,.screen:has(>.overlay) .wall-motion *::before,.screen:has(>.overlay) .aura i,.screen:has(>.overlay) .aura::before,.screen:has(.home[data-today-in]) .wall-motion *,.screen:has(.home[data-today-in]) .wall-motion *::before{animation-play-state:paused}
 @media (prefers-reduced-motion:reduce){.wall-motion,.call-motion{display:none}}
 /* 晴空 · 月白: clouds drifting across */
 /* Keep every gradient's transparent edge inside its box, so drifting clouds have no clipped vertical seam. */
@@ -2215,7 +2227,20 @@ button.aui-card:active{transform:scale(.98)}
 .music-row-main span{display:grid;min-width:0}
 .music-row-main strong,.music-row-main small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .music-search{display:flex;gap:8px;margin:0 0 12px}
-.music-search input{flex:1;min-width:0;border:2px solid var(--line);border-radius:999px;padding:10px 14px;background:var(--card);color:var(--ink);font:inherit}
+.music-kinds{margin:0 0 10px}
+.music-controls{gap:4px}.music-controls .round-button{width:36px;height:36px;min-width:36px}.music-controls .music-main{width:50px;height:50px}
+.music-progress input{min-width:0;width:100%}
+.music-controls .music-mode svg{width:18px;height:18px}
+.music-row>.icon{flex:none;width:18px;height:18px;margin-right:6px;color:var(--ink2)}
+.music-shelves{margin:0 0 4px}.music-shelves button{display:inline-flex;align-items:center;gap:5px}.music-shelves button svg{width:16px;height:16px}.music-shelves small{font-weight:700;opacity:.65}
+.music-filter{display:flex;gap:8px;align-items:center;margin:0 0 10px}.music-filter button{flex:none}
+.music-row.picked{background:var(--accent-soft)}.music-check{flex:none;display:grid;place-items:center;width:22px;height:22px;margin-right:6px;border-radius:50%;box-shadow:inset 0 0 0 2px var(--line);color:var(--on-accent)}
+.music-row.picked .music-check{background:var(--accent-btn);box-shadow:none}.music-check svg{width:14px;height:14px}
+.music-pickbar{flex-wrap:wrap;gap:8px}.music-picked{flex:1 0 100%;font-size:13px;font-weight:700;color:var(--ink2)}
+.music-tools>.icon-button{flex:none}.music-tools>.primary,.music-tools>.secondary{padding-left:12px;padding-right:12px;gap:4px}
+.music-pick{width:100%;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.music-search input,.music-filter input{flex:1;min-width:0;min-height:44px;border:2px solid var(--line);border-radius:999px;padding:9px 16px;background:var(--card);color:var(--ink);font:inherit;font-size:16px;-webkit-appearance:none;appearance:none;box-shadow:none}
+.music-search input::-webkit-search-decoration,.music-filter input::-webkit-search-decoration{-webkit-appearance:none}
 .music-source span{flex:1;min-width:0}
 .music-test-row{margin:4px 0;font-size:13px}
 @media (prefers-reduced-motion:reduce){.music-cover.spin::before{animation:none}}
@@ -2730,14 +2755,65 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 :is(.vn-look-pic,.vn-sprite-thumb).lost img{display:none}
 :is(.vn-look-pic,.vn-sprite-thumb).lost::after{content:'图丢了';display:grid;place-items:center;width:100%;height:100%;font-size:11px;font-weight:700;color:var(--danger);background:var(--card2)}
 
-/* 相册 by card */
-.photo-group{margin:6px 0 10px}
-.photo-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.group-toggle{display:flex;align-items:baseline;gap:8px;padding:8px 2px;min-width:0;flex:1;text-align:left;background:none;border:0;color:inherit;font:inherit}
-.group-toggle strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.group-toggle small{color:var(--muted,rgba(128,128,128,.9));white-space:nowrap}
-.group-chevron{width:14px;display:inline-block;opacity:.7}
+/* 视觉小说 › 模型 › 动作: the user's motion files and a Live2D model's own motions, each with its words. */
+.vn-move-files{display:grid;gap:8px;margin:0 0 10px}
+.vn-move-row{display:grid;grid-template-columns:minmax(0,5.5em) minmax(0,1fr) auto;align-items:center;gap:6px}
+.vn-move-row[data-motion]{grid-template-columns:auto minmax(0,1fr)}
+.vn-move-row input{min-width:0;font:inherit;font-size:13px;color:var(--ink);background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.vn-move-row .chip-button{min-height:32px;border:0;cursor:pointer}
 
+/* 三消叠叠乐 */
+.stack3{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%}
+.stack3-level,.parking-level,.water-level{font-size:12.5px;font-weight:800;color:var(--ink2)}
+.stack3-board{position:relative;margin:4px auto}
+.stack3-tile{position:absolute;width:var(--tile);height:var(--tile);display:grid;place-items:center;font-size:calc(var(--tile) * .58);border-radius:10px;background:#fffdf5;border:1.5px solid #c9b78f;box-shadow:0 3px 0 #b39a68;padding:0;cursor:pointer;transition:filter .15s}
+.stack3-tile.under{filter:brightness(.55) saturate(.6);cursor:default}
+.stack3-aside{display:flex;gap:4px;min-height:0}
+.stack3-aside .stack3-tile{position:static}
+.stack3-bar{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;width:min(100%,330px);padding:6px;border-radius:14px;background:#8a6a3f;box-shadow:inset 0 2px 6px rgba(0,0,0,.35)}
+.stack3-slot{aspect-ratio:1;display:grid;place-items:center;font-size:22px;border-radius:8px;background:rgba(255,255,255,.15)}
+.stack3-tools,.water-tools{display:flex;gap:8px}
+.stack3-tools .chip-button,.water-tools .chip-button{border:0;cursor:pointer}
+.stack3-tools .chip-button:disabled,.water-tools .chip-button:disabled{opacity:.4}
+/* 挪车 */
+.parking{display:flex;flex-direction:column;align-items:center;gap:10px}
+.parking-lot{position:relative;border-radius:14px;background:#5f6672;background-image:linear-gradient(rgba(255,255,255,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.08) 1px,transparent 1px);background-size:var(--cell) var(--cell);overflow:hidden;box-shadow:inset 0 0 0 3px #f8f9fa}
+.parking-car{position:absolute;padding:3px;border:0;background:none;cursor:pointer;transition:transform .32s cubic-bezier(.5,0,.75,0),opacity .32s}
+.parking-car i{display:block;width:100%;height:100%;border-radius:10px;background:var(--car);box-shadow:inset 0 -4px 0 rgba(0,0,0,.18),0 2px 4px rgba(0,0,0,.3);position:relative}
+.parking-car[data-dir=right] i{background:linear-gradient(90deg,var(--car) 58%,rgba(255,255,255,.6) 58% 74%,var(--car) 74%)}
+.parking-car[data-dir=left] i{background:linear-gradient(270deg,var(--car) 58%,rgba(255,255,255,.6) 58% 74%,var(--car) 74%)}
+.parking-car[data-dir=down] i{background:linear-gradient(180deg,var(--car) 58%,rgba(255,255,255,.6) 58% 74%,var(--car) 74%)}
+.parking-car[data-dir=up] i{background:linear-gradient(0deg,var(--car) 58%,rgba(255,255,255,.6) 58% 74%,var(--car) 74%)}
+.parking-car i::after{content:'';position:absolute;inset:0;margin:auto;width:0;height:0;border:8px solid transparent}
+.parking-car[data-dir=right] i::after{border-left:11px solid rgba(255,255,255,.9);transform:translateX(5px)}
+.parking-car[data-dir=left] i::after{border-right:11px solid rgba(255,255,255,.9);transform:translateX(-5px)}
+.parking-car[data-dir=down] i::after{border-top:11px solid rgba(255,255,255,.9);transform:translateY(5px)}
+.parking-car[data-dir=up] i::after{border-bottom:11px solid rgba(255,255,255,.9);transform:translateY(-5px)}
+.parking-car.bump{animation:parking-bump .3s}
+@keyframes parking-bump{25%{translate:-3px 0}50%{translate:3px 0}75%{translate:-2px 0}}
+/* 倒水排序 */
+.water{display:flex;flex-direction:column;align-items:center;gap:12px}
+.water-tubes{display:flex;flex-wrap:wrap;justify-content:center;gap:10px 8px;max-width:330px}
+.water-tube{width:34px;height:118px;display:flex;flex-direction:column-reverse;padding:3px 3px 4px;border-radius:6px 6px 17px 17px;border:2px solid rgba(120,140,170,.55);background:rgba(255,255,255,.35);cursor:pointer;transition:transform .18s;overflow:hidden}
+.water-tube i{display:block;height:25%;flex:none;background:var(--water)}
+.water-tube i:first-child{border-radius:0 0 13px 13px}
+.water-tube.picked{transform:translateY(-12px)}
+.water-tube.full{border-color:#51cf66}
+@media (prefers-reduced-motion:reduce){.parking-car,.water-tube{transition:none}.parking-car.bump{animation:none}}
+
+/* 相册 by card: section labels, thin divided rows */
+.album-eyebrow{font-size:11px;letter-spacing:.12em;color:var(--ink3,#6f8177);margin:16px 2px 4px}
+.album-group{border-bottom:.5px solid var(--line,rgba(120,120,100,.2))}
+.album-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.album-toggle{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:12px 2px;background:none;border:0;color:inherit;font:inherit;text-align:left}
+.album-dot{width:8px;height:8px;border-radius:50%;flex:none;background:#c8d4cb}
+.album-dot.here{background:#4a6b5a}
+.album-dot.none{background:#d9d6cc}
+.album-name{flex:1;min-width:0;font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.album-name.none{font-weight:400;opacity:.8}
+.album-count{font-size:12px;padding:2px 9px;border-radius:999px;background:rgba(120,140,125,.14);flex:none}
+.album-group .photo-grid{margin:2px 0 12px}
+.album-chev{width:14px;text-align:center;opacity:.6;flex:none}
 /* 角色 by card, 外貌库 */
 .role-other{margin:8px 0}
 .role-other>summary{cursor:pointer;padding:8px 2px;list-style:none}
@@ -2745,3 +2821,4 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .look-row>div:first-child{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1}
 .look-row small{opacity:.75;overflow-wrap:anywhere}
 .look-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:46%}
+.group-title-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

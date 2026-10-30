@@ -2,13 +2,13 @@
 // app, fed with the chat's messages one by one, and the 立绘 kept as files in the tavern's images
 // (settings.vn.cast), so every device sees them. A character can have a VRM or Live2D model instead (vn-model.js), kept
 // as a file in the tavern's user/files the same way.
-import {openVnStage} from './vn-stage.js';
 import {storySteps, userSteps, pickLook, inlinePictures, editLook} from './core/vn.js';
 import {parsePictures} from './core/draw.js';
 import {storyMessage, storyReply} from './core/outgoing.js';
 import {parseSounds} from './core/sounds.js';
 import {parseBgm} from './core/music.js';
-import {modelInfo, normalizeModel, currentModel, MODEL_LIMIT} from './core/model-files.js';
+import {modelInfo, normalizeModel, currentModel, MODEL_LIMIT, vrmaInfo, wordList, MOVE_FILE_LIMIT} from './core/model-files.js';
+import {MOVES, moveFor} from './core/model-moves.js';
 
 const versionsOf = record => !record ? [] : Array.isArray(record.versions) ? record.versions : record.url ? [{...record}] : [];
 /** The drawn picture of a story picture block, as shown in the chat (the chosen version). */
@@ -33,16 +33,17 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
   const vn = () => settings().vn, picks = new Map();
   const chat = () => context()?.chat || [];
 
-  function stepsOf(id) {
+  /** A message as the stage's steps; max: how long a page of text may be (绘本 takes whole lines). */
+  function stepsOf(id, max) {
     const m = chat()[id];
     if (!storyMessage(m)) return null;
-    if (m.is_user) return userSteps(m.mes, m.name || context()?.name1 || '你').map(s => ({...s, id}));
+    if (m.is_user) return userSteps(m.mes, m.name || context()?.name1 || '你', max).map(s => ({...s, id}));
     const lines = linesOf(id) || [];
     const own = parsePictures(m.mes || '').map(t => ({start: t.start, url: pictureUrl(m, t.hash)})), inline = inlinePictures(m.mes || '');
     const pics = [...own, ...inline, ...shownPictures(id, m.mes || '', [...own, ...inline])];
     const tags = sounds() ? parseSounds(m.mes || '') : [], songs = musicOn() ? parseBgm(m.mes || '') : [];
     const skip = [...(settings().narration?.skip || []), ...(vn().skip || []), 'style', 'script'];
-    return storySteps(m.mes || '', lines, {pics, sounds: tags, bgm: songs, skip, body: settings().narration?.body}).map(s => s.kind === 'say' ? {...s, id, voiced: !!voiced(lines[s.line])} : {...s, id});
+    return storySteps(m.mes || '', lines, {pics, sounds: tags, bgm: songs, skip, body: settings().narration?.body, ...(max ? {max} : {})}).map(s => s.kind === 'say' ? {...s, id, voiced: !!voiced(lines[s.line])} : {...s, id});
   }
   /**
    * Pictures another plugin added to the message on the page only (智绘姬 and the like): each one where the text
@@ -129,7 +130,11 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
     return Math.max(0, list.length - 1);
   }
 
-  function open(from = 'latest') {
+  // The stage (vn-stage.js and its effects, about 100 KB) is loaded the first time it opens, not with the tavern.
+  let stageCode = null;
+  async function open(from = 'latest') {
+    if (!chat().length) throw Error('这个聊天还没有内容');
+    const {openVnStage} = await (stageCode ||= import('./vn-stage.js').catch(error => { stageCode = null; throw error; }));
     const list = chat();
     if (!list.length) throw Error('这个聊天还没有内容');
     const start = from === 'first' ? 0 : from === 'latest' ? latestStart() : Math.min(list.length - 1, Math.max(0, Number(from) || 0));
@@ -159,6 +164,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
           // Once a stage: the 立绘 (or the avatar) stays in its place.
           catch (error) { if (!failed.has(name)) { failed.add(name); notice(`${name}的模型没能演出来：${error.message}`); } throw error; }
         },
+        move: (name, how) => moveSpec(name, how),
       },
       // 快进 runs past the one-off sounds; the ambience and the music still change to where it stops.
       cue: (s, {skipping}) => { if (s.kind === 'bgm') music(s.id, s.index); else sound(s.id, s.index, {skipping}); },
@@ -285,10 +291,66 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
     return (kept?.models || []).find(m => m.id === target) || null;
   }
 
+  /**
+   * The 动作 a line brings for a character's model (core/model-moves.js), from the story around it: the built-in ones;
+   * their own 立绘 动作 named like one of those (their words bring it on too); for VRM the user's motion files, for
+   * Live2D the model's own motions given words. A spec for the model's act(), or null.
+   */
+  function moveSpec(name, how = {}) {
+    const entry = vn().cast?.[name], model = currentModel(entry);
+    if (!model) return null;
+    const extra = [];
+    if (model.kind === 'vrm') for (const m of vn().moves || []) extra.push({id: m.id, label: m.label, words: m.words});
+    else for (const [motion, words] of Object.entries(model.acts || {})) extra.push({id: 'motion:' + motion, label: motion, words});
+    for (const a of entry.actions || []) {
+      if (a.kind === 'expression') continue;
+      const same = MOVES.find(m => m.label === a.label || (a.words || []).some(w => m.words.includes(w)));
+      if (same) extra.push({id: same.id, label: same.label, words: a.words});
+    }
+    const hit = moveFor({...how, name}, extra);
+    if (!hit) return null;
+    if (hit.id.startsWith('motion:')) return {id: hit.id, motion: hit.id.slice(7)};
+    const file = (vn().moves || []).find(m => m.id === hit.id);
+    return file ? {id: file.id, path: file.path} : {id: hit.id};
+  }
+  /**
+   * The user's motion files (.vrma, for every VRM character): a new one joins them (kept in the tavern's user/files);
+   * else the one with this id is renamed / given words, or removed (its file deleted). Resolves to the list.
+   */
+  async function setMoveFile(blob, {id = '', label, words, remove = false} = {}) {
+    const s = settings(), list = [...(s.vn.moves || [])];
+    let gone = null;
+    if (blob) {
+      blob = await ownFile(blob);
+      if (list.length >= MOVE_FILE_LIMIT) throw Error(`动作文件最多存 ${MOVE_FILE_LIMIT} 个，先删掉不用的`);
+      const info = vrmaInfo(new Uint8Array(await blob.arrayBuffer()));
+      const key = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), file = `sttts-move-${key}.vrma`;
+      const response = await fetch('/api/files/upload', {method: 'POST', headers: context().getRequestHeaders(), body: JSON.stringify({name: file, data: await backend.base64(blob)})});
+      if (!response.ok) throw Error('动作文件没能存进酒馆（' + response.status + '）');
+      const base = String(blob.name || '').replace(/\.vrma$/i, '').trim();
+      list.push({id: 'v-' + key, label: String(label || base || '动作').slice(0, 20), words: wordList(words ?? base), path: 'user/files/' + file, file: String(blob.name || file), size: blob.size, seconds: info.seconds, at: Date.now()});
+    } else {
+      const at = list.findIndex(m => m.id === id);
+      if (at < 0) throw Error('没有这个动作文件');
+      if (remove) gone = list.splice(at, 1)[0];
+      else list[at] = {...list[at], ...(label != null ? {label: String(label)} : {}), ...(words != null ? {words: wordList(words)} : {})};
+    }
+    const saved = backend.saveVn({moves: list});
+    if (gone) fetch('/api/files/delete', {method: 'POST', headers: context().getRequestHeaders(), body: JSON.stringify({path: gone.path.replace(/^\//, '')})}).catch(() => {});
+    return (saved?.moves ?? settings().vn.moves) || [];
+  }
+
   /** What the stage last chose for a character and why (shown on their 立绘 page): {kind, label, word, where, line}. */
   const lastPick = name => picks.has(name) ? {...picks.get(name)} : null;
   return {
-    open, setSprite, setModel, wear, setWear, lastPick,
+    open, setSprite, setModel, setMoveFile, moveSpec, wear, setWear, lastPick,
+    /** 绘本: a message's steps with whole lines (null when it is not part of the story). */
+    bookSteps: id => stepsOf(id, 4000),
+    /** 绘本: a character's 立绘 for a feeling, in the 形象 this chat uses ('' when they have none). */
+    bookSprite(name, emotion = '') {
+      const cast = vn().cast || {};
+      return cast[name] ? pickLook(cast[name], {emotion, name, names: Object.keys(cast), outfit: wear()[name] || '', random: () => 0}) : '';
+    },
     get showing() { return !!stage; },
     status(phase) { stage?.status(phase); },
     refresh() { stage?.refresh(); },

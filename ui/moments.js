@@ -3,18 +3,14 @@
 // sends what the user does. It draws into the chat app's view, inside the frame the chat app gives it (tabs and all).
 import {esc, btn, empty, avatar, field, textArea, input, toggle, help} from './common.js';
 import {icon} from './icons.js';
+import {thumbBlob, previewBlob} from './thumbs.js';
 import {openImageViewer} from '../image-viewer.js';
 import {downloadAction, shareAction} from '../download.js';
 import {aura} from './aura.js';
 import {editTags} from '../host-ask.js';
 import {pictureInputs, photoTags, photoCast} from '../core/draw.js';
-
-const SEEN_KEY = 'st-iphonie-moments-seen';
-/** When the user last looked at 动态 (per browser; only for the dots). */
-export function momentsSeen(win) { try { return Number(win.localStorage.getItem(SEEN_KEY)) || 0; } catch { return 0; } }
-function markSeen(win) { try { win.localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* the dot is only a convenience */ } }
-/** Posts and comments by others since the user last looked. */
-export const momentsNew = (posts, seen) => posts.reduce((n, p) => n + (p.author !== 'me' && p.at > seen ? 1 : 0) + p.comments.filter(c => c.from !== 'me' && c.at > seen).length, 0);
+import {momentsSeen, momentsNew, markSeen} from './moments-seen.js';
+export {momentsSeen, momentsNew};
 
 function ago(at) {
   const s = (Date.now() - at) / 1000;
@@ -31,7 +27,7 @@ function ago(at) {
  * visible(): whether the 动态 tab is on screen (only then does it count as seen).
  */
 export function momentsPanel(ctx, {v, frame, me, visible}) {
-  const {api} = ctx, urls = new Map();
+  const {api} = ctx, urls = new Map(), shown = new Map();
   let epoch = 0, posts = [], author = '';
   const nameOf = who => who === 'me' ? me().name : who;
   const urlFor = async id => {
@@ -40,6 +36,11 @@ export function momentsPanel(ctx, {v, frame, me, visible}) {
     const url = photo ? ctx.win.URL.createObjectURL(photo.blob) : '';
     urls.set(id, url);
     return url;
+  };
+  // In the list a post shows its photo's middle-sized picture once one was made (ui/thumbs.js); opened, the photo itself.
+  const listURL = async id => {
+    if (!shown.has(id)) { const blob = await previewBlob(api, id); shown.set(id, blob ? ctx.win.URL.createObjectURL(blob) : await urlFor(id)); }
+    return shown.get(id);
   };
   const face = (who, size) => who === 'me' ? me().avatar(size) : avatar(who, ctx.engineOf(who), size);
 
@@ -80,7 +81,7 @@ export function momentsPanel(ctx, {v, frame, me, visible}) {
     // Seen only when it is on screen: the panel also redraws in the background when new posts arrive.
     if (visible()) { markSeen(ctx.win); ctx.momentsSeen?.(); }
     for (const img of v.root.querySelectorAll('img[data-photo]')) {
-      const url = await urlFor(img.dataset.photo);
+      const url = await listURL(img.dataset.photo);
       if (ticket !== epoch || v.disposed) return;
       if (url) img.src = url; else img.closest('.moment-photo')?.replaceWith(Object.assign(ctx.doc.createElement('p'), {className: 'moment-note', textContent: '配图已经从相册删掉了'}));
     }
@@ -119,7 +120,13 @@ export function momentsPanel(ctx, {v, frame, me, visible}) {
         else render();
       }
     });
-    for (const img of d.body.querySelectorAll('img[data-photo]')) urlFor(img.dataset.photo).then(url => { if (url) img.src = url; });
+    // the album's photos as small pictures, let go when the sheet closes
+    const byId = new Map(photos.map(r => [r.id, r])), local = [];
+    d.onClose(() => { for (const url of local) ctx.win.URL.revokeObjectURL(url); });
+    for (const img of d.body.querySelectorAll('img[data-photo]')) {
+      const row = byId.get(img.dataset.photo);
+      if (row) thumbBlob(api, row).then(blob => { if (!blob || !d.live) return; const url = ctx.win.URL.createObjectURL(blob); local.push(url); img.src = url; });
+    }
   }
   function commentOn(id, to = '') {
     const reply = to && to !== 'me';
@@ -228,6 +235,6 @@ export function momentsPanel(ctx, {v, frame, me, visible}) {
     render, click,
     /** Shows one person's posts (their profile's 「TA 的动态」), or everyone's. */
     only(name = '') { author = name; },
-    dispose() { epoch++; for (const url of urls.values()) if (url) ctx.win.URL.revokeObjectURL(url); urls.clear(); }
+    dispose() { epoch++; for (const url of new Set([...urls.values(), ...shown.values()])) if (url) ctx.win.URL.revokeObjectURL(url); urls.clear(); shown.clear(); }
   };
 }

@@ -5,7 +5,7 @@ import {PROMPT_BLOCKS, normalizePromptRules} from './prompt-rules.js';
 import { normalizeVn, spriteRequest, castFiles, moveCastFiles } from './vn.js';
 import { currentModel } from './model-files.js';
 import { MomentStore } from './moments-store.js';
-import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, bestMatch, matchScore, pick as pickPath } from './music.js';
+import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readGroups, paged, PAGE_WAYS, withPages, songKey, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, bestMatch, matchScore, pick as pickPath, GROUP_KINDS } from './music.js';
 import { AppStore } from './app-store.js';
 import { ASSISTANT_LIMITS, normalizeAssistant, validateAssistantPatch, assistantId, assistantMessage, assertAssistantThread, assistantSummary } from './assistant.js';
 import { FORUM_LIMITS, buildForumRequest, cleanPost as cleanForumPost, cleanReply as cleanForumReply, startingHeat } from './forum.js';
@@ -24,7 +24,7 @@ import { withLooks, LOOK_LIMITS } from './looks.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, writeBackup, readBackup, sealKeys, openKeys } from './backup.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, SHOP_GIFTS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
-import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, normalizeGpt, gptBase, gptSize, gptPrompt, gptGenerate, normalizeComfy, comfyUrl, checkWorkflow, workflowPlaceholders, COMFY_LIMITS, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS, applyComfyWorkflow } from './image-engines.js';
+import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, normalizeGpt, gptBase, gptSize, gptPrompt, gptGenerate, normalizeComfy, comfyUrl, checkWorkflow, workflowPlaceholders, COMFY_LIMITS, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS, applyComfyWorkflow } from './image-engines.js';
 import {activeLoraWorkflow, normalizeDisabledLoras, inspectLoras, editLoras, pickLoraSource} from './comfy-loras.js';
 import { normalizeSettings, validateSettings, modelRules, freshState } from './state.js';
 import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases } from './routes.js';
@@ -38,6 +38,7 @@ import { installDrawSettings } from './backend-draw.js';
 import { createStorageBudget } from './storage-budget.js';
 import { DialoguePlayer } from './player.js';
 import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS } from './library.js';
+import { makeThumb, makePreview, packPicture } from './thumbnail.js';
 import { NovelAIClient, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, guardParams, isFree, isV5, normalizeDrawParams, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, PRESET_REV as DRAW_PRESET_REV, drawPromptPlan, planRequest, drawCast, validateDrawPreset, normalizeDraw, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection } from './draw.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
@@ -80,6 +81,8 @@ async function smallVibeImage(base64) {
     } catch { return base64; }
 }
 const clone = value => structuredClone(value);
+// a 歌单 the user made was deleted meanwhile (in another tab, say)
+const listGone = error => { throw error?.code === 'MISSING' ? Error('这个歌单已经删掉了') : error; };
 const assistantTransferRows = docs => normalizeAssistantThreads(docs.filter(row => row.kind === 'assistant').map(thread => ({...thread,
     memory: docs.find(row => row.id === bookId(thread.id) && row.memoryRevision === (thread.memoryRevision || 0)) || null,
 })));
@@ -102,8 +105,14 @@ const DRAWN_SOURCES = [
     ['moments', '朋友圈', /^朋友圈-.+-\d+\.(?:png|jpe?g|webp)$/],
     ['assistant', '助手生图', /^assistant-\d+\.(?:png|jpe?g|webp)$/],
     ['chatapp', '聊天图片', /^聊天-.+-\d+\.(?:png|jpe?g|webp)$/],
+    ['book', '绘本插图', /^绘本-.+-\d+\.(?:png|jpe?g|webp)$/],
 ];
 export class TTSBackend {
+    // photoThumb jobs, one at a time: a grid asks for many at once and each decodes a whole photo.
+    #thumbs = Promise.resolve();
+    // the middle-sized pictures being made (photoPreview), one at a time in a line of their own, so they never hold up a grid
+    #previews = Promise.resolve();
+    #previewing = new Set();
     constructor({ settings, persist = () => {}, notify = () => {}, change = () => {}, unknown = () => {},
         providers = new Providers(), cache, library, keyStore, sink, novelai, chats, indexedDB = globalThis.indexedDB, syncStorage = () => globalThis.localStorage,
         imageFetch = (...args) => globalThis.fetch(...args), soundPack = '', speech = null, tavernHeaders = () => globalThis.SillyTavern?.getContext?.()?.getRequestHeaders?.() || {} } = {}) {
@@ -219,7 +228,7 @@ export class TTSBackend {
         // The 视觉小说's 立绘 and 模型 are files in the tavern; the settings only name them. A backup carries the files.
         let vnFiles = null;
         if (want.includes('vnFiles')) {
-            const paths = castFiles(this.settings.vn.cast);
+            const paths = castFiles([this.settings.vn.cast, this.settings.vn.moves]);
             if (paths.length && !this.syncFiles?.readPath) throw Error('要在酒馆里打开小手机，才能把视觉小说的立绘和模型放进备份（不要的话把这一项关掉）');
             vnFiles = [];
             for (const path of paths) { const blob = await this.syncFiles.readPath(path).catch(() => null); if (blob) vnFiles.push({ path, blob }); }
@@ -262,7 +271,7 @@ export class TTSBackend {
                 moved[f.path] = await this.syncFiles.writePath(f.path, f.blob);
                 done.vnFiles++;
             }
-            if (settings) settings.vn.cast = moveCastFiles(settings.vn.cast, moved);
+            if (settings) { settings.vn.cast = moveCastFiles(settings.vn.cast, moved); settings.vn.moves = moveCastFiles(settings.vn.moves, moved); }
         }
         const rows = {};
         for (const part of want) for (const store of PART_STORES[part]) if (backup.library[store]) rows[store] = backup.library[store];
@@ -270,7 +279,7 @@ export class TTSBackend {
         // settings that point at them.
         if (Object.keys(rows).length) Object.assign(done, await this.library.importRows(rows, { replace }));
         if (settings) { this.save(settings); done.settings = true; await this.loadReferences(); }
-        else if (moved && Object.entries(moved).some(([a, b]) => a !== b)) this.saveVn({ cast: moveCastFiles(this.settings.vn.cast, moved) });
+        else if (moved && Object.entries(moved).some(([a, b]) => a !== b)) this.saveVn({ cast: moveCastFiles(this.settings.vn.cast, moved), moves: moveCastFiles(this.settings.vn.moves, moved) });
         if (want.has('vibes') && backup.library.vibes) {
             // The groups: replace takes the backup's; merge keeps the current ones and adds or overwrites by id.
             const now = this.settings.draw.vibe, incoming = backup.vibeGroups || [];
@@ -287,7 +296,7 @@ export class TTSBackend {
         if (want.has('memories') && backup.memories) done.memories = await this.importChatMemories(backup.memories, {replace, restoring: true});
         if (want.has('assistant') && backup.assistant) done.assistant = await this.importAssistantThreads(backup.assistant, {replace, restoring: true});
         if (keys) { let count = 0; for (const [engine, key] of Object.entries(keys)) { try { this.setKey(engine, key); count++; } catch { /* an engine this version does not know */ } } done.keys = count; }
-        for (const collection of ['favorites', 'photos', 'notes']) if (collection in done) this.emit('library', { collection });
+        for (const collection of ['favorites', 'photos', 'notes', 'books']) if (collection in done) this.emit('library', { collection });
         if ('phone' in done || 'photos' in done) this.emit('phone', { preferences: await this.getPhone() });
         return done;
     }
@@ -305,7 +314,19 @@ export class TTSBackend {
         try { listener({ type: 'playback', revision: this.revision, ...this.player.snapshot() }); } catch { this.listeners.delete(listener); throw Error('界面无法接收播放状态'); }
         return () => this.listeners.delete(listener);
     }
-    getState() { this.assertOpen(); return clone(this.settings); }
+    // A copy for every caller (it may be changed), made from a string kept for the moment's work: the phone asks for the
+    // settings dozens of times a render (an 引擎 card up to seven times), and parsing that string is two to four times
+    // quicker than copying the settings each time. The string goes when this piece of work is done (a microtask), so the
+    // next read sees anything changed since, as before. The settings are kept as JSON in the tavern anyway.
+    getState() {
+        this.assertOpen();
+        if (this.stateOf !== this.settings) {
+            this.stateJson = JSON.stringify(this.settings);
+            this.stateOf = this.settings;
+            queueMicrotask(() => { this.stateOf = null; });
+        }
+        return JSON.parse(this.stateJson);
+    }
     getSnapshot() { return { state: this.getState(), revision: this.revision }; }
     save(next, expectedRevision) {
         this.assertOpen();
@@ -383,7 +404,7 @@ export class TTSBackend {
         // 角色资料: who they are, for the phone's apps when the tavern has no card for them.
         if (typeof route.persona === 'string') { route.persona = route.persona.slice(0, 4000); if (!route.persona.trim()) delete route.persona; } else delete route.persona;
         // A new role belongs to the card it was made in (分区); one made with no card open is everyone's.
-        if (index < 0 && this.cardKey() && !route.cards?.length) route.cards = [this.cardKey()];
+        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true) route.cards = [this.cardKey()];
         if (index >= 0) next.routes[index] = route; else next.routes.push(route);
         next.selected = id;
         this.save(next);
@@ -767,7 +788,13 @@ export class TTSBackend {
      * when the source is the tavern's model. request: {prompt, responseLength?, ...} as for generateRaw.
      */
     async generateText(context, request) {
-        return this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request));
+        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request));
+        // A model that never answers must not keep a reply "being voiced / drawn" for ever: after this long the request is given up
+        // (the state is freed and the floor can be tried again).
+        let timer;
+        const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(Error('模型太久没有回应，已放弃这次请求，可以再试一次')), 240000); });
+        job.catch(() => {});
+        try { return await Promise.race([job, limit]); } finally { clearTimeout(timer); }
     }
     async generateTextRaw(context, request) {
         const text = activeText(this.settings.text);
@@ -1167,12 +1194,12 @@ export class TTSBackend {
     async comfyWorkflows() { this.assertOpen(); return tavernWorkflows({ fetch: this.imageFetch, headers: this.tavernHeaders() }); }
     async comfyWorkflow(name) { this.assertOpen(); return tavernWorkflow({ fetch: this.imageFetch, headers: this.tavernHeaders(), name: String(name || '') }); }
     /** Draws with GPT or ComfyUI. Inputs are the NovelAI-shaped picture (scene prompt, one caption per person). */
-    async drawWithEngine(engine, { prompt, negative, characters, quote, signal, comfy }) {
+    async drawWithEngine(engine, { prompt, negative, characters, quote, signal, comfy, refs = [] }) {
         const draw = this.settings.draw, p = quote.params;
         if (engine === 'gpt') {
-            const text = gptPrompt({ prompt, characters });
-            const blob = await gptGenerate({ fetch: this.imageFetch, settings: draw.gpt, key: this.gptKey, prompt: text, size: `${p.width}x${p.height}`, signal });
-            return { blob, seed: -1, params: { model: draw.gpt.model, width: p.width, height: p.height }, prompt: text };
+            const text = gptPrompt({ prompt, characters, refs });
+            const blob = await gptGenerate({ fetch: this.imageFetch, settings: draw.gpt, key: this.gptKey, prompt: text, size: `${p.width}x${p.height}`, refs, signal });
+            return { blob, seed: -1, params: { model: draw.gpt.model, width: p.width, height: p.height }, prompt: text, refs: refs.length };
         }
         const c = comfy || draw.comfy, seed = p.seed >= 0 ? p.seed : Math.floor(Math.random() * 4294967295);
         const text = comfyPrompt({ prompt, negative, characters });
@@ -1198,13 +1225,15 @@ export class TTSBackend {
         if (!this.drawReady()) return Promise.reject(Error(this.drawMissing()));
         // 底图 (图生图 / 局部重绘) and 角色参考 are NovelAI's: the drawing app sends them only when NovelAI draws.
         const extra = engine === 'nai' ? { base: !!base?.image, refs: (refs || []).filter(r => r?.image).length } : {};
+        // GPT's 参考图 (up to 16, known by their order): the pictures and what the user wrote each one is.
+        const gptRefs = engine === 'gpt' ? (refs || []).filter(r => typeof r?.image === 'string' && r.image).slice(0, GPT_MAX_REFS).map(r => ({ image: r.image, type: /^image\/(png|jpeg|webp)$/.test(r.type) ? r.type : 'image/png', label: String(r.label || '').slice(0, 80) })) : [];
         const quote = this.drawQuote(params, extra);
         if (engine !== 'nai') {
             if (quote.free === false && !allowPaid) return Promise.reject(Object.assign(Error('GPT 生图每张都要花钱，需要确认后再生成'), { code: 'PAID' }));
             // A queued ComfyUI picture keeps the scheme it was asked with, whatever is changed while it waits.
             const c = this.settings.draw.comfy;
             const comfy = engine === 'comfy' ? clone(Object.fromEntries(['url', 'workflow', 'disabledLoras', ...COMFY_PARAM_KEYS].map(k => [k, c[k]]))) : undefined;
-            const picture = {prompt, negative, characters: clone(characters), quote, comfy};
+            const picture = {prompt, negative, characters: clone(characters), quote, comfy, refs: gptRefs};
             const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
@@ -1212,7 +1241,9 @@ export class TTSBackend {
                 this.assertOpen();
                 const ext = made.blob.type === 'image/jpeg' ? 'jpg' : made.blob.type === 'image/webp' ? 'webp' : 'png';
                 const info = this.pictureInfo(engine, made, picture);
+                if (made.refs) info.push(['参考图', `${made.refs} 张`]);
                 const photo = await this.library.addPhoto({ name: (name || DRAW_ENGINE_NAMES[engine]) + '-' + (made.seed >= 0 ? made.seed : Date.now()) + '.' + ext, blob: made.blob, info, card: this.cardKey(), cardName: this.space.name });
+                this.#thumbSoon(photo.id);
                 this.emit('library', { collection: 'photos' });
                 this.emit('draw', { phase: 'done' });
                 return { photoId: photo.id, seed: made.seed, params: made.params, prompt: made.prompt, engine, blob: made.blob, info };
@@ -1241,6 +1272,7 @@ export class TTSBackend {
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
             if (request.refs) info.push(['角色参考', `${request.refs} 张`]);
             const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + '.png', blob, info, card: this.cardKey(), cardName: this.space.name });
+            this.#thumbSoon(photo.id);
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
             // Paid images change the Anlas balance and V5 images use up the allowance: read the subscription again next time.
@@ -1271,6 +1303,7 @@ export class TTSBackend {
             this.assertOpen();
             const info = [['引擎', 'NovelAI'], ['工具', label], ['原图', `${width} × ${height}`], ...(body.prompt ? [['说明', body.prompt.replace(';;', ' · ')]] : []), ['画于', new Date().toLocaleString('zh-CN', { hour12: false })]];
             const photo = await this.library.addPhoto({ name: `${name}-${label}-${Date.now()}.png`, blob, info, card: this.cardKey(), cardName: this.space.name });
+            this.#thumbSoon(photo.id);
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
             if (this.subscription) this.subscription.checkedAt = 0;
@@ -1378,7 +1411,7 @@ export class TTSBackend {
     // ---------- 音乐 ----------
     /** Music options: {bgm, rule, volume, duck, share, sources}. Sources are checked before they are kept. */
     saveMusic(patch) {
-        const next = this.getState(), allowed = ['bgm', 'rule', 'volume', 'duck', 'share', 'sources'];
+        const next = this.getState(), allowed = ['bgm', 'rule', 'volume', 'duck', 'share', 'sources', 'mode', 'taste'];
         const merged = { ...next.music, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) };
         if (Array.isArray(patch?.sources)) { if (patch.sources.length > MUSIC_LIMITS.sources) throw Error(`最多 ${MUSIC_LIMITS.sources} 个音源`); merged.sources = patch.sources.map((s, i) => validateSource(normalizeSource(s, i))); }
         next.music = normalizeMusic(merged);
@@ -1417,20 +1450,113 @@ export class TTSBackend {
         if (!s) throw Error('这个音源已经不在了');
         return clone(s);
     }
-    /** Searches the enabled sources (or one): {songs: [{source, sourceName, id, title, artist}], errors: [{source, message}]}. */
-    async searchMusic(query, sourceId = '') {
+    /**
+     * Searches the enabled sources (or one) for songs ({songs: [{source, sourceName, id, title, artist}]}) or, with
+     * kind 'album' / 'artist', albums or artists ({groups: [{source, sourceName, kind, id, name, artist, count}]}) — on
+     * the sources that say how. page 0, 1, …: more is true when a source gave a full page. seen: 'source|id' of what
+     * was found already. An address with no {{offset}} / {{page}} in it may still give pages: after its first page the
+     * usual ways of asking for one are tried in turn (as groupSongs does), and the first that gives results not had yet
+     * is kept for that source and that kind of search; none does: the source is named in unpaged.
+     */
+    async searchMusic(query, sourceId = '', { kind = 'song', page = 0, seen } = {}) {
         this.assertOpen();
         const words = String(query || '').trim().slice(0, 100);
-        if (!words) throw Error('写一下想听的歌');
-        const sources = sourceId && typeof sourceId === 'object' ? [this.musicSource(sourceId)] : clone(this.settings.music.sources.filter(s => sourceId ? s.id === sourceId : s.enabled));
-        if (!sources.length) throw Error('还没有能用的音源：先在「音乐 → 设置 → 音源」里添加一个');
-        const songs = [], errors = [];
+        if (!words) throw Error(kind === 'album' ? '写一下专辑名' : kind === 'artist' ? '写一下歌手名' : '写一下想听的歌');
+        const all = sourceId && typeof sourceId === 'object' ? [this.musicSource(sourceId)] : clone(this.settings.music.sources.filter(s => sourceId ? s.id === sourceId : s.enabled));
+        if (!all.length) throw Error('还没有能用的音源：先在「音乐 → 设置 → 音源」里添加一个');
+        const key = GROUP_KINDS[kind] ? kind + 'Search' : 'search', sources = all.filter(s => s[key]);
+        if (!sources.length) throw Error(`音源都不能搜${GROUP_KINDS[kind]}：在音源设置的「搜专辑、歌手和歌单」里填地址（自己搭的网易云后端会自动填好）`);
+        const songs = [], groups = [], errors = [], unpaged = [], at = { query: words, offset: page * 30, page: page + 1, limit: 30 };
+        const had = new Set((Array.isArray(seen) ? seen : []).map(String));
+        let more = false;
         await Promise.all(sources.map(async s => {
-            try { songs.push(...readSearch(s, await this.musicFetch(fillSource(s.search, { query: words }))).map(x => ({ ...x, sourceName: s.name }))); }
+            try {
+                const read = json => (key === 'search' ? readSearch(s, json) : readGroups(s, json, kind)).map(x => ({ ...x, sourceName: s.name }));
+                let found = null;
+                if (paged(s[key]) || page === 0) found = read(await this.musicFetch(fillSource(s[key], at)));
+                else {
+                    const wayKey = s.id + '|' + key + '|' + s[key], known = (this.pageWays ||= new Map()).get(wayKey);
+                    for (const way of known ? [known] : PAGE_WAYS) {
+                        const got = await this.musicFetch(fillSource(withPages(s[key], way), at)).then(read).catch(() => null);
+                        const fresh = (got || []).filter(x => !had.has(x.source + '|' + x.id));
+                        if (fresh.length) { this.pageWays.set(wayKey, way); found = fresh; break; }
+                    }
+                    if (!found && !known) unpaged.push(s.name);
+                    found ||= [];
+                }
+                (key === 'search' ? songs : groups).push(...found);
+                if (found.length >= 20) more = true;
+            }
             catch (error) { errors.push({ source: s.name, message: error.message }); }
         }));
-        return { songs, errors };
+        return key === 'search' ? { songs, errors, more, unpaged } : { groups, errors, more, unpaged };
     }
+    /**
+     * The songs of an album, an artist or a playlist a search found: {songs, more} — page 0, 1, … of `limit` songs (at
+     * most MUSIC_LIMITS.bulk, for sources whose address says how many); offset: where the page starts, when the pages
+     * before were of another size; seen: the ids had already (for an address that does not say how its pages go).
+     *
+     * An address with no {{offset}} / {{page}} in it may still give pages: after its first page the usual ways of
+     * asking for one are tried in turn, and the first that gives songs not had yet is kept for that source while the
+     * tavern page is open (for that address: an address changed is tried again). None does: {songs: [], more: false,
+     * unpaged: true} — the first page is all there is.
+     */
+    async groupSongs(sourceId, kind, id, page = 0, { limit = 50, offset, seen } = {}) {
+        this.assertOpen();
+        const s = this.musicSource(sourceId), template = GROUP_KINDS[kind] ? s[kind + 'Songs'] : '';
+        if (!template) throw Error(`这个音源不能取${GROUP_KINDS[kind] || '专辑'}里的歌`);
+        const size = Math.max(1, Math.min(MUSIC_LIMITS.bulk, Math.floor(limit) || 50));
+        const get = async address => readSearch(s, await this.musicFetch(fillSource(address, { id, offset: offset ?? page * size, page: page + 1, limit: size })), s[kind + 'SongsPath'], size).map(x => ({ ...x, sourceName: s.name }));
+        if (paged(template) || page === 0) {
+            const songs = await get(template);
+            return { songs, more: songs.length >= Math.min(20, size) };
+        }
+        const had = new Set((Array.isArray(seen) ? seen : []).map(String)), key = sourceId + '|' + kind + '|' + template, known = (this.pageWays ||= new Map()).get(key);
+        for (const way of known ? [known] : PAGE_WAYS) {
+            const songs = await get(withPages(template, way)).catch(() => null), fresh = (songs || []).filter(x => !had.has(String(x.id)));
+            if (fresh.length) { this.pageWays.set(key, way); return { songs: fresh, more: songs.length >= Math.min(20, size) }; }
+        }
+        return { songs: [], more: false, unpaged: !known };
+    }
+    /** 正文点的歌: the songs the story picked, newest first, each once (the oldest go past MUSIC_LIMITS.heard). */
+    async listHeard() { this.assertOpen(); return this.music.list('heard'); }
+    /** Keeps a song the story picked (again: it moves to the top; once found on a source, where it was found). */
+    async heard(song) {
+        this.assertOpen();
+        const title = String(song?.title || '').trim().slice(0, 200);
+        if (!title) return null;
+        // (later than the last one even within the same millisecond, so the newest is always on top)
+        this.heardAt = Math.max(Date.now(), (this.heardAt || 0) + 1);
+        const row = { id: 'heard:' + songKey(song), kind: 'heard', at: this.heardAt, title, artist: String(song.artist || '').trim().slice(0, 200) };
+        const old = await this.music.get(row.id).catch(() => null);
+        if (song.source && song.songId) Object.assign(row, { source: String(song.source).slice(0, 60), songId: String(song.songId).slice(0, 200) });
+        else if (old?.source && old.songId) Object.assign(row, { source: old.source, songId: old.songId });
+        // its lyrics, once they were fetched (keepLyric), stay with it
+        const lyric = song.lyric || old?.lyric;
+        if (lyric) row.lyric = String(lyric).slice(0, 60000);
+        await this.music.put([row], { keep: MUSIC_LIMITS.heard });
+        this.emit('music', { heard: true });
+        return row;
+    }
+    /** Lyrics fetched while a song played, kept with it: in 正文点的歌, and in the 歌单 where it is there without any. The
+     *  next time it plays they show at once, even when its source cannot be reached. song: the track ({rowId or id,
+     *  title, artist}); true when kept anywhere. */
+    async keepLyric(song, text) {
+        this.assertOpen();
+        const lyric = String(text || '').slice(0, 60000);
+        if (!lyric.trim() || !song?.title) return false;
+        const ids = [...new Set([song.rowId, song.id, 'heard:' + songKey(song)].filter(id => typeof id === 'string' && /^(?:heard|song):/.test(id)))];
+        let kept = false;
+        for (const id of ids) {
+            const row = await this.music.get(id).catch(() => null);
+            if (!row || row.lyric || !['heard', 'song'].includes(row.kind)) continue;
+            await this.music.change(id, r => { if (!r.lyric) r.lyric = lyric; }).catch(() => null);
+            kept = true;
+        }
+        return kept;
+    }
+    async forgetHeard(ids) { for (const id of ids) await this.music.remove(id); this.emit('music', { heard: true }); return true; }
+    async clearHeard() { await this.music.clear('heard'); this.emit('music', { heard: true }); return true; }
     /** A playable link for a song of a source. */
     async musicLink(sourceId, songId, hint = {}) {
         this.assertOpen();
@@ -1457,28 +1583,97 @@ export class TTSBackend {
         if (!s.lyric) return '';
         try { const value = pickPath(await this.musicFetch(fillSource(s.lyric, { id: songId, title: hint.title, artist: hint.artist })), s.lyricPath); return typeof value === 'string' ? value.slice(0, 60000) : ''; } catch { return ''; }
     }
-    /** The 歌单: songs without their files. */
+    /** The 歌单 (全部): songs without their files. */
     async listSongs() { this.assertOpen(); return (await this.music.list('song')).map(({ blob, ...row }) => row); }
     async songBlob(id) { const row = await this.music.get(id); return row?.blob || null; }
     /** Adds files ({title, artist, blob}) or source songs ({title, artist, source, songId}) to the 歌单. */
-    async addSongs(list) {
+    async addSongs(list) { return (await this.storeSongs(list)).added; }
+    /** Adds songs to the 歌单 and puts them into one the user made: {added: the songs new to the 歌单, kept: how many
+     *  went into that one (those in it already stay where they are)}. */
+    async addSongsTo(playlistId, list) {
+        const { added, ids } = await this.storeSongs(list);
+        const { kept } = await this.addToPlaylist(playlistId, ids);
+        return { added, kept };
+    }
+    /** Keeps songs in the 歌单: {added: the new ones, ids: each song's own (new, or the one the 歌单 had already)}. */
+    async storeSongs(list) {
         this.assertOpen();
-        const now = Date.now(), have = await this.listSongs();
-        if (have.length + list.length > MUSIC_LIMITS.songs) throw Error(`歌单最多 ${MUSIC_LIMITS.songs} 首`);
+        const now = Date.now(), have = await this.listSongs(), ids = [];
+        // a source's songs already here (or earlier in this list), by where they are
+        const known = new Map(have.filter(h => h.origin === 'source').map(h => [h.source + '\n' + h.songId, h]));
         const rows = list.map((value, i) => {
             const row = songRow({ ...value, origin: value.blob ? 'file' : 'source' }, now + i);
-            if (row.origin === 'source') { const dup = have.find(h => h.source === row.source && h.songId === row.songId); if (dup) return null; return row; }
+            if (row.origin === 'source') {
+                const k = row.source + '\n' + row.songId, dup = known.get(k);
+                ids.push((dup || row).id);
+                if (dup) return null;
+                known.set(k, row);
+                return row;
+            }
             let blob;
             try { blob = Blob.prototype.slice.call(value.blob, 0, undefined, value.blob?.type || ''); } catch { throw Error(`「${row.title}」不是能用的音频文件`); }
             if (!blob.size) throw Error(`「${row.title}」是空文件`);
             if (blob.size > MUSIC_LIMITS.file) throw Error(`「${row.title}」太大了（一首最多 ${MUSIC_LIMITS.file / 1024 / 1024} MB）`);
             const type = String(blob.type || '').toLowerCase();
             if (type && !type.startsWith('audio/') && !['application/octet-stream', 'video/mp4', 'video/webm', 'video/ogg'].includes(type)) throw Error(`「${row.title}」不是音频文件`);
+            ids.push(row.id);
             return { ...row, blob, size: blob.size, mime: type };
         }).filter(Boolean);
+        if (have.length + rows.length > MUSIC_LIMITS.songs) throw Error(`歌单最多 ${MUSIC_LIMITS.songs} 首`);
         if (rows.length) await this.music.put(rows);
         this.emit('music', { library: true });
-        return rows.map(({ blob, ...row }) => row);
+        return { added: rows.map(({ blob, ...row }) => row), ids };
+    }
+    /** The 歌单 the user made: [{id, name, at, songs: [song ids, the newest on top]}], in the order they were made. */
+    async listPlaylists() { this.assertOpen(); return (await this.music.list('playlist')).sort((a, b) => a.at - b.at); }
+    /** Makes a 歌单 ({name}) or renames one ({id, name}). */
+    async savePlaylist({ id = '', name = '' } = {}) {
+        this.assertOpen();
+        const title = String(name || '').trim().slice(0, 40), all = await this.listPlaylists();
+        if (!title) throw Error('给歌单起个名字');
+        if (all.some(p => p.name === title && p.id !== id)) throw Error(`已经有叫「${title}」的歌单了`);
+        let row;
+        if (id) row = await this.music.change(id, p => { p.name = title; }).catch(listGone);
+        else {
+            if (all.length >= MUSIC_LIMITS.lists) throw Error(`最多建 ${MUSIC_LIMITS.lists} 个歌单`);
+            [row] = await this.music.put([{ id: 'playlist:' + globalThis.crypto.randomUUID().slice(0, 8), kind: 'playlist', at: Date.now(), name: title, songs: [] }]);
+        }
+        this.emit('music', { library: true });
+        return row;
+    }
+    /** Deletes a 歌单 the user made: its songs stay in 全部, or (withSongs) go too — but for those in another 歌单. */
+    async deletePlaylist(id, { withSongs = false } = {}) {
+        this.assertOpen();
+        if (withSongs) {
+            const lists = await this.listPlaylists(), elsewhere = new Set(lists.filter(p => p.id !== id).flatMap(p => p.songs));
+            const gone = (lists.find(p => p.id === id)?.songs || []).filter(s => !elsewhere.has(s));
+            if (gone.length) await this.music.removeMany(gone);
+        }
+        await this.music.remove(id);
+        this.emit('music', { library: true });
+        return true;
+    }
+    /** Puts songs of the 歌单 into one the user made, on top: {playlist, kept: how many were not in it yet}. */
+    async addToPlaylist(id, songIds) {
+        this.assertOpen();
+        const known = new Set((await this.listSongs()).map(s => s.id)), want = [...new Set(songIds.map(String))].filter(s => known.has(s));
+        let kept = 0;
+        const playlist = await this.music.change(id, p => {
+            const inside = new Set(p.songs), fresh = want.filter(s => !inside.has(s));
+            if (p.songs.length + fresh.length > MUSIC_LIMITS.songs) throw Error(`一个歌单最多 ${MUSIC_LIMITS.songs} 首`);
+            kept = fresh.length;
+            p.songs = [...fresh, ...p.songs];
+        }).catch(listGone);
+        this.emit('music', { library: true });
+        return { playlist, kept };
+    }
+    /** Takes songs out of a 歌单 the user made (they stay in 全部). */
+    async removeFromPlaylist(id, songIds) {
+        this.assertOpen();
+        const gone = new Set(songIds.map(String));
+        const playlist = await this.music.change(id, p => { p.songs = p.songs.filter(s => !gone.has(s)); }).catch(listGone);
+        this.emit('music', { library: true });
+        return playlist;
     }
     async updateSong(id, patch = {}) {
         const saved = await this.music.change(id, row => {
@@ -1489,7 +1684,15 @@ export class TTSBackend {
         this.emit('music', { library: true });
         const { blob, ...row } = saved; return row;
     }
-    async deleteSongs(ids) { for (const id of ids) await this.music.remove(id); this.emit('music', { library: true }); return true; }
+    /** Deletes songs from the 歌单 (and so from every 歌单 the user made). */
+    async deleteSongs(ids) {
+        const gone = new Set(ids.map(String));
+        await this.music.removeMany([...gone]);
+        const lists = (await this.music.list('playlist')).filter(p => p.songs.some(s => gone.has(s)));
+        if (lists.length) await this.music.put(lists.map(p => ({ ...p, songs: p.songs.filter(s => !gone.has(s)) })));
+        this.emit('music', { library: true });
+        return true;
+    }
     /** A song asked for by name (<bgm>, a shared song): the 歌单 first, then the first fitting search result. */
     async findSong(want) {
         // The 歌单 only when the title is the same (晴天 is not 晴天（Live）); a search may be looser.
@@ -2096,6 +2299,76 @@ export class TTSBackend {
         this.emit('phone', { preferences: await this.getPhone() });
         return gone.size;
     }
+    /** A photo's small picture for grids: the kept one, else made from the photo now and kept (core/thumbnail.js).
+     *  null when the photo is gone or cannot be read; the grid then shows the photo itself. */
+    photoThumb(id) {
+        const job = this.#thumbs.then(async () => {
+            if (this.closed) return null;
+            const kept = await this.library.getThumb?.(id);
+            if (kept) return kept.blob;
+            // nothing here can read a picture (not a browser): the grid shows the photo itself
+            if (typeof createImageBitmap !== 'function') return null;
+            const photo = await this.library.getPhoto(id);
+            if (!photo?.blob) return null;
+            const made = await makeThumb(photo.blob);
+            if (!this.closed) await this.library.saveThumb?.(id, made);
+            return made.blob;
+        }).catch(() => null);
+        this.#thumbs = job;
+        return job;
+    }
+    /** A new photo gets its small picture a moment later, in the background. */
+    #thumbSoon(id) { if (id && typeof createImageBitmap === 'function') setTimeout(() => this.photoThumb(id), 400); }
+    /** A photo's middle-sized picture for chat bubbles, posts and the 今天 widget (core/thumbnail.js): the kept one, else
+     *  null, and the photo itself shows. One not made yet is made when the page is idle, for next time (making it on the
+     *  spot would hold the bubble back); a photo hardly bigger, or one that moves, needs none. */
+    async photoPreview(id) {
+        if (this.closed) return null;
+        const kept = await this.library.getPreview?.(id).catch(() => null);
+        if (kept) return kept.blob || null;
+        this.#previewSoon(id);
+        return null;
+    }
+    #previewSoon(id) {
+        if (!id || typeof createImageBitmap !== 'function' || this.#previewing.has(id)) return;
+        this.#previewing.add(id);
+        const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function' ? requestIdleCallback(() => resolve(), { timeout: 2000 }) : setTimeout(resolve, 50));
+        this.#previews = this.#previews.then(idle).then(async () => {
+            if (this.closed || await this.library.getPreview?.(id)) return;
+            const photo = await this.library.getPhoto(id);
+            if (!photo?.blob) return;
+            const made = await makePreview(photo.blob);
+            if (!this.closed) await this.library.savePreview?.(id, made);
+        }).catch(() => {}).finally(() => this.#previewing.delete(id));
+    }
+    /** 压缩旧图: the album's PNGs not made smaller yet, saved more than `days` days ago (0: all), leaving out the ones the
+     *  phone shows as wallpaper, an icon, an avatar or the chat background. {photos: [{id, name, size}], count, bytes}. */
+    async packablePhotos(days = 0) {
+        this.assertOpen();
+        const phone = await this.getPhone(), chat = this.getState().chat || {};
+        const shown = a => a?.kind === 'photo' ? a.photoId : null;
+        const used = new Set([shown(phone.wallpaper), ...Object.values(phone.icons || {}).map(shown), ...Object.values(chat.avatars || {}).map(shown), chat.profile?.backgroundPhoto].filter(Boolean));
+        const before = Date.now() - Math.max(0, Number(days) || 0) * 864e5;
+        const rows = (await this.library.listPhotos()).filter(r => r.type === 'image/png' && !r.packed && r.packTried !== r.size && !used.has(r.id) && (!days || (r.createdAt || 0) <= before));
+        return { photos: rows.map(({ id, name, size }) => ({ id, name, size })), count: rows.length, bytes: rows.reduce((n, r) => n + (r.size || 0), 0) };
+    }
+    /** Makes these photos smaller one by one (core/thumbnail.js packPicture); ones not worth it stay as they are (and are
+     *  not offered again).
+     *  {count, skipped, before, after} (bytes of the ones made smaller). */
+    async packPhotos(ids) {
+        this.assertOpen();
+        if (typeof createImageBitmap !== 'function') throw Error('这里压缩不了图片，请在浏览器里打开小手机');
+        let count = 0, skipped = 0, before = 0, after = 0;
+        for (const id of ids) {
+            if (this.closed) break;
+            const photo = await this.library.getPhoto(id);
+            if (!photo?.blob || photo.packed) continue;
+            const small = await packPicture(photo.blob).catch(() => null);
+            if (small && await this.library.packPhoto(id, small)) { count++; before += photo.size; after += small.size; } else { skipped++; await this.library.packPhoto(id, null).catch(() => {}); }
+        }
+        if (count) this.emit('library', { collection: 'photos' });
+        return { count, skipped, before, after };
+    }
     async #forgetPhotos(gone) {
         let posts = 0;
         for (const post of await this.moments.list()) {
@@ -2300,6 +2573,7 @@ export class TTSBackend {
     }
     async mutateLibrary(collection, method, ...args) {
         const result = await this.library[method](...args.map(clone));
+        if (method === 'addPhoto') this.#thumbSoon(result?.id);
         if (method === 'deleteNote') this.noteGone('notes', [args[0]]);
         if (method === 'deletePhoto') this.noteGone('photos', [args[0]]);
         this.emit('library', { collection });
@@ -2369,9 +2643,10 @@ export class TTSBackend {
             getFavorite: id => this.library.getFavorite(id), playFavorite: id => this.playFavorite(id),
             deleteFavorite: id => this.mutateLibrary('favorites', 'deleteFavorite', id),
             listPhotos: () => this.library.listPhotos(), addPhoto: value => this.mutateLibrary('photos', 'addPhoto', value),
-            getPhoto: id => this.library.getPhoto(id), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
+            getPhoto: id => this.library.getPhoto(id), photoThumb: id => this.photoThumb(id), photoPreview: id => this.photoPreview(id), packablePhotos: days => this.packablePhotos(days), packPhotos: ids => this.packPhotos([...(ids || [])].map(String)), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
             listLooks: () => this.listLooks(), saveLook: value => this.saveLook(clone(value)), deleteLook: id => this.deleteLook(String(id)), promoteLook: id => this.promoteLook(String(id)), copyLook: source => this.copyLook(clone(source || {})), cardList: () => this.cardList(),
             listNotes: () => this.library.listNotes(), saveNote: value => this.mutateLibrary('notes', 'saveNote', value), deleteNote: id => this.mutateLibrary('notes', 'deleteNote', id),
+            listBooks: () => this.library.listBooks(), getBook: id => this.library.getBook(id), saveBook: value => this.mutateLibrary('books', 'saveBook', clone(value)), deleteBook: id => this.mutateLibrary('books', 'deleteBook', id),
             getPhone: () => this.getPhone(), savePhone: patch => this.savePhone(patch), libraryStats: () => this.library.stats(), storageBudget: () => this.budget.read(),
             generatedPhotos: () => this.generatedPhotos().then(({ count, bytes, sources }) => ({ count, bytes, sources: Object.fromEntries(Object.entries(sources).map(([k, { ids, ...rest }]) => [k, rest])) })), deleteGeneratedPhotos: sources => this.deleteGeneratedPhotos(sources),
             saveMoments: patch => this.saveMoments(clone(patch)), saveCalls: patch => this.saveCalls(clone(patch)),
@@ -2390,8 +2665,11 @@ export class TTSBackend {
             },
             assistantMemoryRemove: (id, nodeId) => this.assistantMemoryRevise(id, book => removeNode(book, nodeId)),
             assistantMemoryForget: id => this.assistantMemoryForget(id),
-            saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId) => this.searchMusic(query, clone(sourceId)), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
+            saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId, options) => this.searchMusic(query, clone(sourceId), clone(options || {})), groupSongs: (sourceId, kind, id, page, options) => this.groupSongs(sourceId, kind, String(id), Number(page) || 0, clone(options || {})),
+            listHeard: () => this.listHeard(), forgetHeard: ids => this.forgetHeard([...(ids || [])]), clearHeard: () => this.clearHeard(), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
             listSongs: () => this.listSongs(), songBlob: id => this.songBlob(id), addSongs: list => this.addSongs(list), updateSong: (id, patch) => this.updateSong(id, clone(patch || {})), deleteSongs: ids => this.deleteSongs([...(ids || [])]),
+            addSongsTo: (id, list) => this.addSongsTo(String(id), list), listPlaylists: () => this.listPlaylists(), savePlaylist: value => this.savePlaylist(clone(value || {})), deletePlaylist: (id, options) => this.deletePlaylist(String(id), clone(options || {})),
+            addToPlaylist: (id, ids) => this.addToPlaylist(String(id), [...(ids || [])]), removeFromPlaylist: (id, ids) => this.removeFromPlaylist(String(id), [...(ids || [])]),
             saveSounds: patch => this.saveSounds(clone(patch)), listSounds: () => this.listSounds(), soundBlob: id => this.soundBlob(id), addSounds: list => this.addSounds(list), updateSound: (id, patch) => this.updateSound(id, clone(patch || {})), deleteSounds: ids => this.deleteSounds([...(ids || [])]),
             packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')),
             saveText: patch => this.saveText(clone(patch)), setTextKey: (id, key) => this.setTextKey(id, key), clearTextKey: id => this.clearTextKey(id), textKeyHint: id => this.textKeyHint(id), textModels: draft => this.textModels(clone(draft || {})),

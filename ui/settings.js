@@ -1,6 +1,6 @@
 import {createView, esc, btn, field, input, select, textArea, toggle, heading, size, languageField, typedLanguages, groupTitle, help, copyText} from './common.js';
 import {buildReport} from '../core/diagnostics.js';
-import {saveFile} from '../download.js';
+import {saveFile, zipFiles} from '../download.js';
 import {browserSpeech, cleanSkip, cleanBody, NARRATION_RATES, NARRATOR} from '../core/narration.js';
 import {icon, GLYPH_NAMES} from './icons.js';
 import {APPS} from './apps.js';
@@ -99,7 +99,7 @@ export function settingsApp(ctx) {
     const [library, threads, moments, assistant] = await Promise.all([api.libraryStats().catch(() => null), api.listThreads().catch(() => null), api.listMoments().catch(() => null), api.assistantThreads().catch(() => null)]);
     if (v.disposed || ticket !== epoch) return;
     const s = api.getState(), n = (value, unit) => value === null || value === undefined ? '读不到' : `${value} ${unit}`;
-    const counts = {settings: `${s.routes.length} 个角色 · ${s.presets.length} 个配音预设`, vnFiles: vnFileCount(s), chats: n(threads?.length, '段'), memories: '各段聊天的摘要、阶段总结和长期总览', assistant: n(assistant?.length, '段会话'), moments: n(moments?.length, '条'), notes: n(library?.notes, '条'), photos: n(library?.photos, '张'), favorites: n(library?.favorites, '段'), vibes: library ? `${library.vibes} 个 · ${s.draw.vibe.groups.length} 组` : '读不到', keys: savedKeys() ? `这台浏览器里的 ${savedKeys()} 个密钥` : '这台浏览器里还没有密钥'};
+    const counts = {settings: `${s.routes.length} 个角色 · ${s.presets.length} 个配音预设`, vnFiles: vnFileCount(s), chats: n(threads?.length, '段'), memories: '各段聊天的摘要、阶段总结和长期总览', assistant: n(assistant?.length, '段会话'), moments: n(moments?.length, '条'), notes: n(library?.notes, '条'), photos: n(library?.photos, '张'), favorites: n(library?.favorites, '段'), vibes: library ? `${library.vibes} 个 · ${s.draw.vibe.groups.length} 组` : '读不到', books: n(library?.books, '本'), keys: savedKeys() ? `这台浏览器里的 ${savedKeys()} 个密钥` : '这台浏览器里还没有密钥'};
     v.draw(heading('备份', help('备份是一个 .json 文件，可以存在电脑、手机或网盘里。\n视觉小说的立绘和模型存在酒馆里，设置只记着它们在哪；勾上「视觉小说的立绘和模型」才会把图片和模型文件一起放进备份，换个酒馆或者后来删了也能恢复。\n聊天记录和聊天记忆可以分别选择；助手会话连同各自的记忆一起保存。助手已发送的图片和文字附件随会话保存，生成的图片需同时勾选「相册」。向量检索缓存不备份，恢复后需要时重建。\n密钥默认不放进去；打开「密钥」后会用你设的密码加密，恢复时输入同一个密码才能取出来，没有密码的人拿到文件也看不到密钥。\n语音缓存不备份，需要时会重新生成。相册、收藏和 Vibe 多的话，文件会比较大。'), 'Backup')
       + `<div class="group">${Object.entries(api.backupParts()).map(([key, label]) => key === 'keys' && !savedKeys() ? `<div class="setting-row"><span class="row-text"><strong>${esc(label)}</strong><small>这台浏览器里还没有密钥</small></span></div>` : partRow(key, label, counts[key], backup.parts.has(key))).join('')}</div>`
       + (backup.parts.has('keys') ? keyPasswordFields() : '')
@@ -118,7 +118,7 @@ export function settingsApp(ctx) {
   // Restore: what the chosen file holds, which parts to take, and whether to merge or replace.
   function renderRestore() {
     const {info, parts, replace} = restore, sum = info.summary, labels = api.backupParts();
-    const counts = {settings: sum.settings && `${sum.settings.roles} 个角色 · ${sum.settings.presets} 个配音预设`, vnFiles: sum.vnFiles != null && `${sum.vnFiles} 个文件（酒馆里缺的才放回去）`, chats: sum.chats !== null && `${sum.chats} 段`, memories: sum.memories != null && `${sum.memories} 份记忆`, assistant: sum.assistant != null && `${sum.assistant} 段会话`, moments: sum.moments != null && `${sum.moments} 条`, notes: sum.notes !== null && `${sum.notes} 条`, photos: sum.photos !== null && `${sum.photos} 张`, favorites: sum.favorites !== null && `${sum.favorites} 段`, vibes: sum.vibes != null && `${sum.vibes.vibes} 个 · ${sum.vibes.groups} 组`, keys: sum.keys != null && `${sum.keys} 个密钥（要输入备份时的密码）`};
+    const counts = {settings: sum.settings && `${sum.settings.roles} 个角色 · ${sum.settings.presets} 个配音预设`, vnFiles: sum.vnFiles != null && `${sum.vnFiles} 个文件（酒馆里缺的才放回去）`, chats: sum.chats !== null && `${sum.chats} 段`, memories: sum.memories != null && `${sum.memories} 份记忆`, assistant: sum.assistant != null && `${sum.assistant} 段会话`, moments: sum.moments != null && `${sum.moments} 条`, notes: sum.notes !== null && `${sum.notes} 条`, photos: sum.photos !== null && `${sum.photos} 张`, favorites: sum.favorites !== null && `${sum.favorites} 段`, vibes: sum.vibes != null && `${sum.vibes.vibes} 个 · ${sum.vibes.groups} 组`, books: sum.books != null && `${sum.books} 本`, keys: sum.keys != null && `${sum.keys} 个密钥（要输入备份时的密码）`};
     const when = info.createdAt ? new Date(info.createdAt).toLocaleString('zh-CN', {hour12: false}) : '未知';
     v.draw(heading('恢复', '', 'Restore')
       + `<div class="group pad"><p class="help-copy">备份时间：${esc(when)}${info.version ? ` · 插件 ${esc(info.version)}` : ''}</p></div>`
@@ -131,7 +131,7 @@ export function settingsApp(ctx) {
       + `<div class="actions">${btn('do-restore', icon('refresh') + '开始恢复', 'primary', parts.size ? '' : 'disabled')}</div>`);
   }
   const partRow = (key, label, detail, on) => `<div class="setting-row"><span class="row-text"><strong>${esc(label)}</strong><small>${esc(detail)}</small></span><input class="switch" type="checkbox" data-part="${key}" aria-label="${esc(label)}" ${on ? 'checked' : ''}></div>`;
-  const restored = done => [done.keys && `${done.keys} 个密钥`, done.settings && '设置和预设', done.vnFiles && `${done.vnFiles} 个立绘和模型文件`, done.chats && `${done.chats} 段聊天`, done.memories && `${done.memories} 份聊天记忆`, done.assistant && `${done.assistant} 段助手会话`, done.moments && `${done.moments} 条朋友圈`, done.notes && `${done.notes} 条备忘录`, done.photos && `${done.photos} 张照片`, done.favorites && `${done.favorites} 段收藏`, done.vibes && `${done.vibes} 个 Vibe`].filter(Boolean).join('、');
+  const restored = done => [done.keys && `${done.keys} 个密钥`, done.settings && '设置和预设', done.vnFiles && `${done.vnFiles} 个立绘和模型文件`, done.chats && `${done.chats} 段聊天`, done.memories && `${done.memories} 份聊天记忆`, done.assistant && `${done.assistant} 段助手会话`, done.moments && `${done.moments} 条朋友圈`, done.notes && `${done.notes} 条备忘录`, done.photos && `${done.photos} 张照片`, done.favorites && `${done.favorites} 段收藏`, done.vibes && `${done.vibes} 个 Vibe`, done.books && `${done.books} 本绘本`].filter(Boolean).join('、');
 
   /** 保存到酒馆: the switch, and when it is on, when it last synced and what the tavern holds. */
   function syncRows() {
@@ -167,6 +167,73 @@ export function settingsApp(ctx) {
     ].filter(Boolean);
     const total = library ? `已用 ${size(library.bytes + (cache.available ? cache.bytes : 0))} · 最多 ${size(library.limit + (cache.available ? cache.limit || 0 : 0))}` : '无法读取';
     return `<details class="storage-fold" data-group="storage-parts"><summary><span>本地资料</span><small>${total}</small></summary>${parts.join('') || '<div class="setting-row"><span>什么都没有存</span></div>'}</details>`;
+  }
+  /**
+   * 压缩旧图: the album's drawn PNGs kept as WebP at full size (core/thumbnail.js packPicture). The originals can be
+   * downloaded first, in zips of under 150 MB (a phone holds a whole zip in memory while making it). Pressing 压缩 asks
+   * once more on the button itself: a confirm would close this sheet.
+   */
+  async function packOld() {
+    let plan = await api.packablePhotos(30), part = 0, sure = false;
+    const sync = api.syncStatus?.()?.enabled;
+    const d = ctx.dialog('压缩相册里的旧图', `<p class="help-copy" data-keep-hint>压缩后原图就没有了，想留原图请先打包下载。</p>
+      <p class="help-copy">画出来的图多是 PNG，一张一两 MB，大的更多。压成同样大小的 WebP，看起来基本一样，一般只剩十分之一。图里带的 NovelAI 参数会去掉（点开照片看到的「参数」还在）。设成壁纸、图标、头像和聊天背景的图，还有会动的图，不会压缩。${sync ? '开着「保存到酒馆」，酒馆里那份也会换成压缩后的。' : ''}</p>
+      ${field('压缩哪些', select('pack-days', '30', [['30', '30 天前存的'], ['7', '7 天前存的'], ['0', '全部']]))}
+      <p class="hint" data-pack-plan aria-live="polite"></p>
+      <div class="actions">${btn('pack-download', icon('download') + '先打包下载原图', 'secondary')}${btn('pack-go', '压缩', 'primary')}</div>`);
+    const LIMIT = 150 * 1024 * 1024;
+    const parts = () => {
+      const out = [];
+      for (const p of plan.photos) { const last = out.at(-1); if (last && last.bytes + p.size <= LIMIT) { last.list.push(p); last.bytes += p.size; } else out.push({list: [p], bytes: p.size}); }
+      return out.map(x => x.list);
+    };
+    const $ = s => d.body.querySelector(s);
+    const show = (note = '') => {
+      const n = parts().length;
+      $('[data-pack-plan]').textContent = note || (plan.count ? `${plan.count} 张，共 ${size(plan.bytes)}${n > 1 ? `；原图分 ${n} 包下载，每包不到 150 MB` : ''}` : '没有要压缩的图');
+      $('[data-action=pack-download]').disabled = $('[data-action=pack-go]').disabled = !plan.count;
+      $('[data-action=pack-download]').innerHTML = icon('download') + (n && part >= n ? '原图都下载好了' : n > 1 ? `先打包下载原图（第 ${part + 1}/${n} 包）` : '先打包下载原图');
+      $('[data-action=pack-go]').textContent = sure ? '确定压缩？原图会没有' : '压缩';
+    };
+    show();
+    d.body.addEventListener('change', async e => {
+      if (!e.target.matches('[data-field=pack-days]')) return;
+      plan = await api.packablePhotos(Number(e.target.value)); part = 0; sure = false;
+      if (d.live) show();
+    });
+    d.body.addEventListener('click', async e => {
+      const b = e.target.closest('[data-action]');
+      if (!b || b.disabled) return;
+      if (b.dataset.action === 'pack-download') {
+        const all = parts(), list = all[part];
+        if (!list) return;
+        b.disabled = true;
+        try {
+          const files = [];
+          for (const p of list) { const photo = await api.getPhoto(p.id); if (photo?.blob) files.push({name: photo.name, blob: photo.blob}); }
+          const t = new Date(), stamp = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`;
+          const name = await saveFile(ctx.doc, await zipFiles(files), `ST-iPhonie 原图 ${stamp}${all.length > 1 ? ` 第 ${part + 1} 包` : ''} ${files.length} 张`);
+          part++;
+          ctx.notify(`已下载 ${files.length} 张原图：${name}`);
+        } catch (error) { ctx.notify(error.message, {error: true}); }
+        if (d.live) show();
+      }
+      if (b.dataset.action === 'pack-go') {
+        if (!sure) { sure = true; show(); return; }
+        const ids = plan.photos.map(p => p.id), total = {count: 0, skipped: 0, before: 0, after: 0};
+        d.body.querySelectorAll('button, select').forEach(x => { x.disabled = true; });
+        try {
+          for (let i = 0; i < ids.length && d.live; i += 4) {
+            show(`正在压缩 ${i + 1}–${Math.min(i + 4, ids.length)} / ${ids.length}……`);
+            const r = await api.packPhotos(ids.slice(i, i + 4));
+            for (const k of Object.keys(total)) total[k] += r[k];
+          }
+          ctx.notify(total.count ? `压缩了 ${total.count} 张，从 ${size(total.before)} 变成 ${size(total.after)}${total.skipped ? `；${total.skipped} 张压了也省不了多少，保持原样` : ''}` : '这些图压了也省不了多少，都保持原样');
+        } catch (error) { ctx.notify(error.message, {error: true}); }
+        d.close();
+        await render();
+      }
+    });
   }
   /** 清除相册里的绘图: pick which of the drawn photos go (all ticked), with how many and how big each is. */
   async function clearDrawn() {
@@ -211,7 +278,7 @@ export function settingsApp(ctx) {
 
   /** 存储空间: the voice cache switch, what this device holds, the clearing, and the copy in the tavern. */
   async function renderStorage(ticket) {
-    const [cache, library, drawn, budget] = await Promise.all([api.cacheStats(), api.libraryStats().catch(() => null), api.generatedPhotos().catch(() => null), api.storageBudget().catch(() => null)]);
+    const [cache, library, drawn, budget, pack] = await Promise.all([api.cacheStats(), api.libraryStats().catch(() => null), api.generatedPhotos().catch(() => null), api.storageBudget().catch(() => null), api.packablePhotos?.(0).catch(() => null)]);
     const chatPictures = api.chatPictureStats?.() || null, st = api.syncStatus?.();
     if (v.disposed || ticket !== epoch) return;
     const s = api.getState();
@@ -222,6 +289,7 @@ export function settingsApp(ctx) {
       + `<div class="group">
           <div class="setting-row"><span class="row-text"><strong>语音缓存</strong><small>收藏和其他资料会保留</small></span>${btn('clear-cache', icon('trash') + '清理', 'chip-button')}</div>
           <div class="setting-row"><span class="row-text"><strong>相册里的绘图</strong><small>绘图 App、正文、查手机、朋友圈画出来的图</small></span>${btn('clear-drawn', icon('trash') + '清除', 'chip-button', drawn?.count ? '' : 'disabled')}</div>
+          <div class="setting-row"><span class="row-text"><strong>压缩相册里的旧图</strong><small>${pack?.count ? `${pack.count} 张 PNG 可以压；` : ''}画出来的 PNG 压成看起来一样的 WebP，一般省下九成</small></span>${btn('pack-old', '压缩', 'chip-button', pack?.count ? '' : 'disabled')}</div>
           ${chatPictures ? `<div class="setting-row"><span class="row-text"><strong>当前聊天的正文图片</strong><small>存在酒馆里，出图标签还在，可以再画</small></span>${btn('clear-chat-pictures', icon('trash') + '清除', 'chip-button', chatPictures.count ? '' : 'disabled')}</div>` : ''}
           ${st?.available ? `<div class="setting-row"><span class="row-text"><strong>酒馆里存的那份</strong><small>只删酒馆里存的，这台设备上的不动</small></span>${btn('sync-clear', icon('trash') + '删除', 'chip-button', st.busy ? 'disabled' : '')}</div>` : ''}
         </div>`);
@@ -268,7 +336,7 @@ export function settingsApp(ctx) {
           <div class="field"><div class="meter-label"><span>播放音量</span><output>${Math.round(phone.volume * 100)}%</output></div><input class="slider" type="range" data-field="volume" min="0" max="100" value="${Math.round(phone.volume * 100)}" aria-label="播放音量"></div>
         </div></details>`
       + groupTitle('手机')
-      + `<div class="group">${toggle('floatingEnabled', '悬浮入口', s.general.floatingEnabled, '在酒馆里显示可以拖动的小球，点开再点一次进入手机。')}
+      + `<div class="group">${toggle('floatingEnabled', '悬浮入口', s.general.floatingEnabled, '在酒馆里显示可以拖动的入口：电脑上是小球，手机上是贴在屏幕边的小方条。点一下展开，再点一次进入手机。')}
           <div class="setting-row"><span class="row-text"><strong>按角色卡分开${help('打开后，每张角色卡（群聊是每个群）一部手机：聊天记录、朋友圈、论坛、查手机各管各的，换卡就换手机；联系人只有这张卡的角色、在这张卡剧情里说过话的角色，和在这张卡里手动加的联系人。「我」跟着酒馆给这张卡锁定的人设走。\n\n打开之前就有的聊天和动态没有归属，每张卡都看得到；不想要的可以删掉。关掉分区后，所有东西又会一起显示。')}</strong><small>${space.key ? '现在是' + esc(space.name || '这张角色卡') + (s.chat.partition === 'card' ? ' 的手机' : '') : '没有打开角色卡'}</small></span><input class="switch" type="checkbox" data-field="partition" aria-label="按角色卡分开" ${s.chat.partition === 'card' ? 'checked' : ''}></div></div>`
       + groupTitle('资料')
       + `<div class="group">${syncRows()}
@@ -419,6 +487,9 @@ export function settingsApp(ctx) {
         break;
       case 'clear-drawn':
         await clearDrawn();
+        break;
+      case 'pack-old':
+        await packOld();
         break;
       case 'clear-chat-pictures':
         if (await ctx.confirm('清除当前聊天的正文图片？', '图片文件会从酒馆删除，出图标签还在，之后可以点“点击生成”重新画。相册里的副本不受影响。')) { const r = await v.busy(el, () => api.clearChatPictures()); await render(); ctx.notify(`已清除 ${r.count} 张` + (r.failed ? `，${r.failed} 张没删掉` : '')); }

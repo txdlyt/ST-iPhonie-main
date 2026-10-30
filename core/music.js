@@ -9,25 +9,43 @@ import {promptText} from './prompt-rules.js';
 
 export const BGM_MODES = Object.freeze(['off', 'tap', 'auto']);
 export const BGM_MODE_NAMES = Object.freeze({off: '关', tap: '点一下才放', auto: '自动放'});
-export const MUSIC_LIMITS = Object.freeze({file: 40 * 1024 * 1024, sources: 20, songs: 2000, rule: 6000, recent: 8});
+// recent: the songs played lately told to the story (not to repeat); heard: the songs the story has picked, kept to play
+// again (the newest, once each); taste: how many of the 歌单 go with the rule as a taste of what the user likes; lists:
+// how many 歌单 of their own the user can make; bulk: how many songs one request takes when a whole album, artist or
+// playlist is taken in
+export const MUSIC_LIMITS = Object.freeze({file: 40 * 1024 * 1024, sources: 20, songs: 10000, rule: 6000, recent: 8, heard: 200, taste: 20, page: 50, lists: 50, bulk: 200});
+/** What can be searched besides songs (each with its own addresses on a source). */
+export const GROUP_KINDS = Object.freeze({album: '专辑', artist: '歌手', playlist: '歌单'});
+/** How a list goes on when a song ends: in order (round again at the end), at random, or the same song again. */
+export const PLAY_MODES = Object.freeze(['order', 'shuffle', 'one']);
+export const PLAY_MODE_NAMES = Object.freeze({order: '顺序播放', shuffle: '随机播放', one: '单曲循环'});
+/** Where a list comes from: the 歌单, the songs the story picked, or both (a 歌单 the user made is 'playlist:…', with
+ *  '+heard' for it and 正文点的歌 together). */
+export const PLAY_FROM = Object.freeze({library: '歌单', heard: '正文点的歌', mixed: '歌单和正文点的歌'});
 
-export const DEFAULT_BGM_RULE = [
+const RULE_STEPS = [
   '【背景音乐】给这段正文选一首最贴合此刻的歌当背景音乐：',
   '1. 先想清楚现在的场景特征和人物心境，还有上一首放的是什么（不要重复）。',
   '2. 从不同曲风里各想两三首：古典、管弦、传统和风这类；承载回忆的老歌金曲；华语、J-pop、欧美流行；电子、独立、Vocaloid 这类新颖的。',
   '3. 优先选有人声演唱的歌，人声的都不合适才选纯音乐或原声带；不限国家、地区和语言，选最能一瞬间点燃这个场景的那一首。',
-  '4. 在正文最开头单独一行写 <bgm>歌名 - 歌手</bgm>，歌名和歌手写原文（方便搜到）。场景和情绪没变时不写，继续放上一首。',
+  '4. 在正文最开头单独一行写 <bgm>歌名 - 歌手</bgm>，歌名和歌手写原文（方便搜到）。场景和情绪没变时不写，继续放上一首。'
+];
+export const DEFAULT_BGM_RULE = [...RULE_STEPS,
+  '5. 背景音乐是给读者听的配乐，剧情里的人听不到：正文里不要写到放歌、换歌，也不要让谁说起在听什么歌。',
   '最近放过：{{最近}}'
 ].join('\n');
+// the default rule before 0.8.83 (kept by everyone who saved the music settings): brought up to today's
+const OLD_RULES = [[...RULE_STEPS, '最近放过：{{最近}}'].join('\n')];
+const sameRule = (a, b) => String(a).replace(/\r\n?/g, '\n').trim() === String(b).trim();
 
 export function defaultMusic() {
-  return {bgm: 'off', rule: DEFAULT_BGM_RULE, volume: 0.6, duck: true, share: true, sources: []};
+  return {bgm: 'off', rule: DEFAULT_BGM_RULE, volume: 0.6, duck: true, share: true, mode: 'order', taste: true, sources: []};
 }
 const clip = (value, max) => String(value ?? '').slice(0, max);
 const path = value => clip(value, 120).trim().replace(/[^\w.$[\]-]/g, '');
 /** One music source as kept: addresses must be http(s) and say where the search words and the song id go. */
 export function normalizeSource(value = {}, i = 0) {
-  return {
+  return upgraded({
     id: clip(value.id, 60).trim() || `source-${i + 1}`,
     name: clip(value.name, 30).trim() || `音源 ${i + 1}`,
     enabled: value.enabled !== false,
@@ -35,8 +53,28 @@ export function normalizeSource(value = {}, i = 0) {
     listPath: path(value.listPath), idPath: path(value.idPath) || 'id', titlePath: path(value.titlePath) || 'name',
     artistPath: path(value.artistPath) || 'artist', urlPath: path(value.urlPath) || 'url', lyricPath: path(value.lyricPath) || 'lyric',
     // 取歌地址 answers with the audio itself (or sends on to it), not with JSON: the address is played as it is.
-    direct: value.direct === true
-  };
+    direct: value.direct === true,
+    // searching albums, artists and playlists (optional): where to search ({{query}}), where their list is, where one's
+    // songs are ({{id}}) and where in that answer the song list is
+    albumSearch: clip(value.albumSearch, 1000).trim(), albumListPath: path(value.albumListPath), albumSongs: clip(value.albumSongs, 1000).trim(), albumSongsPath: path(value.albumSongsPath),
+    artistSearch: clip(value.artistSearch, 1000).trim(), artistListPath: path(value.artistListPath), artistSongs: clip(value.artistSongs, 1000).trim(), artistSongsPath: path(value.artistSongsPath),
+    playlistSearch: clip(value.playlistSearch, 1000).trim(), playlistListPath: path(value.playlistListPath), playlistSongs: clip(value.playlistSongs, 1000).trim(), playlistSongsPath: path(value.playlistSongsPath)
+  });
+}
+/**
+ * A 网易云 API source (a self-hosted NeteaseCloudMusicApi: its search at …/search or …/cloudsearch?keywords=, the songs
+ * in result.songs), whether filled in by 「按这个格式填」 before or typed by hand, gets what today's format has: albums,
+ * artists and playlists where it has none of their addresses, and an old 「按这个格式填」 search (before 0.8.77) gets
+ * pages. The rest stays as the user has it (a cookie in the song address, the name, addresses they wrote).
+ */
+function upgraded(s) {
+  const api = /^(.+?)\/(?:cloud)?search\?(?:[^#]*&)?keywords=\{\{query\}\}/.exec(s.search);
+  if (!api || s.listPath !== 'result.songs') return s;
+  const now = SELF_HOSTED.find(t => t.id === 'netease-api').fill(api[1]), none = kind => !s[kind + 'Search'] && !s[kind + 'Songs'];
+  const old = /^(.+)\/cloudsearch\?keywords=\{\{query\}\}&(?:type=1&)?limit=\d+(&offset=\{\{offset\}\})?$/.exec(s.search);
+  if (old && !old[2] && none('album') && none('artist')) s.search = now.search;
+  for (const kind of Object.keys(GROUP_KINDS)) if (none(kind)) for (const k of ['Search', 'ListPath', 'Songs', 'SongsPath']) s[kind + k] = now[kind + k];
+  return s;
 }
 export function validateSource(s) {
   // A web address, or one on the tavern itself (/api/plugins/… of a server plugin the user installed).
@@ -44,6 +82,12 @@ export function validateSource(s) {
   if (!web(s.search) || !s.search.includes('{{query}}')) throw Error('「搜索地址」要以 http(s):// 开头（酒馆自己的地址以 / 开头），并且在放搜索词的地方写 {{query}}');
   if (!web(s.url) || !s.url.includes('{{id}}')) throw Error('「取歌地址」要以 http(s):// 开头（酒馆自己的地址以 / 开头），并且在放歌曲 ID 的地方写 {{id}}');
   if (s.lyric && (!web(s.lyric) || !s.lyric.includes('{{id}}'))) throw Error('「歌词地址」要以 http(s):// 或 / 开头，并且写 {{id}}（不需要歌词就空着）');
+  for (const [kind, zh] of Object.entries(GROUP_KINDS)) {
+    const find = s[kind + 'Search'], songs = s[kind + 'Songs'];
+    if (!find && !songs) continue;
+    if (!web(find) || !find.includes('{{query}}')) throw Error(`「搜${zh}的地址」要以 http(s):// 或 / 开头，并且写 {{query}}（不搜${zh}就两个都空着）`);
+    if (!web(songs) || !songs.includes('{{id}}')) throw Error(`「${zh}里的歌的地址」要以 http(s):// 或 / 开头，并且写 {{id}}`);
+  }
   return s;
 }
 /** An address on the tavern itself (a server plugin): asked with the tavern's own login and checks. */
@@ -55,9 +99,10 @@ export function normalizeMusic(value) {
   const seen = new Set();
   return {
     bgm: BGM_MODES.includes(value.bgm) ? value.bgm : base.bgm,
-    rule: typeof value.rule === 'string' && value.rule.trim() ? clip(value.rule, MUSIC_LIMITS.rule) : base.rule,
+    rule: typeof value.rule === 'string' && value.rule.trim() && !OLD_RULES.some(r => sameRule(value.rule, r)) ? clip(value.rule, MUSIC_LIMITS.rule) : base.rule,
     volume: Number.isFinite(Number(value.volume)) ? Math.min(1, Math.max(0, Number(value.volume))) : base.volume,
     duck: value.duck !== false, share: value.share !== false,
+    mode: PLAY_MODES.includes(value.mode) ? value.mode : base.mode, taste: value.taste !== false,
     sources: sources.map(s => seen.has(s.id) ? {...s, id: s.id + '-' + seen.size} : s).filter(s => seen.add(s.id))
   };
 }
@@ -78,15 +123,40 @@ function firstList(value, depth = 0) {
   return null;
 }
 const names = value => Array.isArray(value) ? value.map(v => typeof v === 'object' && v ? v.name || '' : v).filter(Boolean).join(' / ') : typeof value === 'object' && value ? String(value.name || '') : String(value ?? '');
-/** A search answer as songs: [{source, id, title, artist}]. */
-export function readSearch(source, json) {
-  const list = (source.listPath ? pick(json, source.listPath) : null) || firstList(json) || [];
-  return (Array.isArray(list) ? list : []).slice(0, 30).map(item => ({
+/** A search answer (or an album's, artist's or playlist's songs) as songs: [{source, id, title, artist}], at most max. */
+export function readSearch(source, json, listPath = source.listPath, max = MUSIC_LIMITS.page) {
+  const list = (listPath ? pick(json, listPath) : null) || firstList(json) || [];
+  return (Array.isArray(list) ? list : []).slice(0, max).map(item => ({
     source: source.id, id: clip(pick(item, source.idPath) ?? '', 200), title: clip(names(pick(item, source.titlePath)), 200).trim(), artist: clip(names(pick(item, source.artistPath)), 200).trim()
   })).filter(s => s.id && s.title);
 }
-/** An address with {{query}} / {{id}} (and, for sources that like a hint, {{title}} / {{artist}}) filled in. */
-export const fill = (template, values) => String(template).replace(/\{\{(query|id|title|artist)\}\}/g, (m, key) => encodeURIComponent(values[key] ?? ''));
+/** Albums, artists or playlists found: [{source, id, name, artist, count}] (an album's artist, who made a playlist; how
+ *  many songs, when said). */
+export function readGroups(source, json, kind) {
+  const listPath = source[kind + 'ListPath'], list = (listPath ? pick(json, listPath) : null) || firstList(json) || [];
+  return (Array.isArray(list) ? list : []).slice(0, MUSIC_LIMITS.page).map(item => ({
+    source: source.id, kind, id: clip(item?.id ?? item?.mid ?? '', 200), name: clip(names(item?.name ?? item?.title), 200).trim(),
+    artist: kind === 'album' ? clip(names(item?.artist ?? item?.artists ?? item?.singer), 200).trim() : kind === 'playlist' ? clip(names(item?.creator?.nickname ?? item?.creator ?? item?.creatorName), 200).trim() : '',
+    count: Number(item?.size ?? item?.musicSize ?? item?.songCount ?? item?.trackCount) || 0
+  })).filter(g => g.id && g.name);
+}
+/** Whether a source searches in pages (its address says where the page goes): then a full page may have more after it. */
+/** The usual ways music APIs count their pages, tried in turn on an address that does not say how (NetEase's offset
+ *  and limit; page with limit, pagesize or size; QQ's p and n; pageNo and pageSize). */
+export const PAGE_WAYS = Object.freeze(['offset={{offset}}&limit={{limit}}', 'page={{page}}&limit={{limit}}', 'page={{page}}&pagesize={{limit}}', 'page={{page}}&size={{limit}}', 'p={{page}}&n={{limit}}', 'pageNo={{page}}&pageSize={{limit}}']);
+/** An address with a way of counting pages put in (a parameter it has already is changed, the others added). */
+export function withPages(template, way) {
+  let out = String(template);
+  for (const pair of String(way).split('&')) {
+    const [k, v] = pair.split('='), at = new RegExp(`([?&]${k}=)[^&#]*`);
+    out = at.test(out) ? out.replace(at, `$1${v}`) : out.replace(/(#.*)?$/, rest => (out.includes('?') ? '&' : '?') + pair + rest);
+  }
+  return out;
+}
+export const paged = template => /\{\{(?:offset|page)\}\}/.test(String(template || ''));
+/** An address with {{query}} / {{id}} (and, for sources that like a hint, {{title}} / {{artist}}; for pages, {{offset}} /
+ *  {{page}} / {{limit}}) filled in. */
+export const fill = (template, values) => String(template).replace(/\{\{(query|id|title|artist|offset|page|limit)\}\}/g, (m, key) => encodeURIComponent(values[key] ?? (key === 'offset' ? 0 : key === 'page' ? 1 : key === 'limit' ? 30 : '')));
 /** The playable link in a 取歌 answer (a plain string answer, or the link itself, counts too). */
 export function readLink(source, json) {
   const value = typeof json === 'string' ? json : pick(json, source.urlPath);
@@ -157,8 +227,11 @@ export const playable = (link, pageProtocol = 'http:') => pageProtocol === 'http
  */
 export const SELF_HOSTED = Object.freeze([
   {id: 'netease-api', name: '网易云音乐 API（NeteaseCloudMusicApi 这类，自己搭的）', example: 'http://localhost:3000',
-    fill: base => ({name: '网易云（我的后端）', search: base + '/cloudsearch?keywords={{query}}&limit=20', url: base + '/song/url/v1?id={{id}}&level=standard&randomCNIP=true', lyric: base + '/lyric?id={{id}}',
-      listPath: 'result.songs', idPath: 'id', titlePath: 'name', artistPath: 'ar', urlPath: 'data[0].url', lyricPath: 'lrc.lyric'})}
+    fill: base => ({name: '网易云（我的后端）', search: base + '/cloudsearch?keywords={{query}}&type=1&limit=30&offset={{offset}}', url: base + '/song/url/v1?id={{id}}&level=standard&randomCNIP=true', lyric: base + '/lyric?id={{id}}',
+      listPath: 'result.songs', idPath: 'id', titlePath: 'name', artistPath: 'ar', urlPath: 'data[0].url', lyricPath: 'lrc.lyric',
+      albumSearch: base + '/cloudsearch?keywords={{query}}&type=10&limit=30&offset={{offset}}', albumListPath: 'result.albums', albumSongs: base + '/album?id={{id}}', albumSongsPath: 'songs',
+      artistSearch: base + '/cloudsearch?keywords={{query}}&type=100&limit=30&offset={{offset}}', artistListPath: 'result.artists', artistSongs: base + '/artist/songs?id={{id}}&order=hot&limit={{limit}}&offset={{offset}}', artistSongsPath: 'songs',
+      playlistSearch: base + '/cloudsearch?keywords={{query}}&type=1000&limit=30&offset={{offset}}', playlistListPath: 'result.playlists', playlistSongs: base + '/playlist/track/all?id={{id}}&limit={{limit}}&offset={{offset}}', playlistSongsPath: 'songs'})}
 ]);
 
 // ---------- Lyrics ----------
@@ -175,6 +248,9 @@ export function parseLyrics(text) {
 }
 /** The lyric line playing at `seconds` (index, or -1 before the first). */
 export const lyricAt = (lines, seconds) => { let i = -1; for (let k = 0; k < lines.length && lines[k].at <= seconds + 0.2; k++) i = k; return i; };
+/** Whether any line is sung: 纯音乐 has none, or only 「纯音乐，请欣赏」 and credits such as 「作曲 : …」. */
+const NOT_SUNG = /^(?:此歌曲为没有填词的)?纯音乐[，,、\s]*请(?:您)?欣赏|^[^\s:：]{1,12}\s*[:：]/;
+export const hasWords = lines => (lines || []).some(l => l.text && !NOT_SUNG.test(l.text.trim()));
 
 // ---------- <bgm> ----------
 const TAG = /<bgm\b[^>]*>([^<>]{1,200}?)<\/bgm\s*>/gi;
@@ -208,11 +284,16 @@ export function renderBgm(text, marker, on = true) {
   }
   return out + withoutBgm(source.slice(at));
 }
-/** The rule for the story request, with the songs played lately (not to repeat) and, when there are any, the user's own. */
-export function bgmRule(music, {prompts = {}, recent = [], library = [], user = '我'} = {}) {
+/**
+ * The rule for the story request, with the songs played lately (not to repeat) and, when 参考我的歌单 is on, some of
+ * the user's own as a taste of what they like — a few picked at random each time, so a 歌单 of one or two songs
+ * does not become the only music the story plays.
+ */
+export function bgmRule(music, {prompts = {}, recent = [], library = [], user = '我', random = Math.random} = {}) {
   if (!music || music.bgm === 'off') return '';
   const text = String(music.rule || DEFAULT_BGM_RULE).replaceAll('{{用户}}', user).replaceAll('{{最近}}', recent.length ? recent.slice(0, MUSIC_LIMITS.recent).join('、') : '（还没有）');
-  const mine = library.slice(0, 60).map(s => s.artist ? `${s.title} - ${s.artist}` : s.title);
+  const some = music.taste === false ? [] : library.map(s => [random(), s]).sort((a, b) => a[0] - b[0]).slice(0, MUSIC_LIMITS.taste).map(([, s]) => s);
+  const mine = some.map(s => s.artist ? `${s.title} - ${s.artist}` : s.title);
   return [text, mine.length ? promptText(prompts, 'music', 'library', {'用户': user, '歌单': mine.join('、')}) : ''].filter(Boolean).join('\n');
 }
 export function musicPromptPlan(text) { return text ? [{key: 'sttts.entry.bgm', text, position: 1, depth: 0, role: 0}] : []; }
@@ -233,6 +314,8 @@ export function matchScore(song, want) {
   const a = loose(song.artist), b = loose(want.artist);
   return title + (a && b && (a.includes(b) || b.includes(a)) ? 1 : 0);
 }
+/** The same song wherever it came from (歌名 and 歌手, loosely): one row each in 正文点的歌, one each in a mixed list. */
+export const songKey = song => loose(song?.title) + '|' + loose(song?.artist);
 /** The best of `songs` for a request, or null when none has the title. */
 export function bestMatch(songs, want) {
   let best = null, score = 0;

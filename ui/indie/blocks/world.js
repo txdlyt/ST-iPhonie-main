@@ -1,0 +1,1196 @@
+// The world as the worker keeps it: columns made (or read back from the save) around the player, their light, their
+// meshes, and the world's own life — water and lava flowing, sand falling, crops and saplings growing, grass
+// spreading, leaves dropping when their tree is gone. The page keeps a copy of the blocks and light (for walking and
+// aiming) that this sends along whenever something changes.
+import {generateColumn, newColumn, BIOMES, growTree, worldOf} from './gen.js';
+import {generateNether} from './nether.js';
+import {portalHolds, portalSpot, buildPortal} from './portal.js';
+import {villagersIn} from './village.js';
+import {lootIn, drownedIn} from './ocean.js';
+import {monumentsNear} from './monument.js';
+import {desertLootIn} from './desert.js';
+import {lodTile, lodPlan} from './lod.js';
+import {BLOCKS, ID, MINY, HEIGHT, SECTIONS, SEA, withMeta, dropsOf, itemInfo} from './blocks.js';
+import {meshSection, sectionVis, ALL_OPEN} from './mesh.js';
+import {Redstone} from './redstone.js';
+import {ATTACHED} from './shapes.js';
+import {rng} from './noise.js';
+
+// fire: how a block burns ([draws fire, catches]); the lands where no rain falls; the damp ones where fire burns out sooner
+const NO_BURN = [0, 0], burnOf = v => BLOCKS[v & 0xFFF]?.burn || NO_BURN;
+const DRY = new Set(BIOMES.map((b, i) => /desert|savanna|badlands/.test(b.name) ? i : -1).filter(i => i >= 0));
+const HUMID = new Set(BIOMES.map((b, i) => /jungle|swamp/.test(b.name) ? i : -1).filter(i => i >= 0));
+const N = BLOCKS.length;
+const FILTER = new Uint8Array(N), EMIT = new Uint8Array(N), OPAQUE = new Uint8Array(N);
+for (const b of BLOCKS) { FILTER[b.id] = b.opaque ? 15 : b.filter; EMIT[b.id] = b.light; OPAQUE[b.id] = b.opaque ? 1 : 0; }
+// a slab made double hides light like a full block; a burning furnace glows
+const filterOf = v => { const id = v & 0xFFF; return (BLOCKS[id].shape === 'slab' && v >>> 12 === 2) ? 15 : FILTER[id]; };
+// furnaces (and smokers, blast furnaces) glow while lit (state bit 4)
+const FURNACES = new Set(BLOCKS.filter(b => b.use === 'furnace').map(b => b.id));
+// (a campfire put out, state bit 4, gives none)
+const CAMPFIRES = new Set([ID.campfire, ID.soul_campfire]);
+const emitOf = v => FURNACES.has(v & 0xFFF) ? (v >>> 12 & 4 ? 13 : 0) : CAMPFIRES.has(v & 0xFFF) ? (v >>> 12 & 4 ? 0 : EMIT[v & 0xFFF]) : (v & 0xFFF) === ID.sea_pickle ? 6 + 3 * (v >>> 12 & 3) : EMIT[v & 0xFFF];
+const key = (cx, cz) => (cx + 32768) * 65536 + (cz + 32768);
+const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+const NEIGHBOURS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+const LIQUID = new Set([ID.water, ID.lava]);
+const GRAVITY = new Set(BLOCKS.filter(b => b.gravity).map(b => b.id));
+const CROP = new Set([ID.wheat, ID.carrots, ID.potatoes, ID.beetroots]);
+const PAIRED = new Set(BLOCKS.filter(b => b.shape === 'door' || b.shape === 'bed' || b.shape === 'tall').map(b => b.id));
+const FACE_DIR = [[0, 1], [-1, 0], [0, -1], [1, 0]];
+const PLANT = new Set(BLOCKS.filter(b => ['cross', 'crop', 'torch', 'wall', 'layer', 'lantern', 'cocoa', 'carpet', 'wire', 'repeater', 'comparator', 'plate', 'rail', 'lever', 'button', 'piston_head', 'bamboo', 'petals', 'pickle', 'eggs', 'fan', 'sign', 'wall_sign', 'hanging_sign', 'wall_hanging_sign', 'hook', 'tripwire'].includes(b.shape)).map(b => b.id));
+// what a hanging sign can hang from (as well as anything solid)
+const HANG_ON = new Set(['fence', 'stonewall', 'chain', 'pane', 'gate']);
+// string and its hooks (a change to either: the hooks look along their string again)
+const TRIPPING = new Set([ID.tripwire, ID.tripwire_hook]);
+// the ground plants take root in (the game's dirt), what bamboo also stands in, and what mangrove roots grow into
+const DIRT = new Set([ID.grass_block, ID.dirt, ID.podzol, ID.coarse_dirt, ID.moss_block, ID.mud, ID.muddy_mangrove_roots]);
+const BAMBOO_GROUND = new Set([...DIRT, ID.sand, ID.red_sand, ID.gravel]);
+const MUDDY = new Set([ID.mud, ID.muddy_mangrove_roots, ID.mangrove_roots]);
+// the sea's plants stand in water (blocks.js water): water is beside them, they leave it when they go; what sea plants
+// grow on (and the sand, gravel and the rest of the sea floor)
+const WET = new Set(BLOCKS.filter(b => b.water).map(b => b.id));
+const isWater = v => (v & 0xFFF) === ID.water || WET.has(v & 0xFFF);
+const SEA_FLOOR = new Set([...DIRT, ID.sand, ID.red_sand, ID.gravel, ID.clay, ID.stone, ...BLOCKS.filter(b => b.coral || /coral_block$/.test(b.name)).map(b => b.id)]);
+const CORAL_BLOCKS = new Set(BLOCKS.filter(b => b.coral).map(b => b.id));
+// redstone that lies on the ground: on a full block, the top half of a slab or a hopper
+const ON_GROUND = new Set(['wire', 'repeater', 'comparator', 'plate', 'rail']);
+// the tall flowers: bone meal gives another one
+const TALL_FLOWERS = new Set([ID.sunflower, ID.lilac, ID.rose_bush, ID.peony]);
+const hexRGB = h => parseInt(h.slice(1), 16);
+const TINTS = BIOMES.map(b => ({grass: hexRGB(b.grass), foliage: hexRGB(b.foliage), water: hexRGB(b.water)}));
+
+export class World {
+  /**
+   * seed, tex (texture name → layer), post(message, transfer), store (save helper or null), radius (columns), dim
+   * ('overworld' | 'nether': the Nether has no sky, so no sky light, and its lava runs fast and far).
+   */
+  constructor({seed, tex, post, store = null, radius = 6, worldId = '', dim = 'overworld'}) {
+    this.seed = seed; this.tex = tex; this.post = post; this.store = store; this.radius = radius; this.worldId = worldId;
+    this.dim = dim; this.nether = dim === 'nether'; this.sky = this.nether ? 0 : 0xF0;
+    this.cols = new Map(); this.center = [0, 0]; this.dirty = new Set(); this.saved = new Set(); this.loading = new Set();
+    this.redstone = new Redstone(this);
+    this.tick = 0; this.due = new Map(); this.ack = 0; this.wave = true;
+    this.r = rng(seed ^ 0x5bd1e995);
+    this.decay = new Map();
+    // tripwire hooks to look along their string again (a pulse over; read back on)
+    this.hookDue = new Map();
+    // the distant view: its reach (columns; 0 none) and the tiles sent (key → cell size); a pre-generation under way
+    this.lodRadius = 0; this.lodSent = new Map(); this.pregen = null;
+  }
+  col(cx, cz) { return this.cols.get(key(cx, cz)); }
+  has(x, z) { return this.cols.has(key(x >> 4, z >> 4)); }
+  // ---------- blocks and light ----------
+  get(x, y, z) {
+    if (y < MINY || y >= MINY + HEIGHT) return 0;
+    const c = this.cols.get(key(x >> 4, z >> 4));
+    if (!c) return 0;
+    const s = c.sections[(y - MINY) >> 4];
+    return s ? s[((y - MINY) & 15) << 8 | (z & 15) << 4 | (x & 15)] : 0;
+  }
+  light(x, y, z) {
+    if (y >= MINY + HEIGHT) return this.sky;
+    if (y < MINY) return 0;
+    const c = this.cols.get(key(x >> 4, z >> 4));
+    if (!c) return 0;
+    const si = (y - MINY) >> 4, s = c.light[si];
+    if (!s) return si > c.topSec ? this.sky : 0;
+    return s[((y - MINY) & 15) << 8 | (z & 15) << 4 | (x & 15)];
+  }
+  /** The light section a write goes to (made when missing: above the column's top it starts as open sky). */
+  lightSec(c, si) {
+    let s = c.light[si];
+    if (!s) { s = c.light[si] = new Uint8Array(4096); if (si > c.topSec) s.fill(this.sky); }
+    return s;
+  }
+  setLight(x, y, z, sky, blk) {
+    if (y < MINY || y >= MINY + HEIGHT) return;
+    const c = this.cols.get(key(x >> 4, z >> 4));
+    if (!c) return;
+    const si = (y - MINY) >> 4;
+    this.lightSec(c, si)[((y - MINY) & 15) << 8 | (z & 15) << 4 | (x & 15)] = sky << 4 | blk;
+    this.touch(c, si, x & 15, (y - MINY) & 15, z & 15);
+  }
+  /** Marks a section (and the ones sharing its border, when the change is on one) to be meshed again. */
+  touch(c, si, lx, ly, lz) {
+    this.dirty.add(c.k * 32 + si);
+    if (lx === 0) this.markSec(c.cx - 1, c.cz, si); else if (lx === 15) this.markSec(c.cx + 1, c.cz, si);
+    if (lz === 0) this.markSec(c.cx, c.cz - 1, si); else if (lz === 15) this.markSec(c.cx, c.cz + 1, si);
+    if (ly === 0 && si > 0) this.dirty.add(c.k * 32 + si - 1); else if (ly === 15 && si < SECTIONS - 1) this.dirty.add(c.k * 32 + si + 1);
+    c.sent = false;
+  }
+  markSec(cx, cz, si) { const n = this.col(cx, cz); if (n) { this.dirty.add(n.k * 32 + si); n.sent = false; } }
+
+  // ---------- columns ----------
+  /** Puts a column in (made or read back), lights it and lets the light run into and out of its neighbours. */
+  addColumn(c) {
+    c.k = key(c.cx, c.cz); c.light = new Array(SECTIONS).fill(null); c.changed = c.changed || false;
+    let top = MINY;
+    for (let si = SECTIONS - 1; si >= 0; si--) if (c.sections[si] && c.sections[si].some(v => v)) { top = MINY + si * 16 + 15; break; }
+    c.topSec = (top - MINY) >> 4;
+    this.cols.set(c.k, c);
+    this.lightColumn(c);
+    for (let si = 0; si < SECTIONS; si++) if (c.sections[si]) this.dirty.add(c.k * 32 + si);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const n = this.col(c.cx + dx, c.cz + dz);
+      if (n) for (let si = 0; si < SECTIONS; si++) if (n.sections[si]) this.dirty.add(n.k * 32 + si);
+    }
+    c.sent = false;
+  }
+  lightColumn(c) {
+    const x0 = c.cx * 16, z0 = c.cz * 16;
+    for (let si = 0; si <= c.topSec; si++) c.light[si] = new Uint8Array(4096);
+    const sky = [], blk = [];
+    // straight down from the sky: full light until something takes some of it
+    const sunBottom = new Int16Array(256);
+    if (this.sky) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      let y = MINY + (c.topSec + 1) * 16 - 1;
+      for (; y >= MINY; y--) {
+        const si = (y - MINY) >> 4, s = c.sections[si], v = s ? s[((y - MINY) & 15) << 8 | z << 4 | x] : 0;
+        const f = v ? filterOf(v) : 0;
+        if (f) { if (f < 15) c.light[si][((y - MINY) & 15) << 8 | z << 4 | x] = (15 - f) << 4; break; }
+        c.light[si][((y - MINY) & 15) << 8 | z << 4 | x] = 0xF0;
+      }
+      sunBottom[z * 16 + x] = y + 1;
+    }
+    if (this.sky) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      const own = sunBottom[z * 16 + x];
+      // the sky light at the edge of the sunlit part spreads sideways into the shade and down under leaves
+      let reach = own;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const xx = x + dx, zz = z + dz;
+        if (xx >= 0 && xx < 16 && zz >= 0 && zz < 16) reach = Math.max(reach, sunBottom[zz * 16 + xx]);
+        else { const n = this.col(c.cx + (xx < 0 ? -1 : xx > 15 ? 1 : 0), c.cz + (zz < 0 ? -1 : zz > 15 ? 1 : 0)); reach = Math.max(reach, n ? MINY + (n.topSec + 1) * 16 : own); }
+      }
+      for (let y = own; y <= Math.min(reach, MINY + (c.topSec + 1) * 16 - 1); y++) sky.push(x0 + x, y, z0 + z);
+      if (own > MINY) sky.push(x0 + x, own - 1, z0 + z);
+    }
+    // block light from things that glow
+    for (let si = 0; si <= c.topSec; si++) {
+      const s = c.sections[si];
+      if (!s) continue;
+      for (let i = 0; i < 4096; i++) {
+        const e = s[i] ? emitOf(s[i]) : 0;
+        if (!e) continue;
+        const x = i & 15, z = i >> 4 & 15, y = MINY + si * 16 + (i >> 8);
+        c.light[si][i] = c.light[si][i] & 0xF0 | e;
+        blk.push(x0 + x, y, z0 + z);
+      }
+    }
+    // the neighbours' light at the shared edges comes in
+    for (const [dx, dz, ex, ez] of [[1, 0, 0, -1], [-1, 0, 15, -1], [0, 1, -1, 0], [0, -1, -1, 15]]) {
+      const n = this.col(c.cx + dx, c.cz + dz);
+      if (!n) continue;
+      const top = MINY + (Math.max(n.topSec, c.topSec) + 1) * 16;
+      for (let y = MINY; y < top; y++) for (let k = 0; k < 16; k++) {
+        const wx = n.cx * 16 + (ex < 0 ? k : ex), wz = n.cz * 16 + (ez < 0 ? k : ez), l = this.light(wx, y, wz);
+        if (l >> 4 > 1 && l >> 4 < 15) sky.push(wx, y, wz);
+        else if (l >> 4 === 15 && y < MINY + (c.topSec + 1) * 16) sky.push(wx, y, wz);
+        if ((l & 15) > 1) blk.push(wx, y, wz);
+      }
+    }
+    this.spread(sky, true);
+    this.spread(blk, false);
+  }
+  /** Light running out from the cells in `queue` (x, y, z, …) on one channel. */
+  spread(queue, isSky) {
+    for (let q = 0; q < queue.length; q += 3) {
+      const x = queue[q], y = queue[q + 1], z = queue[q + 2], l = this.light(x, y, z), lv = isSky ? l >> 4 : l & 15;
+      if (lv <= 1) continue;
+      for (let d = 0; d < 6; d++) {
+        const [dx, dy, dz] = DIRS[d], nx = x + dx, ny = y + dy, nz = z + dz;
+        if (ny < MINY || ny >= MINY + HEIGHT) continue;
+        const c = this.cols.get(key(nx >> 4, nz >> 4));
+        if (!c) continue;
+        const v = this.get(nx, ny, nz), f = v ? filterOf(v) : 0;
+        if (f >= 15) continue;
+        const nl = isSky && d === 3 && lv === 15 ? 15 - f : lv - Math.max(1, f);
+        const old = this.light(nx, ny, nz), ov = isSky ? old >> 4 : old & 15;
+        if (nl > ov) { this.setLight(nx, ny, nz, isSky ? nl : old >> 4, isSky ? old & 15 : nl); queue.push(nx, ny, nz); }
+      }
+    }
+  }
+  /** Takes away the light that came from a cell (before refilling from what is left around it). */
+  unspread(x, y, z, isSky) {
+    const l0 = this.light(x, y, z), lv0 = isSky ? l0 >> 4 : l0 & 15;
+    const rem = [x, y, z, lv0], refill = [];
+    this.setLight(x, y, z, isSky ? 0 : l0 >> 4, isSky ? l0 & 15 : 0);
+    for (let q = 0; q < rem.length; q += 4) {
+      const cx = rem[q], cy = rem[q + 1], cz = rem[q + 2], lv = rem[q + 3];
+      for (let d = 0; d < 6; d++) {
+        const [dx, dy, dz] = DIRS[d], nx = cx + dx, ny = cy + dy, nz = cz + dz;
+        if (ny < MINY || ny >= MINY + HEIGHT || !this.cols.has(key(nx >> 4, nz >> 4))) continue;
+        const l = this.light(nx, ny, nz), nv = isSky ? l >> 4 : l & 15;
+        if (!nv) continue;
+        if (nv < lv || (isSky && d === 3 && lv === 15 && nv === 15)) {
+          this.setLight(nx, ny, nz, isSky ? 0 : l >> 4, isSky ? l & 15 : 0);
+          rem.push(nx, ny, nz, nv);
+        } else refill.push(nx, ny, nz);
+      }
+    }
+    return refill;
+  }
+  // ---------- changing blocks ----------
+  /** Sets a block and puts its light right; returns the old value. */
+  set(x, y, z, v, {from = 'world', quietWire = false} = {}) {
+    if (y < MINY || y >= MINY + HEIGHT) return 0;
+    const c = this.cols.get(key(x >> 4, z >> 4));
+    if (!c) return 0;
+    const si = (y - MINY) >> 4, li = ((y - MINY) & 15) << 8 | (z & 15) << 4 | (x & 15);
+    let s = c.sections[si];
+    const old = s ? s[li] : 0;
+    if (old === v) return old;
+    if (!s) s = c.sections[si] = new Uint16Array(4096);
+    s[li] = v;
+    c.changed = true; this.saved.add(c.k);
+    if (si > c.topSec) { for (let k = c.topSec + 1; k <= si; k++) if (!c.light[k]) { c.light[k] = new Uint8Array(4096); c.light[k].fill(this.sky); } c.topSec = si; }
+    this.touch(c, si, x & 15, (y - MINY) & 15, z & 15);
+    // light: take away what the cell gave, then let it all run in again (with what the new block gives off)
+    const oldF = old ? filterOf(old) : 0, newF = v ? filterOf(v) : 0, oldE = emitOf(old), newE = emitOf(v);
+    if (oldF !== newF || oldE !== newE) {
+      const skyRefill = this.unspread(x, y, z, true), blkRefill = this.unspread(x, y, z, false);
+      if (newE) { const l = this.light(x, y, z); this.setLight(x, y, z, l >> 4, newE); blkRefill.push(x, y, z); }
+      for (const [dx, dy, dz] of DIRS) { skyRefill.push(x + dx, y + dy, z + dz); blkRefill.push(x + dx, y + dy, z + dz); }
+      // open sky right above: the light comes straight down
+      if (newF < 15 && this.light(x, y + 1, z) >> 4 === 15) skyRefill.push(x, y + 1, z);
+      this.spread(skyRefill, true);
+      this.spread(blkRefill, false);
+    }
+    this.react(x, y, z);
+    if (TRIPPING.has(old & 0xFFF) || TRIPPING.has(v & 0xFFF)) this.tripped(x, y, z, old, v);
+    this.redstone.changed(x, y, z, old, v, quietWire);
+    // a log gone: the leaves around it may have lost their tree
+    if (BLOCKS[old & 0xFFF].name.endsWith('_log') && !BLOCKS[v & 0xFFF].name.endsWith('_log')) {
+      for (let dy = -4; dy <= 4; dy++) for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+        const n = this.get(x + dx, y + dy, z + dz);
+        if (BLOCKS[n & 0xFFF].name.endsWith('_leaves') && !(n >>> 12 & 1)) this.decay.set(`${x + dx},${y + dy},${z + dz}`, this.tick + 20 + Math.floor(this.r() * 200));
+      }
+    }
+    return old;
+  }
+  /** Things near a change that may need to move: liquids, falling blocks, plants losing their ground, leaves. */
+  react(x, y, z) {
+    for (const [dx, dy, dz] of [[0, 0, 0], ...DIRS]) {
+      const nx = x + dx, ny = y + dy, nz = z + dz, v = this.get(nx, ny, nz), id = v & 0xFFF;
+      if (LIQUID.has(id)) this.schedule(nx, ny, nz, id === ID.water ? 5 : this.nether ? 10 : 30);
+      else if (id === ID.nether_portal) this.schedule(nx, ny, nz, 1);
+      else if (GRAVITY.has(id)) this.schedule(nx, ny, nz, 2);
+      else if (PLANT.has(id)) this.schedule(nx, ny, nz, 1);
+      // a coral block looks for water a few seconds after something by it changed (the game's; a reef as it was made stays)
+      else if (CORAL_BLOCKS.has(id)) this.schedule(nx, ny, nz, 60 + Math.floor(this.r() * 40));
+      else if (PAIRED.has(id) || id === ID.vine) this.schedule(nx, ny, nz, 1);
+      // a bubble column looks at its ground and passes itself up; soul sand and magma blocks start one
+      else if (id === ID.bubble_column) this.schedule(nx, ny, nz, 5);
+      else if (id === ID.soul_sand || id === ID.magma_block) this.schedule(nx, ny, nz, 20);
+      else if (id === ID.sponge || id === ID.wet_sponge) this.schedule(nx, ny, nz, 1);
+      // frosted ice starts melting three to six seconds after it is made (the game's)
+      else if (id === ID.frosted_ice) this.schedule(nx, ny, nz, 60 + Math.floor(this.r() * 60));
+      // fire burns on in one and a half to two seconds; by a change it goes out at once if it can no longer be there (the game's)
+      else if (id === ID.fire) { if ((dx || dy || dz) && !this.fireHolds(nx, ny, nz)) this.set(nx, ny, nz, 0); else this.schedule(nx, ny, nz, 30 + Math.floor(this.r() * 10)); }
+      else if (id === ID.soul_fire) this.schedule(nx, ny, nz, 1);
+    }
+  }
+  schedule(x, y, z, delay) { const k = `${x},${y},${z}`; const t = this.tick + delay; if (!this.due.has(k) || this.due.get(k) > t) this.due.set(k, t); }
+  /** Breaks a block the world itself takes away (a plant washed off, leaves): its drops go to the page. */
+  breakBlock(x, y, z, drop = true) {
+    const v = this.get(x, y, z);
+    if (!v) return;
+    this.set(x, y, z, WET.has(v & 0xFFF) ? ID.water : 0);
+    if (drop) { const items = dropsOf(BLOCKS[v & 0xFFF], v >>> 12, this.r); if (items.length) this.post({type: 'drops', x: x + 0.5, y: y + 0.25, z: z + 0.5, items}); }
+  }
+  // ---------- the world's ticks (20 a second) ----------
+  step() {
+    this.tick++;
+    // scheduled updates that are due
+    if (this.due.size) {
+      const now = [];
+      for (const [k, t] of this.due) if (t <= this.tick) now.push(k);
+      for (const k of now) { this.due.delete(k); const [x, y, z] = k.split(',').map(Number); this.update(x, y, z); }
+    }
+    // tripwire hooks due to look along their string again
+    for (const [k, t] of this.hookDue) {
+      if (t > this.tick) continue;
+      this.hookDue.delete(k);
+      const [x, y, z] = k.split(',').map(Number), v = this.get(x, y, z);
+      if ((v & 0xFFF) === ID.tripwire_hook) this.hookLine(x, y, z, v);
+    }
+    this.redstone.step();
+    // random ticks near the player
+    const [px, pz] = this.center;
+    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      const c = this.col(px + dx, pz + dz);
+      if (!c) continue;
+      for (let si = 0; si <= c.topSec; si++) {
+        const s = c.sections[si];
+        if (!s) continue;
+        for (let k = 0; k < 3; k++) {
+          const i = Math.floor(this.r() * 4096), v = s[i];
+          if (v) this.randomTick(c.cx * 16 + (i & 15), MINY + si * 16 + (i >> 8), c.cz * 16 + (i >> 4 & 15), v);
+        }
+      }
+    }
+    // cold places: still water on top freezes, and while it snows a layer of snow settles (the game's 1 in 16 a column)
+    if (this.snowing || this.tick % 4 === 0) for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      if (this.r() >= 1 / 16) continue;
+      const c = this.col(px + dx, pz + dz);
+      if (!c) continue;
+      const i = Math.floor(this.r() * 256), x = c.cx * 16 + (i & 15), z = c.cz * 16 + (i >> 4);
+      if (!BIOMES[c.biome[i]]?.cold) continue;
+      let y = MINY + (c.topSec + 1) * 16 - 1;
+      while (y > MINY && !this.get(x, y, z)) y--;
+      const top = this.get(x, y, z), id = top & 0xFFF;
+      if ((this.light(x, y + 1, z) & 15) >= 10) continue;
+      if (id === ID.water && !(top >>> 12)) this.set(x, y, z, ID.ice);
+      else if (this.snowing && (OPAQUE[id] || BLOCKS[id].name.endsWith('_leaves')) && id !== ID.ice && id !== ID.packed_ice && id !== ID.blue_ice && y + 1 < MINY + HEIGHT) this.set(x, y + 1, z, ID.snow);
+    }
+    // leaves whose tree is gone
+    if (this.decay.size && this.tick % 4 === 0) {
+      let n = 0;
+      for (const [k, t] of this.decay) {
+        if (t > this.tick) continue;
+        this.decay.delete(k);
+        const [x, y, z] = k.split(',').map(Number), v = this.get(x, y, z);
+        if (BLOCKS[v & 0xFFF].name.endsWith('_leaves') && !(v >>> 12 & 1) && !this.logNear(x, y, z)) this.breakBlock(x, y, z);
+        if (++n > 6) break;
+      }
+    }
+  }
+  logNear(x, y, z) {
+    for (let dy = -4; dy <= 4; dy++) for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 6) continue;
+      if (BLOCKS[this.get(x + dx, y + dy, z + dz) & 0xFFF].name.endsWith('_log')) return true;
+    }
+    return false;
+  }
+  randomTick(x, y, z, v) {
+    const id = v & 0xFFF, b = BLOCKS[id], r = this.r;
+    if (id === ID.lava) { this.lavaFire(x, y, z); return; }
+    const skyAbove = () => this.light(x, y + 1, z);
+    const lit = () => { const l = skyAbove(); return Math.max(l & 15, (l >> 4) - this.darkness) ; };
+    if (id === ID.grass_block) {
+      const above = this.get(x, y + 1, z);
+      if (above && (OPAQUE[above & 0xFFF] || LIQUID.has(above & 0xFFF))) { this.set(x, y, z, ID.dirt); return; }
+      if (lit() >= 9) for (let k = 0; k < 4; k++) {
+        const nx = x + Math.floor(r() * 3) - 1, ny = y + Math.floor(r() * 5) - 3, nz = z + Math.floor(r() * 3) - 1;
+        if (this.get(nx, ny, nz) === ID.dirt) { const a = this.get(nx, ny + 1, nz); if (!a || !OPAQUE[a & 0xFFF] && !LIQUID.has(a & 0xFFF)) { const l = this.light(nx, ny + 1, nz); if (Math.max(l & 15, l >> 4) >= 4) this.set(nx, ny, nz, ID.grass_block); } }
+      }
+    } else if (b.sapling) {
+      // (a propagule hanging under the leaves does not grow into a tree)
+      if (!(v >>> 12 & 8) && lit() >= 9 && r() < 1 / 7) this.growSapling(x, y, z, b.sapling);
+    } else if (id === ID.bamboo) {
+      // the top of a stalk grows one time in three (in the light), up to sixteen high
+      if (!(v >>> 12 & 8) && r() < 1 / 3 && !this.get(x, y + 1, z) && lit() >= 9) { const h = this.bambooBelow(x, y, z) + 1; if (h < 16) this.growBamboo(x, y, z, h); }
+    } else if (id === ID.bamboo_sapling) {
+      if (r() < 1 / 3 && !this.get(x, y + 1, z) && lit() >= 9) this.shootUp(x, y, z);
+    } else if (id === ID.kelp) {
+      // the top of a kelp grows on up into the water over it (a chance in seven, till it is 25 old): the old top a stem
+      const age = v >>> 12, up = this.get(x, y + 1, z);
+      if (age < 25 && r() < 0.14 && (up & 0xFFF) === ID.water && !(up >>> 12)) { this.set(x, y + 1, z, withMeta(ID.kelp, age + 1)); this.set(x, y, z, ID.kelp_plant); }
+    } else if (id === ID.turtle_egg) {
+      // eggs crack (sooner at night, the game's), and at the third crack hatch: a young turtle each
+      const m = v >>> 12, night = this.darkness > 6;
+      if ((this.get(x, y - 1, z) & 0xFFF) === ID.sand && (night || r() < 1 / 500)) {
+        if ((m >> 2) < 2) this.set(x, y, z, withMeta(id, m + 4));
+        else { this.set(x, y, z, 0); this.post({type: 'hatch', x: x + 0.5, y, z: z + 0.5, n: (m & 3) + 1}); }
+      }
+    } else if (CROP.has(id)) {
+      const meta = v >>> 12;
+      if (meta < 7 && lit() >= 9 && r() < (this.get(x, y - 1, z) >>> 12 ? 0.33 : 0.16)) this.set(x, y, z, withMeta(id, meta + 1));
+    } else if (id === ID.cocoa) {
+      // one chance in five a random tick (the game's), up to age 2
+      const meta = v >>> 12;
+      if (meta >> 2 < 2 && r() < 0.2) this.set(x, y, z, withMeta(id, meta + 4));
+    } else if (id === ID.vine) {
+      // the game's: a chance in four; a random way — down (or a side it already has): a vine below with some of its sides;
+      // a side it has not: onto the block there if it is a wall (when there are not many vines about)
+      if (r() >= 0.25) return;
+      const d = Math.floor(r() * 6), faces = v >>> 12;
+      if (d < 4 && !(faces & 1 << d)) {
+        const n = this.get(x + FACE_DIR[d][0], y, z + FACE_DIR[d][1]) & 0xFFF;
+        if (OPAQUE[n] === 1 && this.vinesNear(x, y, z) < 5) this.set(x, y, z, withMeta(ID.vine, faces | 1 << d));
+      } else if (d !== 4 && y > MINY) {
+        const below = this.get(x, y - 1, z);
+        if (below && (below & 0xFFF) !== ID.vine) return;
+        let keep = 0;
+        for (let k = 0; k < 4; k++) if (faces & 1 << k && r() < 0.5) keep |= 1 << k;
+        const now = below ? below >>> 12 : 0;
+        if (keep & ~now) this.set(x, y - 1, z, withMeta(ID.vine, now | keep));
+      }
+    } else if (id === ID.nether_wart) {
+      // nether wart grows in the dark too: one chance in ten a random tick
+      const meta = v >>> 12;
+      if (meta < 3 && r() < 0.1) this.set(x, y, z, withMeta(id, meta + 1));
+    } else if (id === ID.sugar_cane || id === ID.cactus) {
+      if (this.get(x, y + 1, z)) return;
+      let h = 1; while (h < 3 && (this.get(x, y - h, z) & 0xFFF) === id) h++;
+      if (h < 3 && r() < 1 / 16) this.set(x, y + 1, z, id);
+    } else if (id === ID.farmland) {
+      const wet = this.waterNear(x, y, z), meta = v >>> 12;
+      if (wet && !meta) this.set(x, y, z, withMeta(ID.farmland, 1));
+      else if (!wet && meta) this.set(x, y, z, ID.farmland);
+      else if (!wet && !this.get(x, y + 1, z) && r() < 0.2) this.set(x, y, z, ID.dirt);
+    }
+  }
+  /** Vines within four blocks across and one up or down (the game's limit on spreading). */
+  vinesNear(x, y, z) {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) if ((this.get(x + dx, y + dy, z + dz) & 0xFFF) === ID.vine) n++;
+    return n;
+  }
+  get darkness() { return this.dayDark || 0; }
+  waterNear(x, y, z) {
+    for (let dy = 0; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) if ((this.get(x + dx, y + dy, z + dz) & 0xFFF) === ID.water) return true;
+    return false;
+  }
+  /** How many bamboo blocks are under this one (up to 16). */
+  bambooBelow(x, y, z) { let n = 0; while (n < 16 && (this.get(x, y - n - 1, z) & 0xFFF) === ID.bamboo) n++; return n; }
+  /**
+   * The game's bamboo growing from its top at (x, y, z), the stalk h high so far: the new top has large leaves when the
+   * one under it has leaves (the two under that then small and none), else small; thick once the stalk is three high;
+   * past eleven it may stop for good (at sixteen it does).
+   */
+  growBamboo(x, y, z, h) {
+    const v = this.get(x, y, z), below = this.get(x, y - 1, z), below2 = this.get(x, y - 2, z), isB = q => (q & 0xFFF) === ID.bamboo;
+    let leaves = 0;
+    if (h >= 1) {
+      if (!isB(below) || !(below >>> 12 & 3)) leaves = 1;
+      else { leaves = 2; if (isB(below2)) { this.set(x, y - 1, z, withMeta(ID.bamboo, (below >>> 12 & 12) | 1)); this.set(x, y - 2, z, withMeta(ID.bamboo, below2 >>> 12 & 12)); } }
+    }
+    const thick = (v >>> 12 & 4) || isB(below2) ? 4 : 0, done = (h >= 11 && this.r() < 0.25) || h === 15 ? 8 : 0;
+    this.set(x, y + 1, z, withMeta(ID.bamboo, leaves | thick | done));
+  }
+  /** A bamboo shoot comes up: bamboo with small leaves over it, and the shoot a stalk. */
+  shootUp(x, y, z) { this.set(x, y + 1, z, withMeta(ID.bamboo, 1)); this.set(x, y, z, ID.bamboo); }
+  growSapling(x, y, z, kind) {
+    const sap = this.get(x, y, z), put = (wx, wy, wz, v, force) => this.treePut(wx, wy, wz, v, force), get = (a, b, c) => this.get(a, b, c);
+    // a mangrove: from its propagule, nine in ten the tall kind; its roots find their way down through water and mud
+    // (where they cannot, it does not grow)
+    if (kind === 'mangrove') {
+      const soil = (a, b, c) => { const q = this.get(a, b, c), qb = BLOCKS[q & 0xFFF]; return !q || q === sap || qb.replace || qb.shape === 'cross' ? 0 : MUDDY.has(q & 0xFFF) ? 1 : 2; };
+      this.set(x, y, z, 0);
+      if (!growTree({x, y: y - 1, z, kind: this.r() < 0.85 ? 'tall_mangrove' : 'mangrove', r: this.r, soil}, put, get)) this.set(x, y, z, sap);
+      return;
+    }
+    // four in a square: a giant spruce (or pine) or jungle tree; dark oak only grows from four
+    let base = null;
+    if (kind === 'spruce' || kind === 'jungle' || kind === 'dark_oak')
+      for (const [ox, oz] of [[0, 0], [-1, 0], [0, -1], [-1, -1]]) if ([[0, 0], [1, 0], [0, 1], [1, 1]].every(([a, b]) => this.get(x + ox + a, y, z + oz + b) === sap)) { base = [x + ox, z + oz]; break; }
+    if (kind === 'dark_oak' && !base) return;
+    if (base) {
+      for (const [a, b] of [[0, 0], [1, 0], [0, 1], [1, 1]]) this.set(base[0] + a, y, base[1] + b, 0);
+      const tree = kind === 'spruce' ? (this.r() < 0.5 ? 'mega_spruce' : 'mega_pine') : kind === 'jungle' ? 'mega_jungle' : 'dark_oak';
+      growTree({x: base[0], y: y - 1, z: base[1], kind: tree, r: this.r}, put, get);
+      return;
+    }
+    // room to grow
+    for (let k = 1; k < 6; k++) { const a = this.get(x, y + k, z); if (a && !BLOCKS[a & 0xFFF].replace && !BLOCKS[a & 0xFFF].name.endsWith('_leaves')) return; }
+    this.set(x, y, z, 0);
+    // from a sapling: one oak in ten a fancy oak, a jungle tree without its vines (the game's)
+    const tree = kind === 'oak' ? (this.r() < 0.1 ? 'fancy_oak' : 'oak') : kind === 'jungle' ? 'jungle_plain' : kind;
+    growTree({x, y: y - 1, z, kind: tree, r: this.r}, put, get);
+  }
+  treePut(x, y, z, v, force) {
+    const old = this.get(x, y, z), ob = BLOCKS[old & 0xFFF];
+    if (force) { if (ob.name.endsWith('_log') || !old || ob.replace || ob.name.endsWith('_leaves') || ob.sapling || old === ID.grass_block || old === ID.dirt || MUDDY.has(old & 0xFFF)) this.set(x, y, z, v); return; }
+    if (!old || ob.replace) this.set(x, y, z, v);
+  }
+  /** A scheduled update: liquids flow, sand falls, plants with nothing under them break. */
+  update(x, y, z) {
+    const v = this.get(x, y, z), id = v & 0xFFF;
+    if (!v) return;
+    if (id === ID.bubble_column || id === ID.soul_sand || id === ID.magma_block) { this.bubbles(x, y, z, v); return; }
+    if (id === ID.frosted_ice) { this.frost(x, y, z, v); return; }
+    if (id === ID.fire) { this.burn(x, y, z, v); return; }
+    // (soul fire keeps only on soul sand)
+    if (id === ID.soul_fire) { const under = this.get(x, y - 1, z) & 0xFFF; if (under !== ID.soul_sand && under !== ID.soul_soil) this.set(x, y, z, 0); return; }
+    // a dry sponge soaks up the water round it; a wet one dries at once in the Nether
+    if (id === ID.sponge) { this.soak(x, y, z); return; }
+    if (id === ID.wet_sponge) { if (this.nether) { this.set(x, y, z, ID.sponge); this.post({type: 'sound', name: 'fizz', x: x + 0.5, y: y + 0.5, z: z + 0.5}); } return; }
+    // concrete powder touching water at a side or above sets into concrete (with water under it, it falls in and sets there)
+    const sets = BLOCKS[id].sets;
+    if (sets && DIRS.some(([dx, dy, dz]) => dy !== -1 && (this.get(x + dx, y + dy, z + dz) & 0xFFF) === ID.water)) { this.set(x, y, z, ID[sets]); return; }
+    if (GRAVITY.has(id)) {
+      const below = this.get(x, y - 1, z), bb = BLOCKS[below & 0xFFF];
+      if (y > MINY && (!below || LIQUID.has(below & 0xFFF) || bb.replace && !bb.solid)) {
+        // suspicious sand or gravel falling breaks to nothing, its thing lost (the game's)
+        if (BLOCKS[id].brushable) { this.set(x, y, z, 0); this.post({type: 'sound', name: 'break', x: x + 0.5, y: y + 0.5, z: z + 0.5}); return; }
+        this.set(x, y, z, 0);
+        if (below && !LIQUID.has(below & 0xFFF)) this.breakBlock(x, y - 1, z);
+        this.set(x, y - 1, z, sets && (below & 0xFFF) === ID.water ? ID[sets] : v);
+        this.schedule(x, y - 1, z, 2);
+      }
+      return;
+    }
+    // a coral block with no water by it dies
+    if (CORAL_BLOCKS.has(id)) { if (!DIRS.some(([dx, dy, dz]) => isWater(this.get(x + dx, y + dy, z + dz)))) this.set(x, y, z, ID[BLOCKS[id].coral]); return; }
+    // a bamboo shoot with bamboo put on it is a stalk now
+    if (id === ID.bamboo_sapling && (this.get(x, y + 1, z) & 0xFFF) === ID.bamboo) { this.set(x, y, z, ID.bamboo); return; }
+    if (PLANT.has(id)) { if (!this.supported(x, y, z, v)) this.breakBlock(x, y, z); return; }
+    if (id === ID.vine) { const keep = this.vineHolds(x, y, z, v >>> 12); if (keep !== v >>> 12) this.set(x, y, z, keep ? withMeta(ID.vine, keep) : 0); return; }
+    if (BLOCKS[id].shape === 'tall' && !(v >>> 12 & 8) && !this.supported(x, y, z, id === ID.tall_seagrass ? v : withMeta(ID.short_grass, 0))) { this.breakBlock(x, y, z); return; }
+    // a door or a bed whose other half is gone goes too (its item came from the half that went)
+    if (PAIRED.has(id)) { const [ox, oy, oz] = this.partner(x, y, z, v); if ((this.get(ox, oy, oz) & 0xFFF) !== id) this.set(x, y, z, 0); return; }
+    if (LIQUID.has(id)) this.flow(x, y, z, v);
+    // a portal whose frame is broken goes out (and the rest of it after it)
+    if (id === ID.nether_portal && !portalHolds((a, b, c) => this.get(a, b, c), x, y, z, v)) this.set(x, y, z, 0);
+  }
+  /**
+   * Bubble columns: soul sand (up, state 0) or a magma block (down, state 1) under still water makes the water over it a
+   * column, on up through the still water to its top. A column whose ground is gone is water again (from the bottom
+   * up); one over the other kind of ground turns.
+   */
+  bubbles(x, y, z, v) {
+    const id = v & 0xFFF;
+    let kind = id === ID.soul_sand ? 0 : id === ID.magma_block ? 1 : -1;
+    if (id === ID.bubble_column) {
+      const below = this.get(x, y - 1, z), bid = below & 0xFFF;
+      kind = bid === ID.soul_sand ? 0 : bid === ID.magma_block ? 1 : bid === ID.bubble_column ? below >>> 12 & 1 : -1;
+      if (kind < 0) { this.set(x, y, z, ID.water); return; }
+      if ((v >>> 12 & 1) !== kind) { this.set(x, y, z, withMeta(ID.bubble_column, kind)); return; }
+    }
+    for (let yy = y + 1; yy < MINY + HEIGHT; yy++) {
+      const up = this.get(x, yy, z), uid = up & 0xFFF;
+      if (!((uid === ID.water && !(up >>> 12)) || (uid === ID.bubble_column && (up >>> 12 & 1) !== kind))) break;
+      this.set(x, yy, z, withMeta(ID.bubble_column, kind));
+    }
+  }
+  /**
+   * A dry sponge by water takes it up — six blocks out, sixty-four blocks at most (kelp and seagrass in it break, a
+   * bubble column goes too) — and is wet then.
+   */
+  soak(x, y, z) {
+    if (!DIRS.some(([dx, dy, dz]) => isWater(this.get(x + dx, y + dy, z + dz)))) return;
+    const seen = new Set([`${x},${y},${z}`]), queue = [[x, y, z, 0]];
+    let taken = 0;
+    for (let q = 0; q < queue.length && taken < 64; q++) {
+      const [cx, cy, cz, d] = queue[q];
+      if (d >= 6) continue;
+      for (const [dx, dy, dz] of DIRS) {
+        const nx = cx + dx, ny = cy + dy, nz = cz + dz, k = `${nx},${ny},${nz}`;
+        if (seen.has(k) || taken >= 64) continue;
+        seen.add(k);
+        const nid = this.get(nx, ny, nz) & 0xFFF;
+        if (nid === ID.water || nid === ID.bubble_column) this.set(nx, ny, nz, 0);
+        else if (nid === ID.kelp || nid === ID.kelp_plant || nid === ID.seagrass || nid === ID.tall_seagrass) { this.breakBlock(nx, ny, nz); this.set(nx, ny, nz, 0); }
+        else continue;
+        taken++;
+        queue.push([nx, ny, nz, d + 1]);
+      }
+    }
+    if (taken) { this.set(x, y, z, ID.wet_sponge); this.post({type: 'sound', name: 'sponge', x: x + 0.5, y: y + 0.5, z: z + 0.5}); }
+  }
+  /** Where the other half of a door (above or below) or a bed (head or foot) is. */
+  partner(x, y, z, v) {
+    const m = v >>> 12;
+    if (BLOCKS[v & 0xFFF].shape === 'door' || BLOCKS[v & 0xFFF].shape === 'tall') return [x, m & 8 ? y - 1 : y + 1, z];
+    const [dx, dz] = FACE_DIR[m & 3], s = m & 4 ? -1 : 1;
+    return [x + dx * s, y, z + dz * s];
+  }
+  supported(x, y, z, v) {
+    const id = v & 0xFFF, below = this.get(x, y - 1, z), bid = below & 0xFFF, b = BLOCKS[id];
+    if (b.shape === 'torch') {
+      const m = v >>> 12;
+      if (!m) return OPAQUE[bid] === 1 || BLOCKS[bid].shape === 'slab';
+      const [dx, dz] = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]][m];
+      return OPAQUE[this.get(x + dx, y, z + dz) & 0xFFF] === 1;
+    }
+    if (b.shape === 'wall') { const [dx, dz] = [[0, -1], [1, 0], [0, 1], [-1, 0]][v >>> 12 & 3]; return OPAQUE[this.get(x + dx, y, z + dz) & 0xFFF] === 1; }
+    if (b.shape === 'lantern') return !!below && BLOCKS[bid].solid;
+    if (b.shape === 'sign') return !!below && BLOCKS[bid].solid;
+    if (b.shape === 'hanging_sign') { const above = this.get(x, y + 1, z), ab = BLOCKS[above & 0xFFF]; return !!above && (ab.solid || HANG_ON.has(ab.shape)); }
+    // (on a wall, a hanging sign's bar holds on at either end)
+    if (b.shape === 'wall_hanging_sign') { const [dx, dz] = [[1, 0], [-1, 0], [0, 1], [0, -1]][v >>> 12 & 3]; return [1, -1].some(k => { const n = this.get(x + dz * k, y, z - dx * k), nb = BLOCKS[n & 0xFFF]; return !!n && (nb.solid || HANG_ON.has(nb.shape)); }); }
+    if (b.shape === 'wall_sign') { const [dx, dz] = [[0, -1], [1, 0], [0, 1], [-1, 0]][v >>> 12 & 3], w = this.get(x + dx, y, z + dz); return !!w && BLOCKS[w & 0xFFF].solid; }
+    // a tripwire hook: the full block behind it
+    if (b.shape === 'hook') { const [dx, dz] = FACE_DIR[v >>> 12 & 3]; return OPAQUE[this.get(x - dx, y, z - dz) & 0xFFF] === 1; }
+    if (ON_GROUND.has(b.shape)) return OPAQUE[bid] === 1 || (BLOCKS[bid].shape === 'slab' && below >>> 12 >= 1) || bid === ID.hopper;
+    if (b.shape === 'lever' || b.shape === 'button') { const [dx, dy, dz] = DIRS[ATTACHED[v >>> 12 & 7]]; return OPAQUE[this.get(x + dx, y + dy, z + dz) & 0xFFF] === 1; }
+    // a piston's head: its piston, pushed out, right behind it
+    if (b.shape === 'piston_head') { const F = v >>> 12 & 7, [dx, dy, dz] = DIRS[F ^ 1], base = this.get(x + dx, y + dy, z + dz); return BLOCKS[base & 0xFFF].shape === 'piston' && (base >>> 12) === (F | 8); }
+    if (b.shape === 'carpet') return !!below && !LIQUID.has(bid);
+    if (id === ID.cocoa) { const [dx, dz] = FACE_DIR[v >>> 12 & 3]; return (this.get(x + dx, y, z + dz) & 0xFFF) === ID.jungle_log; }
+    if (CROP.has(id)) return bid === ID.farmland;
+    if (id === ID.nether_wart) return bid === ID.soul_sand;
+    if (id === ID.sugar_cane) return bid === ID.sugar_cane || ((bid === ID.sand || bid === ID.grass_block || bid === ID.dirt || bid === ID.red_sand) && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => (this.get(x + dx, y - 1, z + dz) & 0xFFF) === ID.water));
+    if (id === ID.cactus) return bid === ID.cactus || bid === ID.sand || bid === ID.red_sand;
+    if (id === ID.dead_bush) return bid === ID.sand || bid === ID.red_sand || bid === ID.dirt || bid === ID.coarse_dirt || bid === ID.terracotta;
+    if (b.shape === 'layer') return OPAQUE[bid] === 1 || BLOCKS[bid].name.endsWith('_leaves');
+    // bamboo on bamboo or its ground; a propagule hangs from mangrove leaves (state 8) or grows in dirt and clay
+    if (id === ID.bamboo) return bid === ID.bamboo || bid === ID.bamboo_sapling || BAMBOO_GROUND.has(bid);
+    if (id === ID.bamboo_sapling) return BAMBOO_GROUND.has(bid);
+    if (id === ID.mangrove_propagule) return v >>> 12 & 8 ? (this.get(x, y + 1, z) & 0xFFF) === ID.mangrove_leaves : DIRT.has(bid) || bid === ID.farmland || bid === ID.clay;
+    if (b.shape === 'petals') return DIRT.has(bid);
+    if (id === ID.kelp || id === ID.kelp_plant) return bid === ID.kelp_plant || bid === ID.kelp || (SEA_FLOOR.has(bid) && OPAQUE[bid] === 1);
+    // a coral fan on a wall (state 1–4: the wall east, west, south, north of it, as a torch's)
+    if (b.shape === 'fan' && v >>> 12 & 7) { const [dx, dz] = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]][v >>> 12 & 7]; return OPAQUE[this.get(x + dx, y, z + dz) & 0xFFF] === 1; }
+    if (WET.has(id) || b.shape === 'fan' || /coral$/.test(b.name)) return OPAQUE[bid] === 1 || (id === ID.tall_seagrass && v >>> 12 & 8 && bid === ID.tall_seagrass);
+    if (id === ID.turtle_egg) return OPAQUE[bid] === 1;
+    if (b.shape === 'cross') return DIRT.has(bid) || bid === ID.farmland || (b.name.endsWith('mushroom') && OPAQUE[bid] === 1);
+    return true;
+  }
+  // ---------- tripwire ----------
+  /**
+   * A tripwire hook looks along the way it points, past up to forty strings, for a hook pointing back (the game's): the
+   * two are strung when every block between is string (none cut with shears where it just changed), and on while
+   * something is on one of the strings. removed: this hook is going; at, wire: a string that changed — how far along,
+   * and its state then (a string just broken counts as pressed, so its hooks give a pulse; one cut with shears doesn't).
+   */
+  hookLine(x, y, z, v, removed = false, at = -1, wire = 0) {
+    const m = v >>> 12, f = m & 3, [dx, dz] = FACE_DIR[f], was = [!!(m & 4), !!(m & 8)], line = [];
+    let strung = !removed, on = false, far = 0;
+    for (let j = 1; j < 42; j++) {
+      let n = this.get(x + dx * j, y, z + dz * j);
+      if ((n & 0xFFF) === ID.tripwire_hook) { if ((n >>> 12 & 3) === (f ^ 2)) far = j; break; }
+      if ((n & 0xFFF) !== ID.tripwire && j !== at) { strung = false; continue; }
+      // (the string that changed: as it was told; this hook looks again half a second on)
+      if (j === at) { n = wire; this.hookDue.set(`${x},${y},${z}`, this.tick + 10); if (n >>> 12 & 4) strung = false; }
+      if (!(n >>> 12 & 4) && n >>> 12 & 2) on = true;
+      line[j] = true;
+    }
+    strung = strung && far > 1;
+    on = on && strung;
+    const state = s => withMeta(ID.tripwire_hook, s | (strung ? 4 : 0) | (on ? 8 : 0));
+    if (far) { this.set(x + dx * far, y, z + dz * far, state(f ^ 2)); this.hookSound(x + dx * far, y, z + dz * far, strung, on, was); }
+    this.hookSound(x, y, z, strung, on, was);
+    if (!removed) this.set(x, y, z, state(f));
+    // the string between strung or let go
+    if (was[0] !== strung) for (let j = 1; j < far; j++) {
+      const n = this.get(x + dx * j, y, z + dz * j);
+      if (line[j] && (n & 0xFFF) === ID.tripwire) this.set(x + dx * j, y, z + dz * j, withMeta(ID.tripwire, strung ? n >>> 12 | 1 : n >>> 12 & ~1));
+    }
+  }
+  /** A hook's click: going on (low), off (lower), strung, or let go (the game's). */
+  hookSound(x, y, z, strung, on, [wasStrung, wasOn]) {
+    const name = on && !wasOn ? 'trip_on' : !on && wasOn ? 'trip_off' : strung && !wasStrung ? 'trip_attach' : !strung && wasStrung ? 'trip_detach' : '';
+    if (name) this.post({type: 'sound', name, x: x + 0.5, y: y + 0.5, z: z + 0.5});
+  }
+  /** A string or a hook put down, changed or gone: the hooks it concerns look along their string again. */
+  tripped(x, y, z, old, v) {
+    const H = ID.tripwire_hook, S = ID.tripwire, oid = old & 0xFFF, id = v & 0xFFF;
+    if (oid === H && id !== H && old >>> 12 & 12) this.hookLine(x, y, z, old, true);
+    if (id === H && oid !== H) this.hookLine(x, y, z, v);
+    if (id === S && (oid !== S || (old ^ v) >>> 12 & 2)) this.stringChanged(x, y, z, v);
+    else if (oid === S && id !== S) this.stringChanged(x, y, z, old | 2 << 12);
+  }
+  /** A string changed: the hooks it runs between look again (the game looks south and west of it for a hook pointing back). */
+  stringChanged(x, y, z, wire) {
+    for (const f of [0, 1]) {
+      const [dx, dz] = FACE_DIR[f];
+      for (let i = 1; i < 42; i++) {
+        const n = this.get(x + dx * i, y, z + dz * i);
+        if ((n & 0xFFF) === ID.tripwire_hook) { if ((n >>> 12 & 3) === (f ^ 2)) this.hookLine(x + dx * i, y, z + dz * i, n, false, i, wire); break; }
+        if ((n & 0xFFF) !== ID.tripwire) break;
+      }
+    }
+  }
+  /** The page says whether something is on a string. */
+  trip(x, y, z, on) {
+    const v = this.get(x, y, z);
+    if ((v & 0xFFF) === ID.tripwire && !!(v >>> 12 & 2) !== on) this.set(x, y, z, withMeta(ID.tripwire, on ? v >>> 12 | 2 : v >>> 12 & ~2));
+  }
+  /** The sides a vine still clings to: a full block there (or leaves), or the vine above hanging on that side. */
+  vineHolds(x, y, z, faces) {
+    let keep = 0;
+    const up = this.get(x, y + 1, z), upFaces = (up & 0xFFF) === ID.vine ? up >>> 12 : 0;
+    for (let d = 0; d < 4; d++) {
+      if (!(faces & 1 << d)) continue;
+      const n = this.get(x + FACE_DIR[d][0], y, z + FACE_DIR[d][1]) & 0xFFF;
+      if (OPAQUE[n] === 1 || BLOCKS[n].name.endsWith('_leaves') || upFaces & 1 << d) keep |= 1 << d;
+    }
+    return keep;
+  }
+  /** Liquid levels in the meta: 0 a source, 1–7 flowing (higher is thinner), 8 falling. */
+  flow(x, y, z, v) {
+    const id = v & 0xFFF, meta = v >>> 12, water = id === ID.water, step = water || this.nether ? 1 : 2, delay = water ? 5 : this.nether ? 10 : 30;
+    const same = n => (n & 0xFFF) === id || (water && WET.has(n & 0xFFF)), lvl = n => WET.has(n & 0xFFF) || (n >>> 12) >= 8 ? 0 : (n >>> 12);
+    let level = meta >= 8 ? 0 : meta;
+    if (meta !== 0) {
+      // a flowing block is fed from above or from a side that is less spread out
+      let feed = 99;
+      if (same(this.get(x, y + 1, z))) feed = -step;
+      let sources = 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = this.get(x + dx, y, z + dz);
+        if (same(n)) { feed = Math.min(feed, lvl(n)); if (!lvl(n)) sources++; }
+      }
+      let next;
+      if (water && sources >= 2) { const b = this.get(x, y - 1, z); if (OPAQUE[b & 0xFFF] || (same(b) && !(b >>> 12))) next = 0; }
+      if (next === undefined) next = feed === -step ? 8 : feed + step;
+      if (next > 7 && next !== 8) { this.set(x, y, z, 0); return; }
+      if (next !== meta) { this.set(x, y, z, withMeta(id, next)); this.schedule(x, y, z, delay); }
+      level = next >= 8 ? 0 : next;
+      if (next === 0) level = 0;
+    }
+    // down first
+    const below = this.get(x, y - 1, z);
+    if (y > MINY && this.canFlow(below, id)) { this.pour(x, y - 1, z, id, 8, below); if (meta !== 0) return; }
+    else if (y > MINY && same(below)) { if (meta !== 0) return; }
+    // then out to the sides
+    const next = level + step;
+    if (next > 7) return;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz, n = this.get(nx, y, nz);
+      // (a sea plant's state is not a water level: kelp's age, how many pickles, which wall a fan is on)
+      if (this.canFlow(n, id) || (same(n) && !WET.has(n & 0xFFF) && (n >>> 12) !== 0 && (n >>> 12) < 8 && (n >>> 12) > next)) this.pour(nx, y, nz, id, next, n);
+    }
+  }
+  canFlow(n, id) {
+    if (!n) return true;
+    const nid = n & 0xFFF, b = BLOCKS[nid];
+    if (nid === id || WET.has(nid)) return false;
+    if (LIQUID.has(nid)) return true;
+    return !b.solid && !OPAQUE[nid] && b.shape !== 'liquid' && (b.replace || PLANT.has(nid));
+  }
+  pour(x, y, z, id, meta, old) {
+    const oid = old & 0xFFF;
+    if (LIQUID.has(oid) && oid !== id) {
+      // water meets lava
+      const lavaHere = oid === ID.lava;
+      this.set(x, y, z, lavaHere ? (old >>> 12 ? ID.cobblestone : ID.obsidian) : ID.stone);
+      this.post({type: 'sound', name: 'fizz', x: x + 0.5, y: y + 0.5, z: z + 0.5});
+      return;
+    }
+    if (old && PLANT.has(oid)) this.breakBlock(x, y, z);
+    this.set(x, y, z, withMeta(id, meta));
+    this.schedule(x, y, z, id === ID.water ? 5 : 30);
+  }
+
+  // ---------- explosions, bone meal, animals ----------
+  /**
+   * An explosion the game's way: rays from the centre in all directions, each weakened by what it passes through
+   * (blast resistance); blocks it gets through break. Drops: each block one time in `power`. TNT in it is lit.
+   * Returns {drops: [[name, n, x, y, z]], tnt: [[x, y, z]]}.
+   */
+  explode(cx, cy, cz, power, fire = false) {
+    const hit = new Set(), open = new Set(), r = this.r;
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+      if (i && i !== 15 && j && j !== 15 && k && k !== 15) continue;
+      let dx = i / 15 * 2 - 1, dy = j / 15 * 2 - 1, dz = k / 15 * 2 - 1;
+      const l = Math.hypot(dx, dy, dz); dx /= l; dy /= l; dz /= l;
+      let x = cx, y = cy, z = cz, f = power * (0.7 + r() * 0.6);
+      while (f > 0) {
+        const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z), v = this.get(bx, by, bz);
+        if (v) { f -= (BLOCKS[v & 0xFFF].blast + 0.3) * 0.3; if (f > 0) hit.add(`${bx},${by},${bz}`); }
+        else if (fire && f > 0) open.add(`${bx},${by},${bz}`);
+        x += dx * 0.3; y += dy * 0.3; z += dz * 0.3; f -= 0.22500001;
+      }
+    }
+    const drops = [], tnt = [];
+    for (const k of hit) {
+      const [x, y, z] = k.split(',').map(Number), v = this.get(x, y, z), b = BLOCKS[v & 0xFFF];
+      if (!v || b.shape === 'liquid') continue;
+      if (v === ID.tnt) { tnt.push([x, y, z]); this.set(x, y, z, 0); continue; }
+      if (r() < 1 / power) for (const [name, n] of dropsOf(b, v >>> 12, r)) drops.push([name, n, x + 0.5, y + 0.5, z + 0.5]);
+      this.set(x, y, z, 0);
+    }
+    // a fiery one (a ghast's fireball, a bed going off): fire in a third of the places it reached that are open over
+    // something solid (the game's)
+    if (fire) for (const k of [...hit, ...open]) {
+      const [x, y, z] = k.split(',').map(Number);
+      if (r() < 1 / 3 && !this.get(x, y, z) && OPAQUE[this.get(x, y - 1, z) & 0xFFF]) this.set(x, y, z, [ID.soul_sand, ID.soul_soil].includes(this.get(x, y - 1, z) & 0xFFF) ? ID.soul_fire : ID.fire);
+    }
+    return {drops, tnt};
+  }
+  /** Bone meal on a block: crops grow, saplings may become trees, grass sprouts flowers. Returns whether it took. */
+  meal(x, y, z) {
+    const v = this.get(x, y, z), id = v & 0xFFF, b = BLOCKS[id], r = this.r;
+    if (CROP.has(id)) {
+      if ((v >>> 12) >= 7) return false;
+      // beetroots to their next look (three times in four), the others two to five steps
+      const m = v >>> 12, to = id === ID.beetroots ? (r() < 0.75 ? [2, 2, 4, 4, 7, 7, 7][m] : m) : Math.min(7, m + 2 + Math.floor(r() * 4));
+      this.set(x, y, z, withMeta(id, to)); return true;
+    }
+    if (b.sapling) { if (v >>> 12 & 8) return false; if (r() < 0.45) this.growSapling(x, y, z, b.sapling); return true; }
+    // bamboo: one or two more at the top of its stalk (while it may grow); a shoot comes up; petals: one more flower,
+    // or with four one to pick up
+    if (id === ID.bamboo) {
+      let top = y; while ((this.get(x, top + 1, z) & 0xFFF) === ID.bamboo) top++;
+      let h = top - y + this.bambooBelow(x, y, z) + 1;
+      if (h >= 16 || this.get(x, top, z) >>> 12 & 8 || this.get(x, top + 1, z)) return false;
+      for (let k = 1 + Math.floor(r() * 2); k > 0 && h < 16 && !(this.get(x, top, z) >>> 12 & 8) && !this.get(x, top + 1, z); k--) this.growBamboo(x, top++, z, h++);
+      return true;
+    }
+    if (id === ID.bamboo_sapling) { if (this.get(x, y + 1, z)) return false; this.shootUp(x, y, z); return true; }
+    if (id === ID.seagrass) { const up = this.get(x, y + 1, z); if ((up & 0xFFF) !== ID.water || up >>> 12) return false; this.set(x, y, z, ID.tall_seagrass); this.set(x, y + 1, z, withMeta(ID.tall_seagrass, 8)); return true; }
+    if (id === ID.sea_pickle) {
+      // a sea pickle on coral: more pickles round it (the game's)
+      if (!CORAL_BLOCKS.has(this.get(x, y - 1, z) & 0xFFF)) return false;
+      this.set(x, y, z, withMeta(id, 3));
+      for (let k = 0; k < 8; k++) { const px = x + Math.floor(r() * 5) - 2, pz = z + Math.floor(r() * 5) - 2, n = this.get(px, y, pz); if ((n & 0xFFF) === ID.water && !(n >>> 12) && CORAL_BLOCKS.has(this.get(px, y - 1, pz) & 0xFFF)) this.set(px, y, pz, withMeta(id, Math.floor(r() * 4))); }
+      return true;
+    }
+    if ((id === ID.sand || id === ID.gravel || id === ID.dirt || id === ID.clay) && (this.get(x, y + 1, z) & 0xFFF) === ID.water) {
+      for (let k = 0; k < 24; k++) {
+        const gx = x + Math.floor(r() * 7) - 3, gz = z + Math.floor(r() * 7) - 3;
+        for (let gy = y + 1; gy >= y - 1; gy--) {
+          const g = this.get(gx, gy, gz) & 0xFFF, up = this.get(gx, gy + 1, gz);
+          if (SEA_FLOOR.has(g) && OPAQUE[g] === 1 && (up & 0xFFF) === ID.water && !(up >>> 12)) { this.set(gx, gy + 1, gz, ID.seagrass); break; }
+        }
+      }
+      return true;
+    }
+    if (id === ID.pink_petals) { if ((v >>> 12 & 3) < 3) this.set(x, y, z, v + (1 << 12)); else this.post({type: 'drops', x: x + 0.5, y: y + 0.5, z: z + 0.5, items: [['pink_petals', 1]]}); return true; }
+    if (id === ID.cocoa) { if ((v >>> 12) >> 2 >= 2) return false; this.set(x, y, z, withMeta(id, (v >>> 12) + 4)); return true; }
+    if ((id === ID.short_grass || id === ID.fern) && !this.get(x, y + 1, z)) {
+      const t = id === ID.fern ? ID.large_fern : ID.tall_grass;
+      this.set(x, y, z, t); this.set(x, y + 1, z, withMeta(t, 8));
+      return true;
+    }
+    if (TALL_FLOWERS.has(id)) { this.post({type: 'drops', x: x + 0.5, y: y + 0.5, z: z + 0.5, items: [[b.name, 1]]}); return true; }
+    if (id === ID.grass_block && !this.get(x, y + 1, z)) {
+      for (let k = 0; k < 48; k++) {
+        const gx = x + Math.floor(r() * 7) - 3, gz = z + Math.floor(r() * 7) - 3;
+        for (let gy = y + 1; gy >= y - 1; gy--) {
+          if (this.get(gx, gy, gz) === ID.grass_block && !this.get(gx, gy + 1, gz)) { this.set(gx, gy + 1, gz, r() < 0.88 ? ID.short_grass : r() < 0.5 ? ID.dandelion : ID.poppy); break; }
+        }
+      }
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Frosted ice melting (the game's): where it is light enough (by day under the sky, or by a light: more than 11 less
+   * its age), now and then (one time in three, or always with fewer than four frosted ice round it), it melts a little
+   * — its fourth age goes to water, and then the frosted ice round it melts a little too; else it waits one or two
+   * seconds more. In the dark it keeps.
+   */
+  frost(x, y, z, v) {
+    const age = v >>> 12 & 3, ln = this.light(x, y, z), lit = Math.max((ln >> 4) - this.darkness, ln & 15);
+    const few = DIRS.filter(([dx, dy, dz]) => (this.get(x + dx, y + dy, z + dz) & 0xFFF) === ID.frosted_ice).length < 4;
+    if ((this.r() < 1 / 3 || few) && lit > 10 - age && this.melt(x, y, z, v)) {
+      for (const [dx, dy, dz] of DIRS) {
+        const n = this.get(x + dx, y + dy, z + dz);
+        if ((n & 0xFFF) === ID.frosted_ice && !this.melt(x + dx, y + dy, z + dz, n)) this.schedule(x + dx, y + dy, z + dz, 20 + Math.floor(this.r() * 20));
+      }
+    } else this.schedule(x, y, z, 20 + Math.floor(this.r() * 20));
+  }
+  // ---------- fire ----------
+  /** The biome at a place (0 where the land is not here). */
+  biomeAt(x, z) { const c = this.col(x >> 4, z >> 4); return c ? c.biome[(z & 15) * 16 + (x & 15)] : 0; }
+  /** Whether fire can be at (x, y, z) (the game's): over something solid, or by something that burns. */
+  fireHolds(x, y, z) { const below = this.get(x, y - 1, z); return !!(below && BLOCKS[below & 0xFFF].solid) || this.burnsNear(x, y, z); }
+  /** Something that burns by (x, y, z), at a side, over or under it. */
+  burnsNear(x, y, z) { return DIRS.some(([dx, dy, dz]) => burnOf(this.get(x + dx, y + dy, z + dz))[0] > 0); }
+  /** Rain falls on (x, y, z): it is raining, rain (not snow) falls on this land, and the sky is over it. */
+  rainsAt(x, y, z) { if (!this.snowing || this.nether) return false; const bi = this.biomeAt(x, z); return !BIOMES[bi].cold && !DRY.has(bi) && (this.light(x, y, z) >> 4) >= 15; }
+  nearRain(x, y, z) { return this.rainsAt(x, y, z) || this.rainsAt(x + 1, y, z) || this.rainsAt(x - 1, y, z) || this.rainsAt(x, y, z + 1) || this.rainsAt(x, y, z - 1); }
+  /**
+   * Fire, every one and a half to two seconds (the game's): it goes out where it cannot be, in the rain (more likely the
+   * older it is), and burning on nothing that burns by itself before long — on netherrack and magma blocks it burns
+   * for ever; it grows older; what burns round it catches (the game's chances) and is burnt away or burns on (TNT
+   * goes off); and it leaps into the air near it (one round, up to four over it) where something burns, the younger the
+   * likelier, less in the jungles and swamps.
+   */
+  burn(x, y, z, v) {
+    this.schedule(x, y, z, 30 + Math.floor(this.r() * 10));
+    if (this.fireTick === false) return;
+    if (!this.fireHolds(x, y, z)) { this.set(x, y, z, 0); return; }
+    const below = this.get(x, y - 1, z) & 0xFFF, forever = below === ID.netherrack || below === ID.magma_block, age = v >>> 12 & 15;
+    if (!forever && this.nearRain(x, y, z) && this.r() < 0.2 + age * 0.03) { this.set(x, y, z, 0); return; }
+    if (this.r() < 1 / 3 && age < 15) this.set(x, y, z, withMeta(ID.fire, age + 1));
+    if (!forever) {
+      if (!this.burnsNear(x, y, z)) { if (!BLOCKS[below].solid || age > 3) this.set(x, y, z, 0); return; }
+      if (age === 15 && this.r() < 0.25 && !(burnOf(below)[0] > 0)) { this.set(x, y, z, 0); return; }
+    }
+    const humid = HUMID.has(this.biomeAt(x, z)), k = humid ? -50 : 0;
+    for (const [dx, dy, dz] of DIRS) this.catchFire(x + dx, y + dy, z + dz, (dy ? 250 : 300) + k, age);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 4; dy++) {
+      if (!dx && !dy && !dz) continue;
+      const nx = x + dx, ny = y + dy, nz = z + dz, odds = this.igniteOdds(nx, ny, nz);
+      if (odds <= 0) continue;
+      let chance = Math.floor((odds + 40 + 14) / (age + 30));
+      if (humid) chance = Math.floor(chance / 2);
+      if (chance > 0 && Math.floor(this.r() * (100 + Math.max(0, dy - 1) * 100)) <= chance && !this.nearRain(nx, ny, nz)) this.set(nx, ny, nz, withMeta(ID.fire, Math.min(15, age + (this.r() < 0.2 ? 1 : 0))));
+    }
+  }
+  /** A block by a fire catching (the game's: its chance out of 300 at the sides, 250 over and under): now and then it
+   *  burns on as fire itself (the younger the fire, the likelier), else it is burnt away; TNT goes off. */
+  catchFire(x, y, z, chance, age) {
+    const v = this.get(x, y, z), burns = burnOf(v)[1];
+    if (!burns || Math.floor(this.r() * chance) >= burns) return;
+    if (Math.floor(this.r() * (age + 10)) < 5 && !this.rainsAt(x, y, z)) this.set(x, y, z, withMeta(ID.fire, Math.min(15, age + (this.r() < 0.2 ? 1 : 0))));
+    else this.set(x, y, z, 0);
+    if ((v & 0xFFF) === ID.tnt) this.post({type: 'prime', x, y, z});
+  }
+  /** How readily fire leaps into (x, y, z): only into air, as much as the thing by it that most draws fire. */
+  igniteOdds(x, y, z) {
+    if (this.get(x, y, z)) return 0;
+    let best = 0;
+    for (const [dx, dy, dz] of DIRS) best = Math.max(best, burnOf(this.get(x + dx, y + dy, z + dz))[0]);
+    return best;
+  }
+  /** Lava now and then sets fire near it (the game's): up to two blocks over it where something burns beside, or on top
+   *  of a burning thing at its side. */
+  lavaFire(x, y, z) {
+    if (this.fireTick === false) return;
+    const r = this.r, n = Math.floor(r() * 3);
+    if (n > 0) {
+      let px = x, py = y, pz = z;
+      for (let j = 0; j < n; j++) {
+        px += Math.floor(r() * 3) - 1; py++; pz += Math.floor(r() * 3) - 1;
+        const v = this.get(px, py, pz);
+        if (!v) { if (this.burnsNear(px, py, pz)) { this.set(px, py, pz, ID.fire); return; } }
+        else if (BLOCKS[v & 0xFFF].solid) return;
+      }
+    } else for (let k = 0; k < 3; k++) {
+      const px = x + Math.floor(r() * 3) - 1, pz = z + Math.floor(r() * 3) - 1;
+      if (!this.get(px, y + 1, pz) && burnOf(this.get(px, y, pz))[1] > 0) this.set(px, y + 1, pz, ID.fire);
+    }
+  }
+  /** Frosted ice a step older; at its fourth, water again (true then). */
+  melt(x, y, z, v) {
+    const age = v >>> 12 & 3;
+    if (age < 3) { this.set(x, y, z, withMeta(ID.frosted_ice, age + 1)); return false; }
+    this.set(x, y, z, this.nether ? 0 : ID.water);
+    return true;
+  }
+  /** Animals living on a column made for the first time: [[kind, x, y, z, extra]] (the page keeps each place once). */
+  herdFor(c) {
+    const seed = this.seed, x0 = c.cx * 16, z0 = c.cz * 16;
+    // the villagers (and the golem) of a village part here
+    const people = villagersIn(seed, c.cx, c.cz);
+    if (people.length) return people;
+    // the three elder guardians of a monument, each where it keeps its room
+    const elders = monumentsNear(seed, x0 + 8, z0 + 8, 0).flatMap(m => m.elders).filter(([x, , z]) => Math.floor(x / 16) === c.cx && Math.floor(z / 16) === c.cz);
+    if (elders.length) return elders.map(([x, y, z]) => ['elder_guardian', x, y, z, {persist: true, home: [x, y, z]}]);
+    // drowned standing in the sea's ruins since they were made (they stay)
+    const drowned = drownedIn(seed, c.cx, c.cz);
+    if (drowned.length) return drowned.map(([x, y, z]) => ['drowned', x, y, z, {persist: true}]);
+    const h = (salt) => { let n = Math.imul(seed ^ (c.cx * 73856093) ^ (c.cz * 19349663) ^ salt, 2654435761); n ^= n >>> 15; return (n >>> 0) / 4294967296; };
+    if (h(1) > 0.12) return [];
+    const biome = BIOMES[c.biome[8 * 16 + 8]].name;
+    const kinds = {plains: ['pig', 'cow', 'sheep', 'chicken'], meadow: ['sheep', 'cow', 'chicken'], forest: ['pig', 'cow', 'chicken', 'sheep'], birch_forest: ['pig', 'chicken', 'sheep'], dark_forest: ['pig', 'chicken'],
+      taiga: ['sheep', 'pig'], snowy_taiga: ['sheep'], snowy_plains: ['sheep', 'sheep', 'sheep', 'polar_bear'], frozen_ocean: ['polar_bear'], savanna: ['cow', 'sheep', 'chicken'], jungle: ['chicken', 'pig'], swamp: ['chicken'], beach: ['turtle'],
+      cherry_grove: ['pig', 'sheep'], bamboo_jungle: ['chicken', 'pig']}[biome];
+    if (!kinds || !kinds.length) return [];
+    // (polar bears one or two: a grown one, then its cub)
+    const kind = kinds[Math.floor(h(2) * kinds.length)], n = kind === 'polar_bear' ? 1 + Math.floor(h(3) * 2) : 2 + Math.floor(h(3) * 3), out = [];
+    for (let k = 0; k < n * 4 && out.length < n; k++) {
+      const lx = Math.floor(h(10 + k) * 16), lz = Math.floor(h(40 + k) * 16), top = c.height[lz * 16 + lx];
+      const g = this.get(x0 + lx, top, z0 + lz) & 0xFFF;
+      if (g !== ID.grass_block && g !== ID.podzol && !(kind === 'turtle' && g === ID.sand) && !(kind === 'polar_bear' && (g === ID.ice || g === ID.packed_ice || g === ID.snow_block || g === ID.blue_ice))) continue;
+      if (this.get(x0 + lx, top + 1, z0 + lz) && !BLOCKS[this.get(x0 + lx, top + 1, z0 + lz) & 0xFFF].replace) continue;
+      out.push([kind, x0 + lx + 0.5, top + 1, z0 + lz + 0.5, ...(kind === 'polar_bear' && out.length ? [{baby: true}] : [])]);
+    }
+    return out;
+  }
+
+  // ---------- meshing ----------
+  /** The colours of grass, leaves and water for a column, mixed over nearby biomes. */
+  tintOf(c) {
+    // kept until another neighbour arrives
+    let near = 0;
+    for (const [dx, dz] of NEIGHBOURS) if (this.col(c.cx + dx, c.cz + dz)) near++;
+    if (c.tint && c.tintNear === near) return c.tint;
+    const grass = new Int32Array(256), foliage = new Int32Array(256), water = new Int32Array(256);
+    // biomes over this column and two blocks around it
+    const B = new Uint8Array(20 * 20);
+    for (let z = -2; z < 18; z++) for (let x = -2; x < 18; x++) {
+      const n = x < 0 || x > 15 || z < 0 || z > 15 ? this.col(c.cx + (x < 0 ? -1 : x > 15 ? 1 : 0), c.cz + (z < 0 ? -1 : z > 15 ? 1 : 0)) : c;
+      B[(z + 2) * 20 + x + 2] = n ? n.biome[(z & 15) * 16 + (x & 15)] : c.biome[Math.max(0, Math.min(15, z)) * 16 + Math.max(0, Math.min(15, x))];
+    }
+    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      let gr = 0, gg = 0, gb = 0, fr = 0, fg = 0, fb = 0, wr = 0, wg = 0, wb = 0;
+      for (let dz = 0; dz < 5; dz++) for (let dx = 0; dx < 5; dx++) {
+        const t = TINTS[B[(z + dz) * 20 + x + dx]];
+        gr += t.grass >> 16 & 255; gg += t.grass >> 8 & 255; gb += t.grass & 255;
+        fr += t.foliage >> 16 & 255; fg += t.foliage >> 8 & 255; fb += t.foliage & 255;
+        wr += t.water >> 16 & 255; wg += t.water >> 8 & 255; wb += t.water & 255;
+      }
+      const i = z * 16 + x;
+      grass[i] = Math.round(gr / 25) << 16 | Math.round(gg / 25) << 8 | Math.round(gb / 25);
+      foliage[i] = Math.round(fr / 25) << 16 | Math.round(fg / 25) << 8 | Math.round(fb / 25);
+      water[i] = Math.round(wr / 25) << 16 | Math.round(wg / 25) << 8 | Math.round(wb / 25);
+    }
+    c.tint = {grass, foliage, water}; c.tintNear = near;
+    return c.tint;
+  }
+  /** Can this column's sections be meshed (all eight neighbours are here)? */
+  ready(c) { for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) if (!this.col(c.cx + dx, c.cz + dz)) return false; return true; }
+  meshOne(c, si) {
+    // with the mesh: which of its sides see each other through it (cave culling), and whether any sky light is in it
+    // (one with none casts no shadow anyone in the sun could see: the land above it does)
+    if (!c.sections[si] || !c.sections[si].some(v => v)) { this.post({type: 'mesh', cx: c.cx, cz: c.cz, sy: si, solid: null, trans: null, vis: ALL_OPEN, sun: true}); return; }
+    const pad = new Uint16Array(18 * 18 * 18), lit = new Uint8Array(18 * 18 * 18);
+    const gx = new Int32Array(18 * 18), fx = new Int32Array(18 * 18), wx = new Int32Array(18 * 18);
+    const tints = new Map();
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const n = this.col(c.cx + dx, c.cz + dz);
+      if (!n) continue;
+      const t = this.tintOf(n);
+      const xs = dx < 0 ? [15, 15] : dx > 0 ? [0, 0] : [0, 15], zs = dz < 0 ? [15, 15] : dz > 0 ? [0, 0] : [0, 15];
+      for (let z = zs[0]; z <= zs[1]; z++) for (let x = xs[0]; x <= xs[1]; x++) {
+        const px = x + dx * 16 + 1, pz = z + dz * 16 + 1, ti = pz * 18 + px;
+        gx[ti] = t.grass[z * 16 + x]; fx[ti] = t.foliage[z * 16 + x]; wx[ti] = t.water[z * 16 + x];
+        for (let py = 0; py < 18; py++) {
+          const wy = MINY + si * 16 + py - 1;
+          if (wy < MINY) { pad[py * 324 + pz * 18 + px] = ID.bedrock; continue; }
+          if (wy >= MINY + HEIGHT) { lit[py * 324 + pz * 18 + px] = this.sky; continue; }
+          const s2 = (wy - MINY) >> 4, sec = n.sections[s2], li = ((wy - MINY) & 15) << 8 | z << 4 | x;
+          pad[py * 324 + pz * 18 + px] = sec ? sec[li] : 0;
+          const ls = n.light[s2];
+          lit[py * 324 + pz * 18 + px] = ls ? ls[li] : s2 > n.topSec ? this.sky : 0;
+        }
+      }
+    }
+    const m = meshSection(pad, lit, {grass: gx, foliage: fx, water: wx}, this.tex, {ox: c.cx * 16, oz: c.cz * 16, wave: this.wave});
+    const ls = c.light[si], sun = !ls ? si > c.topSec : ls.some(v => v >= 16) || (c.light[si + 1] || []).some?.(v => v >= 16) || si + 1 > c.topSec;
+    this.post({type: 'mesh', cx: c.cx, cz: c.cz, sy: si, solid: m.solid.length ? m.solid : null, faces: m.faces, trans: m.trans.length ? m.trans : null, vis: sectionVis(c.sections[si]), sun}, [m.solid.buffer, m.trans.buffer]);
+  }
+  /** Sends the page its copy of a column's blocks and light. */
+  sendColumn(c) {
+    const sections = c.sections.map(s => s && s.slice()), light = c.light.map(s => s && s.slice());
+    const transfer = [...sections, ...light].filter(Boolean).map(s => s.buffer);
+    this.post({type: 'column', cx: c.cx, cz: c.cz, sections, light, topSec: c.topSec, biome: c.biome.slice(), height: c.height.slice(), ack: this.ack}, transfer);
+    c.sent = true;
+  }
+
+  // ---------- portals ----------
+  /** A column made or read back now (not waiting for its turn). */
+  async ensure(cx, cz) {
+    const k = key(cx, cz);
+    if (this.cols.has(k)) return;
+    const c = this.store?.has(cx, cz) ? await this.store.load(cx, cz).catch(() => null) : null;
+    if (this.cols.has(k)) return;
+    this.addColumn(c || (this.nether ? generateNether : generateColumn)(this.seed, cx, cz));
+    if (c) this.redstone.scan(c);
+  }
+  /**
+   * A new portal for someone coming out near (x, y, z): on the ground nearby with room round it (the overworld's
+   * surface; in the Nether the cavern floor nearest their height), built of obsidian and lit. Returns {x, y, z, axis}.
+   */
+  async makePortal({x, y, z}) {
+    const cx = Math.floor(x) >> 4, cz = Math.floor(z) >> 4;
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) await this.ensure(cx + dx, cz + dz);
+    const get = (a, b, c) => this.get(a, b, c);
+    const at = this.nether ? portalSpot(get, x, z, 32, 118, Math.max(32, Math.min(118, Math.round(y))), false) : portalSpot(get, x, z, SEA - 2, 200, Math.max(SEA + 1, Math.round(y)), true);
+    buildPortal((a, b, c, v) => this.set(a, b, c, v), at.x, at.y, at.z, at.axis);
+    return at;
+  }
+
+  // ---------- around the player ----------
+  /** Work for one slice of time: read / make the nearest missing columns, mesh what changed, send copies. */
+  async work(budget = 12) {
+    const t0 = performance.now(), [px, pz] = this.center, R = this.radius;
+    // 1. columns: the nearest missing ones first
+    const missing = [];
+    for (let dz = -R - 1; dz <= R + 1; dz++) for (let dx = -R - 1; dx <= R + 1; dx++) {
+      const d = dx * dx + dz * dz;
+      if (d > (R + 1.5) ** 2) continue;
+      const cx = px + dx, cz = pz + dz;
+      if (!this.cols.has(key(cx, cz)) && !this.loading.has(key(cx, cz))) missing.push([d, cx, cz]);
+    }
+    missing.sort((a, b) => a[0] - b[0]);
+    let did = 0;
+    for (const [, cx, cz] of missing) {
+      if (performance.now() - t0 > budget) break;
+      did++;
+      const k = key(cx, cz);
+      this.loading.add(k);
+      let c = null;
+      if (this.store && this.store.has(cx, cz)) c = await this.store.load(cx, cz).catch(() => null);
+      // a column made ahead of time is new to the world: its animals come now
+      let fresh = !!c?.pregen;
+      if (c) c.pregen = false;
+      const stored = !!c;
+      if (!c) { c = (this.nether ? generateNether : generateColumn)(this.seed, cx, cz); fresh = true; }
+      this.loading.delete(k);
+      if (this.cols.has(k)) continue;
+      this.addColumn(c);
+      if (stored) this.redstone.scan(c);
+      if (fresh && !this.nether) {
+        const herd = this.herdFor(c); if (herd.length) this.post({type: 'herd', cx, cz, list: herd});
+        // the chests (and suspicious sand and gravel) of the sea's ruins and wrecks, buried treasure and the desert's
+        // pyramids and wells made here: their loot tables
+        const loot = [...lootIn(this.seed, c), ...desertLootIn(this.seed, c)]; if (loot.length) this.post({type: 'loot', list: loot});
+      }
+    }
+    // 2. meshes: changed sections of columns whose neighbours are all here, nearest first
+    if (this.dirty.size) {
+      const list = [];
+      for (const ks of this.dirty) {
+        const ck = Math.floor(ks / 32), si = ks % 32, c = this.cols.get(ck);
+        if (!c) { this.dirty.delete(ks); continue; }
+        const dx = c.cx - px, dz = c.cz - pz;
+        if (dx * dx + dz * dz > (R + 0.5) ** 2) continue;
+        if (!this.ready(c)) continue;
+        list.push([dx * dx + dz * dz, ks, c, si]);
+      }
+      list.sort((a, b) => a[0] - b[0]);
+      for (const [, ks, c, si] of list) {
+        if (performance.now() - t0 > budget * 1.6) break;
+        did++;
+        this.dirty.delete(ks);
+        if (!c.sent) this.sendColumn(c);
+        this.meshOne(c, si);
+      }
+    }
+    // 3. copies of changed columns for the page
+    for (const c of this.cols.values()) if (!c.sent) { const dx = c.cx - px, dz = c.cz - pz; if (dx * dx + dz * dz <= (R + 0.5) ** 2 && this.ready(c)) this.sendColumn(c); }
+    // 4. columns far away go (saved first when changed)
+    for (const [k, c] of this.cols) {
+      const dx = c.cx - px, dz = c.cz - pz;
+      if (dx * dx + dz * dz > (R + 3) ** 2) {
+        if (c.changed && this.store) this.store.save(c);
+        this.cols.delete(k);
+        this.post({type: 'drop', cx: c.cx, cz: c.cz});
+      }
+    }
+    // 5. with the near work done: the distant view, then land made ahead
+    if (!did && performance.now() - t0 < budget) {
+      if (this.lodWork(t0, budget)) did++;
+      else if (await this.pregenWork(t0, budget)) did++;
+    }
+    return did > 0;
+  }
+  // ---------- the distant view ----------
+  /** Makes the distant view's tiles nearest first (a finer one where the player came nearer) and lets go of far ones. */
+  lodWork(t0, budget) {
+    if (!this.lodRadius || this.nether) { if (this.lodSent.size) { for (const k of this.lodSent.keys()) { const [tx, tz, size] = k.split(',').map(Number); this.post({type: 'lodDrop', tx, tz, size}); } this.lodSent.clear(); } return false; }
+    const [cx, cz] = this.center, plan = lodPlan(cx, cz, this.lodRadius, this.radius), want = new Set();
+    let made = 0;
+    for (const t of plan) {
+      const k = `${t.tx},${t.tz},${t.size}`;
+      want.add(k);
+      if (this.lodSent.get(k) === t.step || performance.now() - t0 > budget) continue;
+      const {data, quads} = lodTile(this.seed, t.tx, t.tz, t.step, t.size);
+      this.lodSent.set(k, t.step);
+      this.post({type: 'lod', tx: t.tx, tz: t.tz, size: t.size, step: t.step, data, quads}, [data]);
+      made++;
+    }
+    for (const k of this.lodSent.keys()) if (!want.has(k)) { const [tx, tz, size] = k.split(',').map(Number); this.lodSent.delete(k); this.post({type: 'lodDrop', tx, tz, size}); }
+    return made > 0;
+  }
+  // ---------- making land ahead of time (like Chunky) ----------
+  /** Starts making every column within `radius` of the player that is not saved yet, nearest first. */
+  startPregen(radius) {
+    if (!this.store) return;
+    const [cx, cz] = this.center, list = [];
+    for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) if (dx * dx + dz * dz <= radius * radius && !this.store.has(cx + dx, cz + dz)) list.push([dx * dx + dz * dz, cx + dx, cz + dz]);
+    list.sort((a, b) => a[0] - b[0]);
+    this.pregen = {list, i: 0, total: list.length, radius};
+    this.post({type: 'pregen', done: 0, total: list.length});
+  }
+  stopPregen() { if (this.pregen) { this.post({type: 'pregen', done: this.pregen.i, total: this.pregen.total, stopped: true}); this.pregen = null; } }
+  /** A few more columns made and kept (packed small), as time allows. */
+  async pregenWork(t0, budget) {
+    const g = this.pregen;
+    if (!g) return false;
+    while (g.i < g.list.length && performance.now() - t0 < budget) {
+      const [, cx, cz] = g.list[g.i++];
+      if (this.store.has(cx, cz) || this.cols.has(key(cx, cz))) continue;
+      const c = (this.nether ? generateNether : generateColumn)(this.seed, cx, cz);
+      c.pregen = !this.nether;
+      await this.store.save(c);
+    }
+    if (g.i % 8 === 0 || g.i >= g.list.length) this.post({type: 'pregen', done: g.i, total: g.total, saved: this.store.count()});
+    if (g.i >= g.list.length) { this.pregen = null; this.post({type: 'pregen', done: g.total, total: g.total, finished: true}); }
+    return true;
+  }
+  /** Saves every changed column. */
+  async flush() {
+    if (!this.store) return;
+    const list = [...this.cols.values()].filter(c => c.changed);
+    for (const c of list) { await this.store.save(c); c.changed = false; }
+  }
+}

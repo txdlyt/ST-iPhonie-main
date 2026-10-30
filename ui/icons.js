@@ -26,6 +26,8 @@ const GLYPHS = {
   paint: '<path d="M32 7C17 7 6 17 6 30c0 12 10 21 22 21 4 0 6-2 6-5 0-2-1-3-1-5 0-3 2-5 5-5h6c8 0 14-5 14-13C58 13 46 7 32 7z"/><circle cx="19" cy="27" r="4" fill="var(--tac)"/><circle cx="27" cy="17" r="4" fill="var(--t2)"/><circle cx="40" cy="17" r="4" fill="var(--tac)"/>',
   // A game pad: the cross on the left, two buttons on the right.
   games: '<rect x="6" y="18" width="52" height="30" rx="15"/><path d="M19 26v14M12 33h14" stroke="var(--t2)" stroke-width="4.5" stroke-linecap="round"/><circle cx="42" cy="29" r="3.6" fill="var(--tac)"/><circle cx="49" cy="36" r="3.6" fill="var(--tac)"/>',
+  // An open picture book: two pages, a picture on the left, a ribbon.
+  picbook: '<path d="M32 16C24 11 15 10 6 12v38c9-2 18-1 26 4 8-5 17-6 26-4V12c-9-2-18-1-26 4z"/><path d="M32 16v38" stroke="var(--t2)" stroke-width="3"/><path d="M11 38l6-8 5 5 4-4 3 7z" fill="var(--t2)"/><circle cx="20" cy="22" r="3" fill="var(--tac)"/><path d="M38 22h14M38 29h14M38 36h10" stroke="var(--t2)" stroke-width="2.6" stroke-linecap="round"/><path d="M45 8v14l3-3 3 3V8z" fill="var(--tac)"/>',
   // A scene with someone in it and a text box over it.
   vn: '<rect x="7" y="8" width="50" height="46" rx="7"/><circle cx="32" cy="23" r="8" fill="var(--t2)"/><path d="M19 41c2-7 7-10 13-10s11 3 13 10z" fill="var(--t2)"/><rect x="11" y="37" width="42" height="13" rx="4" fill="var(--tac)"/><path d="M16 43.5h20" stroke="var(--t2)" stroke-width="2.5" stroke-linecap="round"/><path d="M47 41l2 3 2-3z" fill="var(--t2)"/>',
   music: '<path d="M24 46V14l26-6v32" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/><circle cx="18" cy="46" r="8"/><circle cx="44" cy="40" r="8"/><path d="M24 20l26-6" stroke="var(--tac)" stroke-width="4"/>',
@@ -50,6 +52,8 @@ const LINES = {
   gift: 'M4 11h16v9H4zM3 7h18v4H3zM12 7v13M12 7C10.5 4 7 3.5 7 6s3 1 5 1m0 0c1.5-3 5-3.5 5-1s-3 1-5 1', wallet: 'M4 7h15a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM4 7l12-3v3M15 13.5h2', shop: 'M5 8h14l-1.2 12H6.2zM9 10V6a3 3 0 0 1 6 0v4',
   back: 'm15 5-7 7 7 7', home: 'm3 11 9-8 9 8M6 9v12h12V9M10 21v-7h4v7', close: 'm6 6 12 12M6 18 18 6', add: 'M12 5v14M5 12h14',
   next: 'm9 5 7 7-7 7', down: 'm6 9 6 6 6-6', up: 'm6 15 6-6 6 6', lock: 'M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5z',
+  repeat: 'M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4', repeat1: 'M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4M11 10l1.5-1v6',
+  shuffle: 'M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5',
   play: 'M7 4.5v15l12.5-7.5z', pause: 'M8 5v14M16 5v14', stop: 'M6.5 6.5h11v11h-11z', prev: 'M6 5v14M19 5 9 12l10 7z', skip: 'M18 5v14M5 5l10 7-10 7z',
   heart: 'M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z',
   star: 'm12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',

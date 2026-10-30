@@ -13,7 +13,6 @@
 import {storyReply} from './core/outgoing.js';
 import {drawSeparate, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
-import {openImageViewer} from './image-viewer.js';
 import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
 import {plainStory, activeChatPreset} from './core/chat.js';
@@ -29,6 +28,9 @@ const versionsOf = record => !record ? [] : Array.isArray(record.versions) ? rec
  * voice: 回复后单独配音 ({wanted(), has(text), rules(), format()}): whether it is on, whether a reply already has its
  * lines voiced, the voice preset's prompt for the speakers and its 台词格式. Without it replies are never voiced here.
  */
+// the viewer (image-viewer.js) is loaded the first time a picture is opened, not with the tavern
+let viewerLoad = null;
+const viewerCode = () => viewerLoad ||= import('./image-viewer.js').catch(error => { viewerLoad = null; throw error; });
 export function createPictureHost({context, redrawMessage = (id, message) => context().updateMessageBlock?.(id, message), settings, backend, marker, scheduleRender, openDraw, notice, voice = null, phone = null, speakers = () => [], voiced: lined = () => {}}) {
   const jobs = new Map(); // queue key -> {state: 'generating'|'error', message}
   const folds = new Map(); // `${id}:${hash}` -> true/false, this session's fold choice per picture
@@ -268,8 +270,16 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     if (!s.draw.auto) return;
     const tags = parsePictures(message.mes).filter(tag => !stored(message, tag.hash));
     if (!tags.length) return;
-    const permission = await allowed(false);
-    if (!permission) { backend.reportDiagnostic?.('正文出图', {message:'自动出图未执行，当前设置无法确认免费额度',engine:s.draw.engine,relay:!!s.draw.relay.url}, 'warn');scheduleRender(); return; }
+    let permission = await allowed(false);
+    // The subscription could not be read (a network hiccup, say): once more before giving up, so it does not take saving the
+    // settings again to make it work.
+    if (!permission && backend.drawQuote?.().free === null) { await new Promise(resolve => setTimeout(resolve, 1500)); permission = await allowed(false); }
+    if (!permission) {
+      backend.reportDiagnostic?.('正文出图', {message:'自动出图未执行，当前设置无法确认免费额度',engine:s.draw.engine,relay:!!s.draw.relay.url}, 'warn');
+      // Said out loud when it is the reading that failed (a picture that would cost Anlas is left undrawn without a word, as meant).
+      if (backend.drawQuote?.().free === null) notice('自动出图没有执行：暂时读不到订阅信息，确认不了免不免费。可以点楼层菜单里的「给这层楼生图」手动画');
+      scheduleRender(); return;
+    }
     await Promise.all(tags.map(tag => generate(id, tag, {permission})));
   }
 
@@ -389,7 +399,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const list = versionsOf(stored(message, tag.hash));
       // Paging in the viewer also changes which version the chat shows.
       const pick = i => { if (i !== shown(message, tag.hash)?.index) { keep(message, tag.hash, list, i); saveSoon(); scheduleRender(); } };
-      openImageViewer({doc: document, from: source?.querySelector?.('img') || source,
+      viewerCode().then(({openImageViewer}) => openImageViewer({doc: document, from: source?.querySelector?.('img') || source,
         gallery: {items: list.map(v => ({src: v.url, alt: tag.prompt, info: pictureInfo(v, tag)})), index: pic.index, onIndex: pick},
         actions: [
           downloadAction(document, i => ({source: list[i].url, name: [(list[i].characters || []).join('、') || context()?.name2 || 'ST-iPhonie', list[i].seed].filter(v => v !== undefined && v !== '').join('_')}), notice),
@@ -398,7 +408,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
           {label: '在绘图中打开', run: () => act('open', id, message, tag)},
           {label: '收起', run: () => act('fold', id, message, tag)},
           {label: '删除这版', danger: true, run: i => { pick(i); return remove(id, tag).then(done => done ? undefined : false); }}
-        ]});
+        ]})).catch(error => notice(error.message));
     }
     if (action === 'delete') remove(id, tag).catch(error => notice(error.message));
   }
@@ -594,6 +604,17 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     throw Error('聊天里还没有角色的回复');
   }
 
+  /** 给这层楼配音: one floor's reply voiced (回复后单独配音), the lines there replaced; it works for any floor, not only the newest. */
+  async function voiceMessage(id) {
+    const m = context().chat[id];
+    if (!storyReply(m)) throw Error('找不到这层楼的回复');
+    if (!voice) throw Error('配音没有开');
+    const was = m.mes;
+    if (voice.has(m.mes)) m.mes = voice.strip(m.mes);
+    // The lines go back as they were when nothing new could be put in.
+    try { const {voiced} = await planReply(id, {voiced: true, pictured: false}); notice(voiced ? '已给这层楼配好音' : '这层楼没有可配音的台词'); return voiced; } catch (error) { if (context().chat[id] === m) m.mes = was; throw error; }
+  }
+
   async function drawMessage(id) {
     const message = context().chat[id];
     if (!storyReply(message)) throw Error('找不到这层楼的回复');
@@ -605,5 +626,5 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const permission = await allowed(true); if (!permission) return;
     for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {tagText, drawMessage, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {tagText, drawMessage, voiceMessage, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }

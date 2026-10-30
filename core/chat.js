@@ -255,7 +255,7 @@ export function phoneFormat({user = '我', names = [], groups = [], images = fal
     '- 礼物：「名字：[礼物 物品名] 附言」',
     '- 分享歌曲：「名字：[分享歌曲] 歌名 - 歌手｜想说的话」',
     `- 打电话：「名字：[打电话] 为什么打」（${user}的手机会响，每次最多一个）`,
-    `- 发朋友圈：「名字：[朋友圈] 动态内容」（发给所有朋友看的，不是发给${user}的）`,
+    `- 发朋友圈：「名字：[朋友圈] 动态内容${images ? '｜配图用的英文 danbooru tag（有画面感才配，不配图就不写｜和后面的 tag）' : ''}」（发给所有朋友看的，不是发给${user}的）`,
     `私聊是一对一的：${after ? '' : '<phone></phone> 里'}每个人的每一条都是他单独发给${user}的，只有他和${user}看得到，发到他和${user}的私聊窗口里。所以：`,
     `- 每条都是对${user}说的（「你」就是${user}），不对别人说话、不喊别人的名字让对方接话；想说别人的事，就当着${user}的面说起他。`,
     `- 几个人都发消息时，各发各的：彼此看不到对方发了什么，不回应、不引用、不接着别人私聊里的话，也不知道别人给${user}发过消息（正文里当面说过、${user}告诉过他的除外）。`,
@@ -401,7 +401,7 @@ export function knowsRule(names, user, {prompts = {}, group = false} = {}) {
   const one = names.length === 1 ? names[0] : '';
   return promptText(prompts, 'knows', 'text', {'谁': one || '各人', '每个人': one || '每个人', '用户': user, '告诉': one ? ' TA ' : '自己', '某人': one || '一个人', '那人': one || '这个人', '群聊': group});
 }
-export function buildChatRequest({prompts = {}, preset, thread, members, story = [], user = '我', userPersona = '', voiceFormat, lore = '', memory = '', earlier = '', images = false, stickers = [], asking = '', music = null, forum = '', nudge = false, pictures = []}) {
+export function buildChatRequest({prompts = {}, preset, thread, members, story = [], user = '我', userPersona = '', voiceFormat, lore = '', memory = '', earlier = '', images = false, stickers = [], asking = '', music = null, forum = '', groups = '', nudge = false, pictures = []}) {
   const group = thread.type === 'group';
   const partner = group ? thread.name : members[0]?.name || thread.name;
   const speakers = members.filter(m => m.voice);
@@ -417,11 +417,13 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
     '聊天对象资料': members.map(m => `- ${m.name}：${(m.persona || m.card || '').trim() || '（没有资料，按剧情里的表现来）'}`).join('\n'),
     '世界书': lore.trim(), '用户设定': userPersona.trim(), '更早的剧情': earlier.trim(), '最近的剧情': story.map(s => `${s.name}：${s.text}`).join('\n'),
     '论坛': forum.trim() ? promptText(prompts, 'chat-forum', 'text', {'论坛内容': forum.trim()}) : '',
+    // a private chat: what was said lately in the groups the contact is in too
+    '同群': !group && groups.trim() ? promptText(prompts, 'chat-groups', 'text', {'用户': user, '对象': partner, '群消息': groups.trim()}) : '',
     '记忆': memory.trim(),
     '知情范围': story.length || earlier.trim() ? knowsRule(group ? members.map(m => m.name) : [partner], user, {group, prompts}) : '',
     '名单': members.map(m => m.name).join('、'),
     '语音': speakers.length > 0, '语音格式': voiceFormat, '语音语言': speakers.map(m => `${m.name}：${languageName(m.language || 'zh')}`).join('，'),
-    '出图': images, '表情包': stickers.slice(-80).map(s => s.name ?? s).join('、'), '打电话': dialing, '朋友圈': posting, '分享歌曲': !!music?.share, '删好友': !group && !asking,
+    '出图': images, '表情包': stickers.slice(-80).map(s => s.name ?? s).join('、'), '打电话': dialing, '朋友圈': posting, '分享歌曲': !!music?.share, '删好友': !group && !asking, '私聊': group,
     '正在听': music?.listening ? listeningNote(music.listening, user, prompts) : '', '好友申请': asking, '看图': pictures.length > 0});
   // pictures: [{id, url}] — photos sent along for a model that sees; the record numbers them [图片1], [图片2]… in order.
   const seen = new Map(pictures.map((p, i) => [p.id, i + 1]));
@@ -441,8 +443,18 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
 
 const NAME_LINE = /^\s*(?:\*\*)?[[【]?([^\]】:：\n]{1,40}?)[\]】]?(?:\*\*)?\s*[:：]\s*(.*)$/;
 const unquote = s => s.trim().replace(/^[「“"『](.*)[」”"』]$/s, '$1').trim();
-const SPECIAL = /^\s*[[【]\s*(表情包|表情|收下礼物|退还礼物|礼物|送礼|图片|照片|位置|定位|红包|转账|拍一拍|领取红包|领取|收下|收款|退还|退回|朋友圈|发朋友圈|动态|打电话|语音通话|来电|分享歌曲|分享音乐|分享歌|歌曲|音乐|删除好友|删好友|拉黑|通过好友申请|通过好友|同意好友|接受好友|拒绝好友申请|拒绝好友)\s*([^\]】]*)[\]】]\s*(.*)$/;
+const SPECIAL = /^\s*[[【]\s*(表情包|表情|收下礼物|退还礼物|礼物|送礼|图片|照片|位置|定位|红包|转账|拍一拍|领取红包|领取|收下|收款|退还|退回|朋友圈|发朋友圈|动态|配图|打电话|语音通话|来电|分享歌曲|分享音乐|分享歌|歌曲|音乐|私聊|私信|悄悄话|私发|删除好友|删好友|拉黑|通过好友申请|通过好友|同意好友|接受好友|拒绝好友申请|拒绝好友)\s*([^\]】]*)[\]】]\s*(.*)$/;
 const LUCKY = ['6.66', '8.88', '5.20', '13.14', '16.80', '1.88'];
+// Drawing tags from what the model wrote: the English words (Chinese in them is left out), comma separated.
+const tagsOf = s => String(s).replace(/[一-鿿]+/g, ' ').split(/[,，]/).map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ').slice(0, 600);
+// A post's picture: 「（配图：描述｜english tags）」 or 「[配图] tags」 after the text, or 「动态｜english tags」.
+const PICTURE = /\s*[（(【[]\s*配图\s*[:：\]】]\s*([\s\S]*?)\s*[）)\]】]?\s*$/;
+function postPicture(text) {
+  const m = text.match(PICTURE);
+  if (m) { const [said, ...tags] = m[1].split(/[|｜]/); return {text: text.slice(0, m.index).trim(), imageTags: tagsOf(tags.length ? tags.join(',') : said)}; }
+  const bar = text.match(/^([\s\S]+?)\s*[|｜]\s*([\x20-\x7e]{3,})$/);
+  return bar && /[a-z]/i.test(bar[2]) ? {text: bar[1].trim(), imageTags: tagsOf(bar[2])} : {text, imageTags: ''};
+}
 /**
  * A phone-feature line (「[红包 ¥8.88] 祝福」 and the like) as a message; {kind:'claim', action} for taking or returning
  * the user's red packet or transfer. null when the line is ordinary text.
@@ -453,11 +465,18 @@ function special(from, content, {names, user, stickers = []}) {
   const [, what, arg, rest] = m, text = unquote(rest || '').replace(/<[^>]+>/g, '');
   switch (what) {
     // A 朋友圈 post made while chatting: it goes to 朋友圈, not into the chat.
-    case '朋友圈': case '发朋友圈': case '动态': { const said = (text || arg.trim()).slice(0, 2000); return said ? {from, kind: 'moment', text: said} : null; }
+    case '朋友圈': case '发朋友圈': case '动态': {
+      const {text: said, imageTags} = postPicture(text || arg.trim());
+      return said ? {from, kind: 'moment', text: said.slice(0, 2000), ...(imageTags ? {imageTags} : {})} : null;
+    }
+    // The picture of the post just above, on a line of its own.
+    case '配图': { const imageTags = tagsOf((text || arg.trim().replace(/^[:：]\s*/, '')).split(/[|｜]/).at(-1));return imageTags ? {from, kind: 'moment-picture', imageTags} : null; }
     // A voice call placed from the chat: the phone rings after this reply.
     case '打电话': case '语音通话': case '来电': return {from, kind: 'call', reason: (text || arg.trim()).slice(0, 200)};
     // A song shared (「[分享歌曲] 歌名 - 歌手｜想说的话」): a card the user can play.
     case '分享歌曲': case '分享音乐': case '分享歌': case '歌曲': case '音乐': { const [what, ...note] = (arg.trim() ? arg.trim() + (text ? '｜' + text : '') : text).split(/[|｜]/); const song = songOf(what); return song.title ? {from, kind: 'song', song, text: note.join(' ').trim().slice(0, 200)} : null; }
+    // 「[私聊] …」 in a group: what someone says to the user alone (it goes to that one's private chat, not the group).
+    case '私聊': case '私信': case '悄悄话': case '私发': { const said = (arg.trim() ? arg.trim() + (text ? ' ' + text : '') : text).slice(0, 4000); return said ? {from, kind: 'dm', text: said} : null; }
     // 删好友: the contact deletes the user; answering the user's 好友申请.
     case '删除好友': case '删好友': case '拉黑': return {from, kind: 'unfriend'};
     case '通过好友': case '通过好友申请': case '同意好友': case '接受好友': return {from, kind: 'befriend'};
@@ -465,7 +484,7 @@ function special(from, content, {names, user, stickers = []}) {
     case '图片': case '照片': {
       // 「描述｜英文 tag」: the tags draw it when a drawing engine is set up (Chinese words in them are left out).
       const [said, ...tags] = (text || arg.trim()).split(/[|｜]/);
-      const imageTags = tags.join(',').replace(/[一-鿿]+/g, ' ').split(/[,，]/).map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ').slice(0, 600);
+      const imageTags = tagsOf(tags.join(','));
       return said.trim() ? {from, kind: 'photo', text: said.trim().slice(0, 500), ...(imageTags ? {imageTags} : {})} : null;
     }
     // A sticker of the user's collection; a name it does not have stays words.
@@ -499,7 +518,11 @@ export function parseChatReply(reply, {members, user = '我', voiceFormat, voice
     else if (names.length === 1) from = names[0];
     else if (out.length) from = out.at(-1).from;
     if (!from || !content.trim()) continue;
+    // 「（配图：…）」 on the line after a post is that post's picture, not a message.
+    const post = out.at(-1)?.kind === 'moment' && !out.at(-1).imageTags ? out.at(-1) : null;
+    if (post && /^\s*[（(]\s*配图\s*[:：]/.test(content)) { const imageTags = postPicture('x' + content.trim()).imageTags; if (imageTags) post.imageTags = imageTags; continue; }
     const feature = special(from, content, {names, user, stickers});
+    if (feature?.kind === 'moment-picture') { if (post) post.imageTags = feature.imageTags; continue; }
     if (feature) { out.push(feature); if (out.length >= 12) break; continue; }
     const voice = voiceFormat ? parseDialogue(content, voiceFormat)[0] : null;
     if (voice) {

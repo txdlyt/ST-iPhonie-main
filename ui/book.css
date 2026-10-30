@@ -1,0 +1,44 @@
+/* 绘本 in the phone: the shelf (each cover is the book's own cover, core/book-pages.js), the making sheet, and the
+   reader filling the screen (book-reader.js brings the pages' and the reader's own styles). */
+
+.bk-shelf{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 14px;padding:6px 2px 14px}
+.bk-card{position:relative;display:block;border:0;padding:0;background:none;cursor:pointer;text-align:left;font:inherit;color:inherit;transition:transform .2s}
+.bk-card:active{transform:scale(.97)}
+.bk-mini{position:relative;display:block;aspect-ratio:3/4;border-radius:5px 12px 12px 5px;overflow:hidden;box-shadow:-4px 0 0 rgba(0,0,0,.16) inset,0 12px 24px -10px rgba(0,0,0,.55),0 2px 4px rgba(0,0,0,.15)}
+.bk-mini::before{content:'';position:absolute;left:0;top:0;bottom:0;width:9px;z-index:10;background:linear-gradient(90deg,rgba(0,0,0,.28),rgba(255,255,255,.18) 60%,transparent);pointer-events:none}
+.bk-badge{display:block;margin-top:7px;font-size:11.5px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-new{display:grid;place-items:center;align-content:center;gap:6px;aspect-ratio:3/4;border-radius:14px;border:2px dashed var(--line);background:var(--card);color:var(--ink2);font:inherit;font-weight:800;cursor:pointer}
+.bk-new .icon{width:30px;height:30px;color:var(--accent)}
+
+/* making a book */
+.bk-themes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px}
+.bk-theme{display:grid;gap:5px;justify-items:center;padding:11px 4px 9px;border-radius:14px;border:2px solid transparent;background:var(--bk-paper);color:var(--bk-ink);font:inherit;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
+.bk-theme b{font-family:var(--bk-title);font-size:16px;font-weight:800;color:var(--bk-accent);letter-spacing:.04em}
+.bk-theme[data-theme=ancient] b,.bk-theme[data-theme=romance] b{font-weight:400;font-size:17px}
+.bk-theme[data-theme=scifi] b{text-shadow:0 0 6px var(--bk-accent)}
+.bk-theme i{width:30px;height:5px;border-radius:3px;background:linear-gradient(90deg,var(--bk-accent),var(--bk-soft))}
+.bk-theme[aria-pressed=true]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.bk-range{display:flex;gap:10px;flex-wrap:wrap;margin:-4px 0 12px}
+.bk-range input{width:76px}
+.bk-progress{display:grid;gap:10px;padding:14px;border-radius:18px;background:var(--card2)}
+.bk-progress b{font-size:14px}
+.bk-progress small{color:var(--ink2);font-size:12px;line-height:1.5}
+.bk-preview{justify-self:center;width:62%;max-height:240px;object-fit:contain;border-radius:10px;box-shadow:0 8px 20px -8px rgba(0,0,0,.45);animation:rise-in .4s ease both}
+.bk-bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.bk-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+
+/* reading: the book fills the screen */
+.view.book-mode{padding:0;overflow:hidden}
+.view.book-mode:before{display:none}
+.bk-reading{position:absolute;inset:0}
+
+/* changing a spread */
+.bk-rows{display:grid;gap:8px;margin-bottom:8px}
+.bk-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px 8px;align-items:center;padding:8px;border-radius:14px;background:var(--card2)}
+.bk-row select{max-width:150px;min-height:38px;padding:6px 10px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);font-size:15px}
+.bk-row textarea{grid-column:1/-1;min-width:0;resize:vertical}
+.bk-bub{display:flex;align-items:center;gap:5px;font-size:13px;white-space:nowrap}
+.bk-check{display:flex;align-items:center;gap:8px;margin:4px 0 10px;font-size:13.5px}
+.bk-chips{display:flex;flex-wrap:wrap;gap:6px}
+.bk-chips button{padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:13px;cursor:pointer}
+.bk-chips button[aria-pressed=true]{background:var(--accent);color:var(--on-accent);border-color:transparent}

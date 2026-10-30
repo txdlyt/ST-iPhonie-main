@@ -1,6 +1,7 @@
 import {createView, esc, engines, btn, heading, empty, size, field, input, textArea, groupTitle, avatar, help, pictureCopies} from './common.js';
 import {icon, wave, halo} from './icons.js';
 import {openAlbum} from './album-viewer.js';
+import {thumbBlob} from './thumbs.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
 import {saveFile, shareFile, canShareFiles, zipFiles} from '../download.js';
 import {decodeMono, joinClips, encodeWav, JOIN_RATE} from '../core/audio-join.js';
@@ -108,8 +109,8 @@ export function galleryApp(ctx) {
   const urlFor = blob => { const url = ctx.win.URL.createObjectURL(blob); urls.add(url); return url; };
   const photoFile = async id => { const photo = await api.getPhoto(id); if (!photo) throw Error('这张照片已经不在了'); return {source: photo.blob, name: photo.name}; };
   const importButton = `<label class="chip-button file-button">${icon('import')}导入<input type="file" data-photo-files multiple accept="image/png,image/jpeg,image/webp,image/avif,image/gif" aria-label="导入照片"></label>`;
-  // 相册 by character card (like BaiBai's gallery): a group for each card, 未分类 for photos that came from nowhere in
-  // particular (imported, or made before cards were kept). A group opens when tapped; the card open now starts open.
+  // 相册 by character card (like BaiBai's gallery): a row for each card, 未分类 for the photos that came from nowhere in
+  // particular (imported, or made before cards were kept). A row opens when tapped; the card open now starts open.
   const opened = new Set();
   let seeded = false;
   const NOCARD = '未分类';
@@ -122,8 +123,8 @@ export function galleryApp(ctx) {
     const map = new Map();
     for (const r of rows) { const k = r.card || ''; if (!map.has(k)) map.set(k, []); map.get(k).push(r); }
     const order = [...map.keys()].sort((x, y) => (y === here) - (x === here) || (x === '') - (y === ''));
-    if (!seeded) { seeded = true; if (here) opened.add(here); }
-    const single = order.length === 1, isOpen = k => single || opened.has(k);
+    if (!seeded) { seeded = true; if (here && map.has(here)) opened.add(here); if (order.length === 1) opened.add(order[0]); }
+    const isOpen = k => opened.has(k);
     const label = k => k ? (names.get(k) || map.get(k).find(r => r.cardName)?.cardName || '没有名字的卡') : NOCARD;
     shown = order.filter(isOpen).flatMap(k => map.get(k).map(r => r.id));
     const all = new Set(rows.map(r => r.id));
@@ -131,18 +132,24 @@ export function galleryApp(ctx) {
     if (!rows.length) selecting = null;
     const tools = selecting ? btn('select-cancel', '取消', 'chip-button') : (rows.length ? btn('select', icon('check') + '选择', 'chip-button') : '') + importButton;
     const group = k => {
-      const list = map.get(k), open = isOpen(k);
-      return `<section class="photo-group${open ? ' open' : ''}"><div class="photo-group-head"><button type="button" class="group-toggle" data-action="toggle-group" data-group="${esc(k)}" aria-expanded="${open}"><span class="group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span><strong>${esc(label(k))}</strong><small>${list.length} 张${k && k === here ? ' · 现在打开的卡' : ''}</small></button>${selecting ? btn('select-group', list.every(r => selecting.has(r.id)) ? '取消本组' : '选这一组', 'text-button', `data-group="${esc(k)}"`) : ''}</div>`
+      const list = map.get(k), open = isOpen(k), kind = k === here && k ? ' here' : k === '' ? ' none' : '';
+      return `<section class="album-group${open ? ' open' : ''}"><div class="album-row"><button type="button" class="album-toggle" data-action="toggle-group" data-group="${esc(k)}" aria-expanded="${open}"><span class="album-dot${kind}" aria-hidden="true"></span><span class="album-name${kind}" title="${esc(label(k))}">${esc(label(k))}</span><span class="album-count">${list.length}</span><span class="album-chev" aria-hidden="true">${open ? '▾' : '▸'}</span></button>${selecting ? btn('select-group', list.every(r => selecting.has(r.id)) ? '取消本组' : '选这一组', 'text-button', `data-group="${esc(k)}"`) : ''}</div>`
         + (open ? `<div class="photo-grid${selecting ? ' selecting' : ''}">${list.map(r => `<button data-action="photo" data-id="${esc(r.id)}" aria-label="${selecting ? '选择' : '查看'} ${esc(r.name)}"${selecting ? ` aria-pressed="${selecting.has(r.id)}"` : ''}><img loading="lazy" data-photo="${esc(r.id)}" alt="${esc(r.name)}"></button>`).join('')}</div>` : '') + '</section>';
     };
+    const part = (title, keys) => keys.length ? `<div class="album-eyebrow">${title}</div>${keys.map(group).join('')}` : '';
+    const sections = part('现在打开的卡', order.filter(k => k && k === here)) + part('其他卡', order.filter(k => k && k !== here)) + part(NOCARD, order.filter(k => k === ''));
     v.draw(heading('相册', `<span class="gallery-tools">${tools}</span>`, `Album · ${rows.length}`) + (rows.length
-      ? order.map(group).join('') + (selecting ? `<div class="select-bar"><span data-select-count>${countText()}</span>${btn('select-all', allText(), 'text-button')}${btn('select-move', icon('next') + '移到', 'secondary', selecting.size ? '' : 'disabled')}${btn('select-download', icon('download') + '下载', 'secondary', selecting.size ? '' : 'disabled')}${btn('select-delete', icon('trash') + '删除', 'danger', selecting.size ? '' : 'disabled')}</div>` : '')
+      ? sections + (selecting ? `<div class="select-bar"><span data-select-count>${countText()}</span>${btn('select-all', allText(), 'text-button')}${btn('select-move', icon('next') + '移到', 'secondary', selecting.size ? '' : 'disabled')}${btn('select-download', icon('download') + '下载', 'secondary', selecting.size ? '' : 'disabled')}${btn('select-delete', icon('trash') + '删除', 'danger', selecting.size ? '' : 'disabled')}</div>` : '')
       : empty('留住喜欢的画面', '从本地导入照片，也可以设为手机壁纸。', 'image')));
-    for (const row of rows) {
-      if (!shown.includes(row.id)) continue;
-      const photo = await api.getPhoto(row.id);
+    // The small pictures already made show at once; the others are made one by one in the grid's order, and kept.
+    const imgs = new Map([...v.root.querySelectorAll('[data-photo]')].map(el => [el.dataset.photo, el]));
+    const drawn = rows.filter(r => imgs.has(r.id));
+    for (const row of drawn) if (row.thumb) imgs.get(row.id).src = urlFor(row.thumb);
+    for (const row of drawn) {
+      if (row.thumb) continue;
+      const blob = await thumbBlob(api, row);
       if (v.disposed || ticket !== epoch) return;
-      if (photo) { const img = [...v.root.querySelectorAll('[data-photo]')].find(el => el.dataset.photo === row.id); if (img) img.src = urlFor(photo.blob); }
+      if (blob && imgs.has(row.id)) imgs.get(row.id).src = urlFor(blob);
     }
   }
   const countText = () => selecting.size ? `已选 ${selecting.size} 张` : '点照片来选择';
@@ -164,7 +171,8 @@ export function galleryApp(ctx) {
     let changed = false;
     album = openAlbum({ctx, host: v.root.closest('.screen') || ctx.doc.body, ids: shown, index: Math.max(0, shown.indexOf(id)), from,
       to: id => [...v.root.querySelectorAll('.photo-grid [data-id]')].find(b => b.dataset.id === id)?.getBoundingClientRect(),
-      load: id => api.getPhoto(id),
+      // a photo made smaller by 压缩旧图 says so under 参数
+      load: async id => { const p = await api.getPhoto(id); return p?.packed ? {...p, info: [...(p.info || []), ['压缩', `已压缩，原图 ${size(p.packed.size)}`]]} : p; },
       actions: [
         {key: 'wallpaper', icon: 'image', label: '设为壁纸', run: async id => { await api.savePhone({wallpaper: {kind: 'photo', photoId: id}}); ctx.notify('已设为壁纸'); }},
         {key: 'download', icon: 'download', label: '下载', run: async id => { const {source, name} = await photoFile(id); const [file] = await pictureCopies(ctx, [{blob: source, name}]) || []; if (file) await saveAs(ctx, file); }},
@@ -180,7 +188,7 @@ export function galleryApp(ctx) {
   /** 移到…: under a card the phone knows by name, or back to 未分类. */
   function moveSheet(ids) {
     const open = api.cardList(), known = [{key: '', name: NOCARD}, ...open];
-    const d = ctx.dialog('移到哪张卡', `<p class="help-copy">卡的名字是打开过那张卡时记下的。照片只是换了分组，不会改图。</p><div class="group">${known.map(c => `<button type="button" class="list-row" data-pick-card="${esc(c.key)}" data-card-name="${esc(c.key ? c.name : '')}"><span><strong>${esc(c.name)}</strong>${c.open ? '<small>现在打开的卡</small>' : ''}</span></button>`).join('')}</div>`);
+    const d = ctx.dialog('移到哪张卡', `<p class="help-copy">卡的名字是打开过那张卡时记下的。照片只是换了分组，不会改图。</p><div class="group">${known.map(c => `<button type="button" class="list-row" data-pick-card="${esc(c.key)}" data-card-name="${esc(c.key ? c.name : '')}"><span><strong class="album-name">${esc(c.name)}</strong>${c.open ? '<small>现在打开的卡</small>' : ''}</span></button>`).join('')}</div>`);
     d.body.addEventListener('click', e => {
       const b = e.target.closest('[data-pick-card]');
       if (!b) return;
@@ -233,8 +241,8 @@ export function galleryApp(ctx) {
       case 'select-all': selecting = shown.length && shown.every(id => selecting.has(id)) ? new Set() : new Set([...selecting, ...shown]); await render(); break;
       case 'toggle-group': { const k = el.dataset.group; if (opened.has(k)) opened.delete(k); else opened.add(k); await render(); break; }
       case 'select-group': {
-        const rows = (await api.listPhotos()).filter(r => (r.card || '') === el.dataset.group).map(r => r.id);
-        if (rows.every(id => selecting.has(id))) for (const id of rows) selecting.delete(id); else for (const id of rows) selecting.add(id);
+        const ids = (await api.listPhotos()).filter(r => (r.card || '') === el.dataset.group).map(r => r.id);
+        if (ids.every(id => selecting.has(id))) for (const id of ids) selecting.delete(id); else for (const id of ids) selecting.add(id);
         await render();
         break;
       }

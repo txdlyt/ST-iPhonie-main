@@ -29,6 +29,7 @@ export interface VnSettings {
     /** 不演的标签: tag names whose content the stage leaves out. */
     skip: string[];
     cast: Record<string, VnCastEntry>;
+    moves: VnMoveFile[];
 }
 export interface VnAction { id: string; label: string; tags: string; words: string[]; }
 /** One picture in use and the others of its group (mix: they take turns at random). */
@@ -38,7 +39,17 @@ export interface VnSet extends VnGroup { seed?: number; looks: Record<string, Vn
 /** 形象: another set of 立绘 (a school uniform, a robe), drawn with its own looks. */
 export interface VnOutfit extends VnSet { id: string; label: string; appearance: string; }
 /** 模型 (core/model-files.js normalizeModel): a VRM or Live2D model the stage shows in place of the 立绘. frame: 取景; map: a Live2D model's 表情 / 动作 ('group:index') for each of the five 情绪. */
-export interface VnModel { id: string; kind: 'vrm' | 'live2d'; version: string; path: string; file: string; size: number; title: string; frame: 'half' | 'full' | 'face'; zoom: number; lift: number; map: Record<string, { expression: string; motion: string }>; /** Live2D 表情 kept on (its look); absent: guessed. */ keep?: string[]; at: number; }
+/** A motion file (.vrma) the user added, for every VRM character, brought on by its words. */
+export interface VnMoveFile { id: string; label: string; words: string[]; path: string; file: string; size: number; seconds: number; at: number; }
+/** 绘本 (core/book.js normalizeBook / normalizeSpread). */
+export interface BookLine { role: string; text: string; emotion: string; from?: { id: number; line: number } }
+export type BookPicture = { url: string } | { id: string } | null;
+/** A piece of a spread's words (what is printed is what is read); bubble: shown in a speech bubble, at: the side its speaker is on. */
+export interface BookWord extends BookLine { bubble: boolean; at: 'left' | 'right' }
+/** A spread (two pages seen together): its layout; side: the page its picture (or 立绘) is on, or for one across both pages the page its words are on; space / tone: where a picture across both pages leaves room for the words and whether that room is light or dark; heading; pictures; words; cast: who stands on it as their 立绘 (人物出场); fx: the weather drawn over it; sound: its ambience and sound (音效 library names). */
+export interface BookSpread { layout: 'quiet' | 'page' | 'window' | 'spread' | 'fade' | 'ground' | 'pair' | 'stage' | 'text'; side: 'left' | 'right'; space: 'top' | 'bottom'; tone: 'light' | 'dark'; heading: string; pictures: Array<{ prompt: string; picture: BookPicture; people: boolean }>; words: BookWord[]; cast: Array<{ name: string; emotion: string }>; fx: string[]; sound: { ambience: string; sfx: string } }
+export interface Book { id: string; version: 3; title: string; subtitle: string; author: string; theme: string; art: 'book' | 'app'; mode: 'story' | 'retell'; source: { chat: string; name: string; from: number; to: number }; cover: { prompt: string; picture: BookPicture }; spreads: BookSpread[]; ending: string; at: number; made: number }
+export interface VnModel { /** Live2D: the model's own motions ('group:index') and their words. */ acts?: Record<string, string[]>; id: string; kind: 'vrm' | 'live2d'; version: string; path: string; file: string; size: number; title: string; frame: 'half' | 'full' | 'face'; zoom: number; lift: number; map: Record<string, { expression: string; motion: string }>; /** Live2D 表情 kept on (its look); absent: guessed. */ keep?: string[]; at: number; }
 export interface VnCastEntry extends VnSet { actions: VnAction[]; outfits: VnOutfit[]; /** Up to 8, to switch between. */ models?: VnModel[]; /** The one in use ('' = the 立绘). */ useModel?: string; }
 /** 整篇朗读 (core/narration.js). voice: 'system' = the browser's speech; 'role' = the 旁白 role in the 角色 App. */
 export interface NarrationSettings {
@@ -351,14 +362,20 @@ export interface ChatMessage { id: string; from: 'me' | string; kind: ChatKind; 
 /** pinned: 置顶. muted: 免打扰 (its unread messages do not count toward the badge). */
 /** 删好友 on a private chat: by 'me' the user deleted the contact (their messages wait as requests); by 'them' the contact deleted the user. */
 /** A music source the user added: search and link addresses ({{query}}, {{id}}) and where the answers keep each field. */
-export interface MusicSource { id: string; name: string; enabled: boolean; search: string; url: string; lyric: string; listPath: string; idPath: string; titlePath: string; artistPath: string; urlPath: string; lyricPath: string; }
-/** 音乐: bgm 'off' | 'tap' | 'auto' (the story picks songs with <bgm>), its rule, the volume, turning down for voice lines, songs shared in chats. */
-export interface MusicSettings { bgm: 'off' | 'tap' | 'auto'; rule: string; volume: number; duck: boolean; share: boolean; sources: MusicSource[]; }
+export interface MusicSource { id: string; name: string; enabled: boolean; search: string; url: string; lyric: string; listPath: string; idPath: string; titlePath: string; artistPath: string; urlPath: string; lyricPath: string; direct: boolean; albumSearch: string; albumListPath: string; albumSongs: string; albumSongsPath: string; artistSearch: string; artistListPath: string; artistSongs: string; artistSongsPath: string; playlistSearch: string; playlistListPath: string; playlistSongs: string; playlistSongsPath: string; }
+/** 音乐: bgm 'off' | 'tap' | 'auto' (the story picks songs with <bgm>), its rule, the volume, turning down for voice lines, songs shared in chats, how lists go on, whether some of the 歌单 goes with the rule as a taste. */
+export interface MusicSettings { bgm: 'off' | 'tap' | 'auto'; rule: string; volume: number; duck: boolean; share: boolean; mode: 'order' | 'shuffle' | 'one'; taste: boolean; sources: MusicSource[]; }
 /** A 歌单 song: a file on this device, or a song of a source (its link is fetched when it plays). */
 export interface MusicSong { id: string; kind: 'song'; at: number; title: string; artist: string; origin: 'file' | 'source'; source?: string; songId?: string; lyric?: string; size?: number; mime?: string; }
 export interface MusicFound { source: string; sourceName: string; id: string; title: string; artist: string; }
+/** An album or an artist a search found (an album's artist; how many songs, when the source says). */
+export interface MusicGroup { source: string; sourceName: string; kind: 'album' | 'artist' | 'playlist'; id: string; name: string; artist: string; count: number; }
+/** 正文点的歌: a song the story picked (where it was found, once it was). */
+export interface MusicHeard { id: string; kind: 'heard'; at: number; title: string; artist: string; source?: string; songId?: string; }
+/** A 歌单 the user made: its songs (ids of 全部's songs), the newest on top. */
+export interface MusicPlaylist { id: string; kind: 'playlist'; at: number; name: string; songs: string[]; }
 /** What plays now (the tavern page's player). */
-export interface MusicStatus { phase: 'idle' | 'loading' | 'playing' | 'paused' | 'error'; message: string; track: { title: string; artist: string; from: string; origin: string; id: string; source: string; songId: string } | null; position: number; duration: number; volume: number; queue: number; index: number; lyric: string; lyricIndex: number; lyrics: { at: number; text: string }[]; }
+export interface MusicStatus { phase: 'idle' | 'loading' | 'playing' | 'paused' | 'error'; message: string; track: { title: string; artist: string; from: string; origin: string; id: string; source: string; songId: string } | null; position: number; duration: number; volume: number; queue: number; index: number; mode: 'order' | 'shuffle' | 'one'; from: string; lyric: string; lyricIndex: number; lyrics: { at: number; text: string }[]; }
 export type MusicTrack = Partial<MusicSong> & { title: string; artist?: string; from?: string };
 export interface ChatFriendState { by: 'me' | 'them'; at: number; requests: { text: string; at: number }[]; }
 export interface ChatThread { id: string; type: 'dm' | 'group'; name: string; members: string[]; unread: number; pinned: boolean; muted: boolean; createdAt: number; updatedAt: number; messages: ChatMessage[]; friend?: ChatFriendState; }
@@ -494,6 +511,10 @@ export interface MediaMetadata extends LocalTimestamps {
     name: string;
     type: string;
     size: number;
+    /** listPhotos only: the photo's small picture for grids, once one was made (photoThumb). */
+    thumb?: Blob;
+    /** Photos made smaller by 压缩旧图: when, and how big the original was. */
+    packed?: {at: number; size: number};
 }
 export interface Photo extends MediaMetadata { blob: Blob; /** the card it was drawn under (none: 未分类) */ card?: string; cardName?: string; }
 export interface PhotoInput { name?: string; blob: Blob; }
@@ -719,12 +740,27 @@ export interface BackendFacade {
     listPhotos(): Promise<MediaMetadata[]>;
     addPhoto(value: PhotoInput): Promise<Photo>;
     getPhoto(id: string): Promise<Photo | null>;
+    /** The photo's small picture for grids, made and kept the first time it is asked for; null when the photo is gone or unreadable. */
+    photoThumb(id: string): Promise<Blob | null>;
+    /** The photo's middle-sized picture for chat bubbles, posts and the 今天 widget, or null: then the photo itself shows (and
+     *  one is made in the background for next time, where one is worth having). */
+    photoPreview(id: string): Promise<Blob | null>;
+    /** 压缩旧图: the album's PNGs not made smaller yet, saved more than `days` days ago (0: all), without the wallpaper, icons,
+     *  avatars and chat background. */
+    packablePhotos(days?: number): Promise<{photos: {id: string; name: string; size: number}[]; count: number; bytes: number}>;
+    /** Keeps these photos as WebP (JPEG) at full size; the originals are gone. Bytes are of the ones made smaller. */
+    packPhotos(ids: string[]): Promise<{count: number; skipped: number; before: number; after: number}>;
     deletePhoto(id: string): Promise<boolean>;
     /** Deletes several album photos at once; 朋友圈 and 查手机 pictures among them go back to «not drawn». */
     deletePhotos(ids: string[]): Promise<number>;
     listNotes(): Promise<Note[]>;
     saveNote(value: NoteInput): Promise<Note>;
     deleteNote(id: string): Promise<boolean>;
+    /** 绘本 (core/book.js): the shelf, newest first; one book; keep one (made or changed); throw one away (its drawn pictures stay in 相册). */
+    listBooks(): Promise<Book[]>;
+    getBook(id: string): Promise<Book | null>;
+    saveBook(book: Book): Promise<Book>;
+    deleteBook(id: string): Promise<boolean>;
     getPhone(): Promise<PhonePreferences>;
     savePhone(patch: PhonePatch): Promise<PhonePreferences>;
     libraryStats(): Promise<LibraryStats>;
@@ -756,14 +792,30 @@ export interface BackendFacade {
     /** 音效 options. */
     saveSounds(patch: Partial<SoundSettings>): SoundSettings;
     saveMusic(patch: Partial<MusicSettings>): MusicSettings;
-    /** Searches the enabled music sources (or one). */
-    searchMusic(query: string, sourceId?: string | Partial<MusicSource>): Promise<{ songs: MusicFound[]; errors: { source: string; message: string }[] }>;
+    /** Searches the enabled music sources (or one): songs (kind 'song', the default), or albums / artists (groups); page 0, 1, … (more: a full page came). */
+    searchMusic(query: string, sourceId?: string | Partial<MusicSource>, options?: { kind?: 'song' | 'album' | 'artist' | 'playlist'; page?: number }): Promise<{ songs?: MusicFound[]; groups?: MusicGroup[]; errors: { source: string; message: string }[]; more: boolean }>;
+    /** The songs of an album, artist or playlist a search found: a page of `limit` (at most 200), from `offset`. */
+    groupSongs(sourceId: string, kind: 'album' | 'artist' | 'playlist', id: string, page?: number, options?: { limit?: number; offset?: number }): Promise<{ songs: MusicFound[]; more: boolean }>;
+    /** 正文点的歌, newest first. */
+    listHeard(): Promise<MusicHeard[]>;
+    forgetHeard(ids: string[]): Promise<boolean>;
+    clearHeard(): Promise<boolean>;
     musicLink(sourceId: string | Partial<MusicSource>, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     musicLyric(sourceId: string, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     listSongs(): Promise<MusicSong[]>;
     songBlob(id: string): Promise<Blob | null>;
     addSongs(list: ({ title: string; artist?: string; blob: Blob } | { title: string; artist?: string; source: string; songId: string })[]): Promise<MusicSong[]>;
     updateSong(id: string, patch: { title?: string; artist?: string; lyric?: string }): Promise<MusicSong>;
+    /** Adds songs to 全部 and into a 歌单 the user made (kept: how many were not in it yet). */
+    addSongsTo(playlistId: string, list: ({ title: string; artist?: string; blob: Blob } | { title: string; artist?: string; source: string; songId: string })[]): Promise<{ added: MusicSong[]; kept: number }>;
+    /** The 歌单 the user made, in the order they were made. */
+    listPlaylists(): Promise<MusicPlaylist[]>;
+    /** Makes a 歌单 (no id) or renames one. */
+    savePlaylist(value: { id?: string; name: string }): Promise<MusicPlaylist>;
+    /** Deletes a 歌单 (withSongs: its songs too, but for those in another 歌单). */
+    deletePlaylist(id: string, options?: { withSongs?: boolean }): Promise<boolean>;
+    addToPlaylist(id: string, songIds: string[]): Promise<{ playlist: MusicPlaylist; kept: number }>;
+    removeFromPlaylist(id: string, songIds: string[]): Promise<MusicPlaylist>;
     deleteSongs(ids: string[]): Promise<boolean>;
     listSounds(): Promise<SoundRow[]>;
     soundBlob(id: string): Promise<Blob | null>;
@@ -972,8 +1024,13 @@ export interface BackendAPI extends BackendFacade {
     /** Whether photos the user sends reach the chat's model as pictures (else only their words). */
     chatSeesPictures?(): Promise<boolean>;
     musicStatus(): MusicStatus;
-    /** Plays a list (the 歌单, search results) from one of its songs. */
-    musicPlayList(list: MusicTrack[], at?: number): Promise<void>;
+    /** Plays a list (the 歌单, search results) from one of its songs; which: the kind of list, for the music to go on with after a song the story picks. */
+    musicPlayList(list: MusicTrack[], at?: number, which?: string): Promise<void>;
+    /** Plays the whole 歌单 ('library'), 正文点的歌 ('heard'), both ('mixed'), or a 歌单 the user made ('playlist:…', with
+     *  '+heard' for it and 正文点的歌 together); from a song at random with 随机播放. */
+    musicPlayFrom?(which: string): Promise<void>;
+    /** 顺序播放, 随机播放 or 单曲循环. */
+    musicMode?(mode: 'order' | 'shuffle' | 'one'): void;
     /** Plays one song; a song given only by name is looked up in the 歌单, then the sources. */
     musicPlay(track: MusicTrack): Promise<void>;
     musicToggle(): Promise<void>;
@@ -1047,6 +1104,19 @@ export interface BackendAPI extends BackendFacade {
     panelFull(on: boolean): boolean;
     /** 视觉小说: opens the stage over the tavern page, from the latest reply, the first message or a message id. */
     vnStart(from: 'latest' | 'first' | number): boolean;
+    /** 绘本 (host-book.js): the open chat; its story from `from` to `to` as steps (core/vn.js storySteps, whole lines); the text model's answer; a page read aloud (resolves when read; false: nothing on it can be read); a page's sound by line for an export (null: not keepable); whether the 旁白 can be read / kept. */
+    bookInfo?(): { chat: string; title: string; length: number; user: string };
+    bookSource?(from?: number, to?: number): { chat: string; title: string; length: number; user: string; from: number; to: number; messages: Array<{ id: number; user: boolean; name: string; steps: Array<{ kind: 'say' | 'narrate' | 'bg'; text?: string; role?: string; emotion?: string; line?: number; part?: number; url?: string; user?: boolean }> }> };
+    bookWrite?(system: string, user: string, options?: { length?: number }): Promise<string>;
+    bookRead?(lines: BookLine[], onLine?: (index: number) => void): Promise<boolean>;
+    /** 绘本: a page's ambience ('ambience', looping until another or 停), a sound ('sfx'), or 'stop' — from the 音效 library while 音效 is on (false: off). */
+    bookSound?(kind: 'ambience' | 'sfx' | 'stop', name?: string): Promise<boolean>;
+    /** 绘本: the names in the 音效 library, for the text model to choose a page's sound from (empty while 音效 is off). */
+    bookSounds?(): Promise<{ ambience: string[]; sfx: string[] }>;
+    bookAudio?(lines: BookLine[]): Promise<Array<Blob | null>>;
+    bookNarration?(): { kept: boolean; readable: boolean };
+    /** 绘本 opened over the whole tavern page at sheet `at` (0 the cover, then the spreads; book-stage.js; the phone is put away). */
+    bookStage?(id: string, at?: number): Promise<boolean>;
     /** 大游戏: opens a game over the whole tavern page (the phone closes); only in the tavern. */
     gameStart?(name: 'antarctic'): boolean;
     /** Keeps a 立绘 (PNG) as a tavern image for a character; null takes it away. Resolves to its path. */
@@ -1056,7 +1126,9 @@ export interface BackendAPI extends BackendFacade {
     vnWear(): Record<string, string>;
     vnSetWear(name: string, outfit: string): Record<string, string>;
     /** A character's 模型: a .vrm or a Live2D .zip (kept in the tavern) joins their models and is put on; use: which one they stand as ('' = 立绘); remove: that one goes; else how it stands. id: which one (default: in use). */
-    vnModel?(name: string, blob: Blob | null, options?: { id?: string; use?: string; remove?: boolean; frame?: 'half' | 'full' | 'face'; zoom?: number; lift?: number; map?: Record<string, { expression: string; motion: string }>; keep?: string[] }): Promise<VnModel | null>;
+    /** 模型的动作文件 (.vrma, for every VRM character): a new one joins them; else rename / give words to / remove the one with id. */
+    vnMoveFile?(blob: Blob | null, options?: { id?: string; label?: string; words?: string | string[]; remove?: boolean }): Promise<VnMoveFile[]>;
+    vnModel?(name: string, blob: Blob | null, options?: { id?: string; use?: string; remove?: boolean; acts?: Record<string, string[]>; frame?: 'half' | 'full' | 'face'; zoom?: number; lift?: number; map?: Record<string, { expression: string; motion: string }>; keep?: string[] }): Promise<VnModel | null>;
     /** What the 视觉小说 last showed for a character and why: a 动作 (and the words that brought it, before or after the line, or in its 情绪), a 表情, or the usual one. */
     vnLastPick?(name: string): { kind: 'action' | 'expression' | 'usual'; label: string; word: string; where?: 'emotion' | 'before' | 'after'; line: string } | null;
     /** 改提示词再画: a picture's English tags read in Chinese ('translate'), or changed the way the user says ('revise'), by the text model. Only in the tavern. */

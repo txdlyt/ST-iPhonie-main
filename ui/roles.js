@@ -17,21 +17,26 @@ export function rolesApp(ctx) {
   let current = null;
   const changed = () => { const el = v.root.querySelector('[data-save-state]'); if (el) el.textContent = '未保存'; };
   // A MiMo voice description can run to a few sentences: cards show its start, the editor shows it whole.
-  const voiceLabel = voice => { const name = voiceNames.get(voice) || favorites().find(f => f.voice === voice)?.name || voice; return name.length > 16 ? name.slice(0, 15) + '…' : name; };
+  // The 音色收藏夹's names by voice: read once per drawing of the list (each read of the settings copies all of them, and
+  // asking once per role made the list slower with every role).
+  const poolNames = () => new Map(favorites().map(f => [f.voice, f.name]));
+  const voiceLabel = (voice, pool = poolNames()) => { const name = voiceNames.get(voice) || pool.get(voice) || voice; return name.length > 16 ? name.slice(0, 15) + '…' : name; };
   // 音色收藏夹 (stored as voicePool: 自动挑音色 picks from it first): voices kept with a name and a note of the user's own.
   const favorites = () => api.getState().voicePool || [];
   const isFavorite = (engine, voice) => favorites().some(f => f.engine === engine && f.voice === voice);
 
   // 角色 by card, as BaiBai keeps its libraries: 全局 (everyone's), 本卡 (the card open now) and the other cards.
   const here = () => api.cardList().find(c => c.open)?.key || '';
+  const clip = (text, n = 16) => { const chars = [...String(text || '')]; return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : chars.join(''); };
+  let listDrawn = '';
   function renderList() {
-    const roles = api.getState().routes, cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), open = here();
+    const roles = api.getState().routes, pool = poolNames(), cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), open = here();
     const tile = (r, i) => {
       const voiced = !!r.voice, engine = voiced ? r.engine : 'none';
       return `<button class="role-card" data-action="edit-role" data-id="${esc(r.id)}" data-engine="${engine}">
         <span class="role-top"><span class="role-no">${number(i)}</span>${voiced ? halo() : ''}${avatar(r.name, engine, 54)}</span>
         <span class="role-body"><strong>${esc(r.name)}</strong>${voiced
-          ? `<span>${plate(engines[r.engine])}</span><small>${esc(voiceLabel(r.voice))}<br>${esc(r.language ? languageName(r.language) : '跟随默认语言')}</small>${r.autoVoice ? '<small class="auto-chip">自动挑的</small>' : ''}`
+          ? `<span>${plate(engines[r.engine])}</span><small>${esc(voiceLabel(r.voice, pool))}<br>${esc(r.language ? languageName(r.language) : '跟随默认语言')}</small>${r.autoVoice ? '<small class="auto-chip">自动挑的</small>' : ''}`
           : '<small class="unset">待选择音色</small><small>出现在聊天里时会等你配音</small>'}</span></button>`;
     };
     const global = [], mine = [], others = new Map();
@@ -43,12 +48,16 @@ export function rolesApp(ctx) {
     });
     const add = `<button class="role-card add" data-action="add-role">${icon('add')}新增角色</button>`;
     const grid = (list, withAdd) => `<div class="role-grid">${list.join('')}${withAdd ? add : ''}</div>`;
-    const sections = (open ? groupTitle('本卡：' + (names.get(open) || '当前卡'), `<small>${mine.length} 个</small>`) + grid(mine, true) : '')
+    const sections = (open ? groupTitle('本卡：' + clip(names.get(open) || '当前卡'), `<small>${mine.length} 个</small>`) + grid(mine, true) : '')
       + groupTitle('全局', `<small>${global.length} 个 · 每张卡都能用</small>`) + grid(global, !open)
-      + [...others].map(([k, list]) => `<details class="role-other" data-group="role-card-${esc(k)}"><summary>${esc(names.get(k) || '没有名字的卡')}<small class="fold-note">${list.length} 个</small></summary>${grid(list, false)}</details>`).join('');
-    v.draw(heading('角色', help('给聊天里说话的角色配一个声音。也可以直接点聊天里的声波，遇到没配过的角色会带你来这里。分成「全局」（每张卡都能用）和各张角色卡自己的角色。') + btn('add-role', icon('add'), 'round-button', 'aria-label="新增角色"'), `Character · ${String(roles.length).padStart(2, '0')}`)
-      + autoGroup() + looksRow()
-      + sections);
+      + [...others].map(([k, list]) => `<details class="role-other" data-group="role-card-${esc(k)}"><summary>${esc(clip(names.get(k) || '没有名字的卡', 20))}<small class="fold-note">${list.length} 个</small></summary>${grid(list, false)}</details>`).join('');
+    const html = heading('角色', help('给聊天里说话的角色配一个声音。也可以直接点聊天里的声波，遇到没配过的角色会带你来这里。分成「全局」（每张卡都能用）和各张角色卡自己的角色，点开一个角色可以改它的「归属」。') + btn('add-role', icon('add'), 'round-button', 'aria-label="新增角色"'), `Character · ${String(roles.length).padStart(2, '0')}`)
+      + autoGroup() + looksRow() + sections;
+    // Reopening 角色 draws the list again only when something in it changed: with dozens of roles, drawing them all
+    // again for nothing was most of the time it took. (A switch flipped but not saved still gets drawn again.)
+    if (html === listDrawn && v.root.querySelector('.role-grid') && ![...v.root.querySelectorAll('input[type=checkbox]')].some(b => b.checked !== b.defaultChecked)) return;
+    listDrawn = html;
+    v.draw(html);
   }
   // ---------- 外貌库 ----------
   const preview = text => { const t = String(text || '').trim().replace(/\s+/g, ' '); return t.length > 60 ? t.slice(0, 59) + '…' : t; };
@@ -66,9 +75,9 @@ export function rolesApp(ctx) {
       (open && !looks.some(l => l.card === open && l.name === r.name) ? btn('look-copy-role', '复制到本卡', 'chip-button', `data-id="${esc(r.id)}"`) : '') + btn('look-open-role', '去角色里改', 'chip-button', `data-id="${esc(r.id)}"`))).join('');
     const byCard = new Map();
     for (const l of looks) if (l.card !== open) { if (!byCard.has(l.card)) byCard.set(l.card, []); byCard.get(l.card).push(l); }
-    const otherRows = [...byCard].map(([k, list]) => `<details class="role-other"><summary>${esc(names.get(k) || '没有名字的卡')}<small class="fold-note">${list.length} 条</small></summary>${list.map(l => row(l.name, l.appearance, '', (open ? btn('look-copy-look', '复制到本卡', 'chip-button', `data-id="${esc(l.id)}"`) : '') + btn('look-delete', '删', 'chip-button', `data-id="${esc(l.id)}"`))).join('')}</details>`).join('');
+    const otherRows = [...byCard].map(([k, list]) => `<details class="role-other"><summary>${esc(clip(names.get(k) || '没有名字的卡', 20))}<small class="fold-note">${list.length} 条</small></summary>${list.map(l => row(l.name, l.appearance, '', (open ? btn('look-copy-look', '复制到本卡', 'chip-button', `data-id="${esc(l.id)}"`) : '') + btn('look-delete', '删', 'chip-button', `data-id="${esc(l.id)}"`))).join('')}</details>`).join('');
     const d = ctx.dialog('外貌库', `<p class="help-copy">全局的外貌每张卡都用；本卡的外貌只在这张卡里用，并盖过全局里同名的。新角色第一次出场时，模型写的外貌会记成本卡的，全局的只有你自己改。</p>`
-      + (open ? groupTitle('本卡：' + (names.get(open) || '当前卡'), btn('look-add', '新增', 'chip-button')) + (mineRows || '<p class="help-copy">这张卡还没有自己的外貌。</p>') : '<p class="help-copy">在酒馆里打开一张角色卡，才能给它记本卡外貌。</p>')
+      + (open ? groupTitle('本卡：' + clip(names.get(open) || '当前卡'), btn('look-add', '新增', 'chip-button')) + (mineRows || '<p class="help-copy">这张卡还没有自己的外貌。</p>') : '<p class="help-copy">在酒馆里打开一张角色卡，才能给它记本卡外貌。</p>')
       + groupTitle('全局') + (globalRows || '<p class="help-copy">还没有角色写了外貌。</p>')
       + (otherRows ? groupTitle('其他卡') + otherRows : ''));
     const done = fn => async e => { try { await fn(); } catch (error) { ctx.notify(error.message, {error: true}); } };
@@ -113,6 +122,7 @@ export function rolesApp(ctx) {
   }
 
   function renderEditor() {
+    listDrawn = '';
     const r = current, c = api.getState().connections[r.engine], schema = api.engineSchema(r.engine);
     const saved = api.getState().routes.findIndex(x => x.id === r.id), pending = api.pendingRole() === r.name && !!r.name;
     const voiced = !!r.voice, model = r.model || c.model;
@@ -128,6 +138,7 @@ export function rolesApp(ctx) {
           <div class="barcode">${barcode((r.name || '') + r.engine + (r.voice || ''))}</div><span class="id-stamp">${voiced ? '已配音' : '待配音'}</span>
         </div>
         <div class="group pad">${field('角色名称', input('name', r.name, 'text', 'placeholder="与台词里的说话者一致"'))}
+          ${field('归属', select('scope', scopeValue(r), scopeChoices(r)), '「全局」的角色每张卡都能用；「仅这张卡」的只在这张卡的故事里出现。新角色默认记在现在打开的卡下。')}
           ${field('别名', input('aliases', Array.isArray(r.aliases) ? r.aliases.join('、') : r.aliases || '', 'text', 'placeholder="正文里的其他叫法，用逗号隔开"'), '正文里有时写全名、有时只写名或姓，比如「夏尔」和「夏尔·凡多姆海恩」：把其他叫法填在这里，都用这个角色的音色，不会再多出一个角色。全名里带「·」的会自动认出来。')}</div>
         ${groupTitle('引擎', help('每个角色在各家引擎里各自记住一套音色和模型，切过去再切回来不会丢。'))}
         <div class="engine-tabs">${Object.entries(engines).map(([k, label]) => {
@@ -274,6 +285,16 @@ export function rolesApp(ctx) {
     drafts.set('new', current);
     render();
   }
+  // 归属: everyone's (全局), or only the card open now; a role that belongs to other cards can stay as it is.
+  const scopeValue = r => { const keys = Array.isArray(r.cards) ? r.cards : [], open = here(); if (!keys.length) return !r.id && open ? 'here' : 'global'; return keys.length === 1 && keys[0] === open ? 'here' : 'keep'; };
+  const scopeChoices = r => {
+    const keys = Array.isArray(r.cards) ? r.cards : [], open = here(), name = api.cardList().find(c => c.open)?.name;
+    return [['global', '全局（每张卡都能用）'], ...(open ? [['here', '仅这张卡：' + clip(name || '当前卡')]] : []), ...(keys.length && !(keys.length === 1 && keys[0] === open) ? [['keep', `现在属于 ${keys.length} 张卡（不改）`]] : [])];
+  };
+  function setScope(value) {
+    if (value === 'global') { current.cards = []; current.global = true; }
+    else if (value === 'here') { current.cards = [here()]; delete current.global; }
+  }
   v.edit = edit;
   v.create = create;
   // Back on the list where it was left.
@@ -291,7 +312,9 @@ export function rolesApp(ctx) {
     if (el.dataset.field === 'voice') { const n = v.root.querySelector('[data-id-voice]'); if (n) n.textContent = el.value ? voiceLabel(el.value) : '未选择'; }
   });
   // A MiMo model change turns the 音色 field into a description or a clone sample name.
-  v.on('change', 'select[data-field]', el => { current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'model' && current.engine === 'mimo') render(); });
+  v.on('change', 'select[data-field]', el => {
+    if (el.dataset.field === 'scope') { setScope(el.value); changed(); return; }
+    current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'model' && current.engine === 'mimo') render(); });
   v.on('click', '[data-action]', async el => {
     switch (el.dataset.action) {
       case 'add-role': create(); break;

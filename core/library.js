@@ -14,15 +14,21 @@
  *        meta its summary (name, thumbnail, strength, which models are encoded); listVibes omits blob.
  * getPhoto/getReference/getFavorite return null for missing IDs; deletes return
  * whether an owned row existed. Every write resolves only after transaction commit.
+ * The lists of photos, favorites, references and vibes read 'meta' (each row without its file), not the files; listPhotos
+ * adds `thumb`, the photo's small picture for grids, where one was made (saveThumb; core/thumbnail.js makes them).
+ * A photo's middle-sized picture for chat bubbles and posts is kept apart (savePreview), so no list reads it.
  */
 import {connectionLost, lostError} from './idb.js';
 import {normalizeWidgets} from './widgets.js';
+import {normalizeBook} from './book.js';
 export const LIBRARY_LIMITS = Object.freeze({total:256*1024*1024,photo:12*1024*1024,reference:20*1024*1024,vibe:40*1024*1024});
-export const PHONE_APPS = Object.freeze(['roles','engines','presets','library','gallery','notes','listen','settings','draw','chat','forum','peek','sounds','assistant','music']);
+export const PHONE_APPS = Object.freeze(['roles','engines','presets','library','gallery','notes','listen','settings','draw','chat','forum','peek','sounds','assistant','music','picbook']);
 export const PHONE_WALLPAPERS = Object.freeze(['sky','silver','midnight','rose','sand','aero','fresh']);
 export const PHONE_SKINS = Object.freeze(['sky','aero','fresh']);
 export const PHONE_GLYPHS = Object.freeze([...new Set(['default',...PHONE_APPS,'wave','book','music','camera','sliders','note','person','microphone','star','headphones'])]);
-const STORES = ['notes','photos','favorites','phone','references','vibes'];
+const STORES = ['notes','photos','favorites','phone','references','vibes','books'];
+// The stores whose rows carry a file (a picture or a recording): their lists come from 'meta'.
+const MEDIA = ['photos','favorites','references','vibes'];
 const sizeText=n=>n>=1024**3?`${(n/1024**3).toFixed(1).replace(/\.0$/,'')} GB`:`${Math.round(n/1024**2)} MB`;
 const IMAGE_TYPES = new Set(['image/jpeg','image/png','image/webp','image/avif','image/gif']);
 const encoder = new TextEncoder();
@@ -51,6 +57,11 @@ function blobValue(blob,max,label,kind,name='') {
  }
  return blob;
 }
+/** How a drawn picture was made, [[label, value]], as kept with a photo. */
+const infoRows=list=>(Array.isArray(list)?list:[]).filter(r=>Array.isArray(r)&&r[1]!==undefined&&r[1]!==null&&String(r[1]).trim()).slice(0,20).map(([k,v])=>[String(k).slice(0,20),String(v).slice(0,4000)]);
+/** 压缩旧图's mark on a photo: {at, size} (when, and how big the original was), or null. */
+const packedMark=p=>p&&Number.isFinite(p.at)&&p.at>0?{at:p.at,size:Number.isFinite(p.size)&&p.size>=0?p.size:0}:null;
+const PICTURE_EXT={'image/webp':'.webp','image/jpeg':'.jpg','image/png':'.png'};
 function publicRow(row,metadata=false){
  if(!row)return null;
  const result=structuredClone(row);delete result.scope;delete result._bytes;
@@ -58,6 +69,24 @@ function publicRow(row,metadata=false){
  return result;
 }
 function bytes(row){const metadata={...row};delete metadata.blob;delete metadata._bytes;return encoder.encode(JSON.stringify(metadata)).byteLength+(row.blob?.size||0);}
+// The size worked out when the row was saved: adding up the whole library on every save no longer turns every note
+// and 绘本 into text again.
+const sizeOf=row=>Number.isFinite(row._bytes)?row._bytes:bytes(row);
+// A picture's or recording's row without its file, as the lists read it ('meta').
+function metaRow(scope,store,row){const data={...row};delete data.blob;delete data.scope;delete data._bytes;return {scope,store,id:row.id,data};}
+/** The rows of one store as a change sees them: every id (has, keys), and the rows it asked for (get, values). */
+class RowView {
+ #ids=new Set();#rows=new Map();
+ know(id){this.#ids.add(id);}
+ load(row){this.#ids.add(row.id);this.#rows.set(row.id,row);}
+ has(id){return this.#ids.has(id);}
+ get(id){return this.#rows.get(id);}
+ set(id,row){this.#ids.add(id);this.#rows.set(id,row);return this;}
+ delete(id){this.#rows.delete(id);return this.#ids.delete(id);}
+ keys(){return this.#ids.values();}
+ values(){return this.#rows.values();}
+ get size(){return this.#ids.size;}
+}
 function friendly(error){
  if(error?.code&&typeof error.code==='string'&&!(error instanceof DOMException))return error;
  if(connectionLost(error))return lostError(error);
@@ -82,11 +111,29 @@ export class LocalLibrary {
   if(!this.#opening)this.#opening=new Promise((resolve,reject)=>{
    let req,settled=false;
    const rejectOnce=e=>{if(!settled){settled=true;reject(friendly(e));}};
-   // Version 2 added the vibes store: an upgrade only creates the stores that are missing, the others keep their rows.
-   try{req=this.#factory.open('st-tts-library-v1',2);}catch(e){rejectOnce(e);return;}
-   req.onupgradeneeded=()=>{
-    const db=req.result;
+   // Version 2 added the vibes store, 3 the books (绘本): an upgrade only creates the stores that are missing, the others keep their rows.
+   // 4 added 'sizes', each row's size on its own ({scope, store, id, bytes}), so a save no longer reads every picture and recording.
+   // 5 added 'meta', the picture and recording rows without their files ({scope, store, id, data}), so a list reads no
+   // files, and 'thumbs', the photos' small pictures for grids ({scope, id, type, bytes, w, h}).
+   // 6 added 'previews', the photos' middle-sized pictures for chat bubbles and posts ({scope, id, type, bytes, w, h}, or
+   // {scope, id, same: true} when the photo itself does as well), made when a photo is first shown there.
+   try{req=this.#factory.open('st-tts-library-v1',6);}catch(e){rejectOnce(e);return;}
+   req.onupgradeneeded=event=>{
+    const db=req.result,tx=req.transaction,old=event.oldVersion;
     for(const name of STORES){if(db.objectStoreNames.contains(name))continue;const store=db.createObjectStore(name,{keyPath:['scope','id']});store.createIndex('scope','scope');}
+    // the rows there were, read once
+    const each=(names,fn)=>{for(const name of names){const cursor=tx.objectStore(name).openCursor();cursor.onsuccess=()=>{const c=cursor.result;if(!c)return;const row=c.value;if(typeof row?.scope==='string'&&typeof row.id==='string')fn(name,row);c.continue();};}};
+    if(!db.objectStoreNames.contains('sizes')){
+     const sizes=db.createObjectStore('sizes',{keyPath:['scope','store','id']});sizes.createIndex('scope','scope');
+     if(old)each(STORES,(name,row)=>sizes.put({scope:row.scope,store:name,id:row.id,bytes:sizeOf(row)}));
+    }
+    if(!db.objectStoreNames.contains('meta')){
+     db.createObjectStore('meta',{keyPath:['scope','store','id']}).createIndex('store',['scope','store']);
+     db.createObjectStore('thumbs',{keyPath:['scope','id']}).createIndex('scope','scope');
+     const meta=tx.objectStore('meta');
+     if(old)each(MEDIA,(name,row)=>meta.put(metaRow(row.scope,name,row)));
+    }
+    if(!db.objectStoreNames.contains('previews'))db.createObjectStore('previews',{keyPath:['scope','id']}).createIndex('scope','scope');
    };
    req.onerror=()=>rejectOnce(req.error);
    req.onblocked=()=>rejectOnce(fail('另一个页面占用了本地资料，请关闭旧页面后重试','STORAGE_BLOCKED'));
@@ -114,55 +161,147 @@ export class LocalLibrary {
    tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
   }));
  }
- async #mutate(change){
+ /**
+  * One change, all or nothing. change({rows, put, remove}) sees rows[store]: has(id) for every row, get(id) for the rows
+  * named in `need` ({store: [id, …]}; 'all' reads every row, for imports). The total size comes from 'sizes', so a
+  * save reads only the rows it changes, not every picture and recording.
+  */
+ async #mutate(change,need='all'){
   const limit=await this.#room();this.#keep();
   return this.#run(db=>new Promise((resolve,reject)=>{
-   let tx,result,ownError,remaining=STORES.length;const rows={},puts=[],deletes=[];
-   try{tx=db.transaction(STORES,'readwrite');}catch(e){reject(friendly(e));return;}
+   let tx,result,ownError,pending=1;const rows={},ops=[],ledger=new Map(),key=(name,id)=>name+'\n'+id;
+   try{tx=db.transaction([...STORES,'sizes','meta','thumbs','previews'],'readwrite');}catch(e){reject(friendly(e));return;}
    tx.oncomplete=()=>resolve(structuredClone(result));
    tx.onabort=()=>reject(ownError||friendly(tx.error));tx.onerror=()=>{};
+   for(const name of STORES)rows[name]=new RowView();
+   const sizes=tx.objectStore('sizes');
    const apply=()=>{
     try{
-     const put=(name,row)=>{const stored={...row,scope:this.#scope};stored._bytes=bytes(stored);rows[name].set(stored.id,stored);puts.push([name,stored]);};
-     const remove=(name,id)=>{const existed=rows[name].delete(id);if(existed)deletes.push([name,id]);return existed;};
+     const put=(name,row)=>{const stored={...row,scope:this.#scope};stored._bytes=bytes(stored);rows[name].set(stored.id,stored);ops.push(['put',name,stored]);};
+     const remove=(name,id)=>{const existed=rows[name].delete(id);if(existed)ops.push(['delete',name,id]);return existed;};
      result=change({rows,put,remove});
-     const total=STORES.reduce((sum,name)=>sum+[...rows[name].values()].reduce((n,row)=>n+bytes(row),0),0);
+     const after=new Map(ledger);
+     for(const [op,name,x] of ops){if(op==='put')after.set(key(name,x.id),x._bytes);else after.delete(key(name,x));}
+     let total=0;for(const n of after.values())total+=n;
      if(total>limit)throw fail(`本地资料已达到 ${sizeText(limit)} 上限（这个浏览器给小手机的空间），请删除不需要的内容后再保存`,'LIBRARY_FULL');
-     for(const [name,id] of deletes)tx.objectStore(name).delete([this.#scope,id]);
-     for(const [name,row] of puts)tx.objectStore(name).put(row);
+     // 'meta' follows every picture and recording; a photo saved again or deleted loses its smaller pictures
+     const meta=tx.objectStore('meta'),thumbs=tx.objectStore('thumbs'),previews=tx.objectStore('previews');
+     for(const [op,name,x] of ops){
+      if(op==='put'){tx.objectStore(name).put(x);sizes.put({scope:this.#scope,store:name,id:x.id,bytes:x._bytes});if(MEDIA.includes(name))meta.put(metaRow(this.#scope,name,x));if(name==='photos'){thumbs.delete([this.#scope,x.id]);previews.delete([this.#scope,x.id]);}}
+      else{tx.objectStore(name).delete([this.#scope,x]);sizes.delete([this.#scope,name,x]);if(MEDIA.includes(name))meta.delete([this.#scope,name,x]);if(name==='photos'){thumbs.delete([this.#scope,x]);previews.delete([this.#scope,x]);}}
+     }
     }catch(e){ownError=friendly(e);tx.abort();}
    };
+   const done=()=>{if(--pending===0)apply();};
+   // a row found that the sizes did not know (written before them): counted now
+   const found=(name,row)=>{rows[name].load(row);const k=key(name,row.id);if(!ledger.has(k)){ledger.set(k,sizeOf(row));sizes.put({scope:this.#scope,store:name,id:row.id,bytes:sizeOf(row)});}};
+   pending++;
+   const all=sizes.index('scope').getAll(this.#scope);
+   all.onsuccess=()=>{for(const r of all.result)if(rows[r.store]){ledger.set(key(r.store,r.id),r.bytes);rows[r.store].know(r.id);}done();};
    for(const name of STORES){
-    const req=tx.objectStore(name).index('scope').getAll(this.#scope);
-    req.onsuccess=()=>{rows[name]=new Map(req.result.map(row=>[row.id,row]));if(--remaining===0)apply();};
+    const ids=need==='all'?null:need[name];
+    if(need!=='all'&&!ids?.length)continue;
+    if(!ids){pending++;const req=tx.objectStore(name).index('scope').getAll(this.#scope);req.onsuccess=()=>{for(const row of req.result)found(name,row);done();};continue;}
+    for(const id of ids){pending++;const req=tx.objectStore(name).get(this.#key(id));req.onsuccess=()=>{if(req.result)found(name,req.result);done();};}
    }
+   done();
   }));
  }
- async #list(name,metadata=false){const rows=await this.#read(name);return rows.sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)).map(row=>publicRow(row,metadata));}
- async #remove(name,id){identifier(id);return this.#mutate(({remove})=>remove(name,id));}
+ async #list(name,metadata=false){
+  const rows=metadata&&MEDIA.includes(name)?await this.#metaRows(name):(await this.#read(name)).map(row=>publicRow(row,metadata));
+  return rows.sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id));
+ }
+ /** The rows of a picture or recording store without their files ('meta'); photos with their small pictures. */
+ async #metaRows(name){
+  return this.#run(db=>new Promise((resolve,reject)=>{
+   let tx,rows=[];const thumbs=new Map();
+   try{
+    tx=db.transaction(name==='photos'?['meta','thumbs']:['meta'],'readonly');
+    const req=tx.objectStore('meta').index('store').getAll([this.#scope,name]);req.onsuccess=()=>{rows=req.result.map(r=>r.data);};
+    if(name==='photos'){const got=tx.objectStore('thumbs').index('scope').getAll(this.#scope);got.onsuccess=()=>{for(const t of got.result)thumbs.set(t.id,t);};}
+   }catch(e){reject(friendly(e));return;}
+   tx.oncomplete=()=>resolve(rows.map(row=>{const t=thumbs.get(row.id);return t?{...row,thumb:new Blob([t.bytes],{type:t.type})}:row;}));
+   tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
+  }));
+ }
+ async #remove(name,id){identifier(id);return this.#mutate(({remove})=>remove(name,id),{});}
  async listNotes(){return this.#list('notes');}
  async saveNote(input){
   fields(input,['id','title','text']);const id=this.#makeId(input.id),title=string(input.title??'','标题',200),text=string(input.text??'','备忘录',1_000_000);
-  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,title,text,createdAt:rows.notes.get(id)?.createdAt??now,updatedAt:now};put('notes',row);return row;});
+  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,title,text,createdAt:rows.notes.get(id)?.createdAt??now,updatedAt:now};put('notes',row);return row;},{notes:[id]});
  }
  async deleteNote(id){return this.#remove('notes',id);}
+ /** 绘本 (core/book.js): the books on the shelf, newest first; one; kept (made or changed); thrown away (its drawn pictures stay in 相册). */
+ async listBooks(){return (await this.#list('books')).map(row=>normalizeBook(row.book));}
+ async getBook(id){const row=await this.#read('books',identifier(id));return row?.book?normalizeBook(row.book):null;}
+ async saveBook(input){
+  if(!input||typeof input!=='object')throw fail('绘本格式无效');const book=normalizeBook(input);identifier(book.id);
+  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id:book.id,book:{...book,at:now},createdAt:rows.books.get(book.id)?.createdAt??now,updatedAt:now};put('books',row);return structuredClone(row.book);},{books:[book.id]});
+ }
+ async deleteBook(id){return this.#remove('books',id);}
  async listPhotos(){return this.#list('photos',true);}
  /** info: how a drawn picture was made, [[label, value]] (shown under 参数 when it is opened). */
  async addPhoto(input){
   fields(input,['name','blob','info','card','cardName']);const name=string(input.name??'图片','图片名称',512,true),card=typeof input.card==='string'?input.card.slice(0,300):'',cardName=typeof input.cardName==='string'?input.cardName.slice(0,80):'',blob=blobValue(input.blob,LIBRARY_LIMITS.photo,'图片','image');
-  const info=(Array.isArray(input.info)?input.info:[]).filter(r=>Array.isArray(r)&&r[1]!==undefined&&r[1]!==null&&String(r[1]).trim()).slice(0,20).map(([k,v])=>[String(k).slice(0,20),String(v).slice(0,4000)]);
+  const info=infoRows(input.info);
   return this.#saveMedia('photos',{id:this.#makeId(),name,blob,info,...(card?{card,cardName}:{})});
  }
  async #saveMedia(store,{id,name,blob,info,card,cardName}){
-  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,name,blob,type:blob.type,size:blob.size,...(info?.length?{info}:{}),...(card?{card,cardName:cardName||''}:{}),createdAt:rows[store].get(id)?.createdAt??now,updatedAt:now};put(store,row);return publicRow(row);});
+  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,name,blob,type:blob.type,size:blob.size,...(info?.length?{info}:{}),...(card?{card,cardName:cardName||''}:{}),createdAt:rows[store].get(id)?.createdAt??now,updatedAt:now};put(store,row);return publicRow(row);},{[store]:[id]});
  }
  /** Moves photos under a card (card '' = 未分类): the album groups by it. Their dates stay. */
  async movePhotos(input){
   fields(input,['ids','card','cardName']);if(!Array.isArray(input.ids)||input.ids.length>5000)throw fail('请选择要移动的照片');
-  const card=string(input.card??'','角色卡',300),cardName=string(input.cardName??'','角色卡名称',80);
-  return this.#mutate(({rows,put})=>{let moved=0;for(const id of input.ids){const row=rows.photos.get(identifier(id));if(!row)continue;const next={...row};if(card){next.card=card;next.cardName=cardName;}else{delete next.card;delete next.cardName;}put('photos',next);moved++;}return moved;});
+  const card=string(input.card??'','角色卡',300),cardName=string(input.cardName??'','角色卡名称',80),ids=input.ids.map(identifier);
+  return this.#mutate(({rows,put})=>{let moved=0;for(const id of ids){const row=rows.photos.get(id);if(!row)continue;const next={...row};if(card){next.card=card;next.cardName=cardName;}else{delete next.card;delete next.cardName;}put('photos',next);moved++;}return moved;},{photos:ids});
  }
  async getPhoto(id){return publicRow(await this.#read('photos',identifier(id)));}
+ /** A photo's small picture for grids, {blob, w, h}, or null when none was made yet. */
+ async getThumb(id){const row=await this.#read('thumbs',identifier(id));return row?{blob:new Blob([row.bytes],{type:row.type}),w:row.w,h:row.h}:null;}
+ /** Keeps a photo's small picture; a photo that is gone keeps none. It is not counted in the library's size (it is made
+  *  again whenever it is missing). Resolves whether it was kept. */
+ async saveThumb(id,{blob,w,h}={}){
+  identifier(id);
+  if(typeof blob?.arrayBuffer!=='function'||!blob.size||blob.size>2*1024*1024)throw fail('缩略图无效');
+  return this.#keepFor(id,'thumbs',{type:blob.type||'image/jpeg',bytes:await blob.arrayBuffer(),w:Math.round(w)||0,h:Math.round(h)||0});
+ }
+ /** A photo's middle-sized picture for chat bubbles and posts: {blob, w, h}; {same: true} when the photo itself does
+  *  as well; null when none was made yet. */
+ async getPreview(id){const row=await this.#read('previews',identifier(id));return !row?null:row.same?{same:true}:{blob:new Blob([row.bytes],{type:row.type}),w:row.w,h:row.h};}
+ /** Keeps a photo's middle-sized picture ({blob, w, h}), or that it needs none ({same: true}); as saveThumb. */
+ async savePreview(id,made={}){
+  identifier(id);
+  if(made?.same===true)return this.#keepFor(id,'previews',{same:true});
+  const {blob,w,h}=made||{};
+  if(typeof blob?.arrayBuffer!=='function'||!blob.size||blob.size>4*1024*1024)throw fail('预览图无效');
+  return this.#keepFor(id,'previews',{type:blob.type||'image/jpeg',bytes:await blob.arrayBuffer(),w:Math.round(w)||0,h:Math.round(h)||0});
+ }
+ /** Puts a photo's smaller picture into `store` while the photo is there; resolves whether it was kept. */
+ #keepFor(id,store,row){
+  return this.#run(db=>new Promise((resolve,reject)=>{
+   let tx,kept=false;
+   try{tx=db.transaction(['meta',store],'readwrite');const photo=tx.objectStore('meta').get([this.#scope,'photos',id]);photo.onsuccess=()=>{if(!photo.result)return;tx.objectStore(store).put({...row,scope:this.#scope,id});kept=true;};}
+   catch(e){reject(friendly(e));return;}
+   tx.oncomplete=()=>resolve(kept);tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
+  }));
+ }
+ /** 压缩旧图: the photo's file swapped for a smaller copy (core/thumbnail.js packPicture); its name takes the new type's
+  *  ending, and it keeps its dates (the album's order), what it was drawn with, and its small and middle-sized pictures
+  *  (they look the same). It is marked packed: {at, size of the original}. input null: it was not worth it, and that is
+  *  kept (packTried: its size then), so it is not offered again. Resolves the row, or null when it is gone. */
+ async packPhoto(id,input){
+  identifier(id);const blob=input===null?null:blobValue(input,LIBRARY_LIMITS.photo,'图片','image');
+  const kept=await Promise.all(['thumbs','previews'].map(store=>this.#read(store,id)));
+  const row=await this.#mutate(({rows,put})=>{
+   const old=rows.photos.get(id);if(!old)return null;
+   if(!blob){const next={...publicRow(old),packTried:old.size};put('photos',next);return publicRow(next);}
+   const name=String(old.name||'图片').replace(/\.(png|jpe?g|webp)$/i,'')+(PICTURE_EXT[blob.type]||'');
+   const next={...publicRow(old),name,blob,type:blob.type,size:blob.size,packed:{at:this.#time(),size:old.packed?.size||old.size||0}};
+   put('photos',next);return publicRow(next);
+  },{photos:[id]});
+  if(row)for(const [i,store] of ['thumbs','previews'].entries())if(kept[i]){const {scope,id:_,...rest}=kept[i];await this.#keepFor(id,store,rest);}
+  return row;
+ }
  async deletePhoto(id){
   identifier(id);return this.#mutate(({rows,put,remove})=>{
    const removed=remove('photos',id),phone=rows.phone.get('preferences');
@@ -173,14 +312,14 @@ export class LocalLibrary {
     if(changed){next.updatedAt=this.#time();put('phone',next);}
    }
    return removed;
-  });
+  },{phone:['preferences']});
  }
  async listFavorites({role}={}){if(role!==undefined)string(role,'角色名',200,true);const rows=await this.#list('favorites',true);return role===undefined?rows:rows.filter(row=>row.role===role);}
  async saveFavorite(input){
   fields(input,['id','requestKey','role','text','translation','engine','model','voice','blob']);
   const id=this.#makeId(input.id),requestKey=string(input.requestKey,'音频编号',512,true),role=string(input.role,'角色名',200,true),text=string(input.text,'原文',1_000_000,true),translation=string(input.translation??'','译文',1_000_000),engine=input.engine,model=string(input.model??'','模型',200),voice=string(input.voice??'','音色',512),blob=blobValue(input.blob,LIBRARY_LIMITS.total,'音频','audio');
   if(!['fish','mini','eleven','mimo','doubao','custom'].includes(engine))throw fail('语音引擎无效');
-  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,requestKey,role,text,translation,engine,model,voice,blob,type:blob.type,size:blob.size,createdAt:rows.favorites.get(id)?.createdAt??now,updatedAt:now};put('favorites',row);return publicRow(row);});
+  return this.#mutate(({rows,put})=>{const now=this.#time(),row={id,requestKey,role,text,translation,engine,model,voice,blob,type:blob.type,size:blob.size,createdAt:rows.favorites.get(id)?.createdAt??now,updatedAt:now};put('favorites',row);return publicRow(row);},{favorites:[id]});
  }
  async getFavorite(id){return publicRow(await this.#read('favorites',identifier(id)));}
  async deleteFavorite(id){return this.#remove('favorites',id);}
@@ -201,7 +340,7 @@ export class LocalLibrary {
    for(const item of [next.wallpaper,...Object.values(next.icons)])if(item.kind==='photo'&&!rows.photos.has(item.photoId))throw fail('找不到这张图片，请重新选择','PHOTO_MISSING');
    const row={...next,id:'preferences',createdAt:existing?.createdAt??now,updatedAt:now};put('phone',row);
    const result={...next};delete result.id;delete result.createdAt;delete result.updatedAt;return result;
-  });
+  },{phone:['preferences']});
  }
  #appearance(value,target){
   if(value?.kind==='photo'){fields(value,['kind','photoId']);identifier(value.photoId);}
@@ -223,7 +362,7 @@ export class LocalLibrary {
   const v=fields(input,['id','name','meta','blob']),id=identifier(v.id),name=string(v.name,'Vibe 名字',80,true);
   if(!v.meta||typeof v.meta!=='object')throw fail('Vibe 信息无效');
   const blob=blobValue(v.blob,LIBRARY_LIMITS.vibe,'Vibe 文件','data'),time=this.#time();
-  return publicRow(await this.#mutate(({rows,put})=>{const old=rows.vibes.get(id);const row={id,name,meta:structuredClone(v.meta),size:blob.size,createdAt:old?.createdAt??time,updatedAt:time,blob};put('vibes',row);return row;}),true);
+  return publicRow(await this.#mutate(({rows,put})=>{const old=rows.vibes.get(id);const row={id,name,meta:structuredClone(v.meta),size:blob.size,createdAt:old?.createdAt??time,updatedAt:time,blob};put('vibes',row);return row;},{vibes:[id]}),true);
  }
  async deleteVibe(id){return this.#remove('vibes',id);}
  /** Every row of the given stores with its blob, for a backup. */
@@ -245,7 +384,8 @@ export class LocalLibrary {
   if(!row||typeof row!=='object')throw fail('备份内容无效：'+name);
   const now=this.#time(),time=v=>Number.isFinite(v)&&v>0?v:now,dates={createdAt:time(row.createdAt),updatedAt:time(row.updatedAt)};
   if(name==='notes')return {id:identifier(row.id),title:string(row.title??'','标题',200),text:string(row.text??'','备忘录',1_000_000),...dates};
-  if(name==='photos'||name==='references'){const media=name==='photos',blob=blobValue(row.blob,media?LIBRARY_LIMITS.photo:LIBRARY_LIMITS.reference,media?'图片':'参考音频',media?'image':'audio',row.name);return {id:identifier(row.id),name:string(row.name??(media?'图片':'reference.wav'),media?'图片名称':'音频名称',512,true),blob,type:blob.type,size:blob.size,...dates};}
+  if(name==='books'){const book=normalizeBook(row.book);return {id:identifier(book.id),book,...dates};}
+  if(name==='photos'||name==='references'){const media=name==='photos',blob=blobValue(row.blob,media?LIBRARY_LIMITS.photo:LIBRARY_LIMITS.reference,media?'图片':'参考音频',media?'image':'audio',row.name);return {id:identifier(row.id),name:string(row.name??(media?'图片':'reference.wav'),media?'图片名称':'音频名称',512,true),blob,type:blob.type,size:blob.size,...dates,...(media&&infoRows(row.info).length?{info:infoRows(row.info)}:{}),...(media&&packedMark(row.packed)?{packed:packedMark(row.packed)}:{})};}
   if(name==='favorites'){if(!['fish','mini','eleven','mimo','doubao','custom'].includes(row.engine))throw fail('备份里的收藏语音引擎无效');const blob=blobValue(row.blob,LIBRARY_LIMITS.total,'音频','audio');return {id:identifier(row.id),requestKey:string(row.requestKey,'音频编号',512,true),role:string(row.role,'角色名',200,true),text:string(row.text,'原文',1_000_000,true),translation:string(row.translation??'','译文',1_000_000),engine:row.engine,model:string(row.model??'','模型',200),voice:string(row.voice??'','音色',512),blob,type:blob.type,size:blob.size,...dates};}
   if(name==='vibes'){if(!row.meta||typeof row.meta!=='object'||Array.isArray(row.meta))throw fail('备份里的 Vibe 信息无效');const blob=blobValue(row.blob,LIBRARY_LIMITS.vibe,'Vibe 文件','data');return {id:identifier(row.id),name:string(row.name,'Vibe 名字',80,true),meta:structuredClone(row.meta),blob,size:blob.size,...dates};}
   const {wallpaper,icons,iconStyle,skin,lockOnOpen,volume,widgets}={...defaults(),...row};
@@ -256,8 +396,9 @@ export class LocalLibrary {
  async stats(){
   const limit=await this.#room();
   return this.#run(db=>new Promise((resolve,reject)=>{
-   let tx;const result={bytes:0,limit,notes:0,photos:0,favorites:0,references:0,vibes:0,sizes:{}};
-   try{tx=db.transaction(STORES,'readonly');for(const name of STORES){const req=tx.objectStore(name).index('scope').getAll(this.#scope);req.onsuccess=()=>{if(name!=='phone')result[name]=req.result.length;const size=req.result.reduce((n,row)=>n+bytes(row),0);result.sizes[name]=size;result.bytes+=size;};}}
+   let tx;const result={bytes:0,limit,notes:0,photos:0,favorites:0,references:0,vibes:0,books:0,sizes:Object.fromEntries(STORES.map(name=>[name,0]))};
+   // from the sizes alone: the pictures and recordings are not read
+   try{tx=db.transaction('sizes','readonly');const req=tx.objectStore('sizes').index('scope').getAll(this.#scope);req.onsuccess=()=>{for(const r of req.result){if(!STORES.includes(r.store))continue;if(r.store!=='phone')result[r.store]++;result.sizes[r.store]+=r.bytes;result.bytes+=r.bytes;}};}
    catch(e){reject(friendly(e));return;}
    tx.oncomplete=()=>resolve(structuredClone(result));tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
   }));
