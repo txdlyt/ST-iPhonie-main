@@ -104,6 +104,8 @@ export interface GeneralSettings {
     cacheEnabled: boolean;
     /** 提前生成: a new reply's lines are made in the background and kept (not played). */
     pregenerate?: boolean;
+    /** The reply is played as a whole once its voices are ready. */
+    autoplay?: boolean;
     floatingEnabled: boolean;
     waveformEnabled: boolean;
     /** Built-in wallpapers move slowly (clouds, stars, bubbles, leaves, fireflies). */
@@ -323,7 +325,7 @@ export interface CallsSettings { auto: boolean; every: number; dailyMax: number;
 export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
 export interface CardLook { id: string; name: string; card: string; appearance: string; source: 'manual' | 'ai'; at: number; }
-export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
+export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** link sound: its sound is kept here */ cached?: boolean; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
 /** A name the story asked for that the library has none of. */
 export interface MissingSound { type: 'sfx' | 'ambience'; name: string; describe: string; count: number; at: number; }
 export interface MomentsSettings { auto: boolean; every: number; dailyMax: number; images: boolean; replyToMe: boolean; }
@@ -833,6 +835,9 @@ export interface BackendFacade {
     exportSounds(ids?: string[] | null, name?: string): Promise<Blob>;
     importSounds(file: Blob | string, options?: { source?: 'pack' | 'mine' | 'eleven' }): Promise<{ added: number; skipped: number; name: string }>;
     importSoundLinks(text: string): Promise<{ added: number; skipped: number; music: number; bad: number }>;
+    /** Link sounds kept here after they played (so they need no network again). */
+    linkCacheInfo(): Promise<{ count: number; bytes: number }>;
+    clearLinkCache(): Promise<number>;
     /** 外貌库 by card: a 本卡 look is used, in its card, in place of the global one (the role's appearance) with the same name. */
     listLooks(): Promise<CardLook[]> | CardLook[];
     saveLook(value: { id?: string; name: string; appearance: string; card?: string; source?: 'manual' | 'ai' }): CardLook;

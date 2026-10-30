@@ -77,7 +77,7 @@ export function soundsApp(ctx) {
       <div class="actions">${btn('rename', '改名', 'secondary')}</div>` : ''}
       ${groupTitle('版本', `${help(about)}<small>${list.length}</small>`)}
       <div class="group" data-version-list>${list.map(r => swipeRow(r.id, `<div class="sound-version" data-id="${esc(r.id)}">
-        <div class="sound-version-head"><span class="disc play" aria-hidden="true">${icon('play')}</span><span><strong>${esc(SOUND_SOURCES[r.source])}${r.layer === 'dot' ? ' · 点缀' : ''}</strong><small>${r.seconds ? r.seconds + ' 秒 · ' : ''}${r.url && !r.size ? '' : size(r.size)}${r.url ? ' · ' + esc(hostOf(r.url)) : ''}${r.describe ? ' · ' + esc(r.describe) : ''}${r.credit ? ' · ' + esc(r.credit) : ''}</small></span></div>
+        <div class="sound-version-head"><span class="disc play" aria-hidden="true">${icon('play')}</span><span><strong>${esc(SOUND_SOURCES[r.source])}${r.layer === 'dot' ? ' · 点缀' : ''}</strong><small>${r.seconds ? r.seconds + ' 秒 · ' : ''}${r.url && !r.size ? '' : size(r.size)}${r.url ? ' · ' + esc(hostOf(r.url)) + (r.cached ? ' · 已缓存' : '') : ''}${r.describe ? ' · ' + esc(r.describe) : ''}${r.credit ? ' · ' + esc(r.credit) : ''}</small></span></div>
         ${r.source === 'pack' ? '' : `<div class="sound-version-fields">${select('kind', kindValue(r), KINDS, `data-id="${esc(r.id)}" aria-label="种类"`)}${select('strength', r.strength, STRENGTH_CHOICES, `data-id="${esc(r.id)}" aria-label="轻重"`)}${select('volume', String(r.volume ?? 1), volumeChoices(r.volume ?? 1), `data-id="${esc(r.id)}" aria-label="这一条的音量"`)}</div>${r.url ? `<div class="sound-version-fields">${input('url', r.url, 'url', `data-id="${esc(r.id)}" maxlength="2000" aria-label="链接"`)}</div>` : ''}`}</div>`,
         [{key: 'delete', label: r.source === 'pack' ? '拿掉' : '删除', icon: 'trash', danger: true}], {label: SOUND_SOURCES[r.source]})).join('')}</div>
       <div class="actions"><label class="secondary file-button">${icon('add')}再加一个版本<input type="file" data-version-file multiple accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.opus,.webm" aria-label="选择声音文件"></label>${own.length ? btn('export-name', icon('download') + '导出', 'secondary') : ''}</div>`);
@@ -222,7 +222,7 @@ export function soundsApp(ctx) {
   function tools() {
     const d = ctx.dialog('音效包', `<p class="help-copy">音效包是一个文件，里面是声音和它们的名字、种类、轻重。可以导出给别人，也可以导入别人分享的。</p>
       <div class="actions"><label class="secondary file-button">${icon('import')}导入音效包<input type="file" data-pack-file accept=".json,application/json" aria-label="选择音效包"></label>${btn('export-all', icon('download') + '导出全部', 'secondary', rows.length ? '' : 'disabled')}</div>
-      <div class="actions">${btn('import-links', icon('import') + '批量导入链接', 'secondary')}</div>
+      <div class="actions">${btn('import-links', icon('import') + '批量导入链接', 'secondary')}${rows.some(r => r.cached) ? btn('clear-link-cache', icon('trash') + `清空链接音效缓存（${rows.filter(r => r.cached).length} 条）`, 'secondary') : ''}</div>
       ${rows.length ? `<div class="actions">${btn('clear-all', icon('trash') + '清空声音库', 'danger')}</div>` : ''}`);
     d.body.addEventListener('change', e => {
       if (!e.target.matches('[data-pack-file]')) return;
@@ -238,6 +238,11 @@ export function soundsApp(ctx) {
       (async () => {
         if (b.dataset.action === 'export-all') await download(null, '');
         if (b.dataset.action === 'import-links') { d.close(); linkLines(); }
+        if (b.dataset.action === 'clear-link-cache') {
+          const info = await api.linkCacheInfo();
+          if (!await ctx.confirm('清空链接音效缓存？', `${info.count} 条链接音效存在这里，共 ${size(info.bytes)}。清空后声音还在，下次播放时再从网上取。`)) return;
+          await api.clearLinkCache(); d.close(); await render(); ctx.notify('缓存已清空');
+        }
         if (b.dataset.action === 'clear-all') {
           if (!await ctx.confirm('清空声音库？', `${rows.length} 个声音都会删除。可以先导出备份。`)) return;
           await api.deleteSounds(rows.map(r => r.id)); d.close(); await render(); ctx.notify('声音库已清空');
