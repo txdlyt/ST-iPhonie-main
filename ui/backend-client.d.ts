@@ -944,13 +944,13 @@ export interface BackendFacade {
     linkCacheInfo(): Promise<{ count: number; bytes: number }>;
     clearLinkCache(): Promise<number>;
     /** 外貌库 by card: a 本卡 look is used, in its card, in place of the global one (the role's appearance) with the same name. */
-    listAppearances(): CardLook[];
-    saveAppearance(value: { id?: string; name: string; appearance: string; card?: string; source?: 'manual' | 'ai' }): CardLook;
-    deleteAppearance(id: string): boolean;
+    listCardLooks(): CardLook[];
+    saveCardLook(value: { id?: string; name: string; appearance: string; card?: string; source?: 'manual' | 'ai' }): CardLook;
+    deleteCardLook(id: string): boolean;
     /** 升为全局: the look becomes the role's own appearance and leaves the card. */
-    promoteAppearance(id: string): boolean;
+    promoteCardLook(id: string): boolean;
     /** 复制到本卡: a look (a card's: look, or a role's global one: role) is copied under the card open now. */
-    copyAppearance(source: { look?: string; role?: string }): CardLook;
+    copyCardLook(source: { look?: string; role?: string }): CardLook;
     /** The cards known by name, the open one first. */
     cardList(): Array<{ key: string; name: string; open: boolean }>;
     /** Moves album photos under a card (key '' = 未分类). */

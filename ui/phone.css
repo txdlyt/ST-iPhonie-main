@@ -2925,8 +2925,8 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 /* 角色 by card, 外貌库 */
 .role-other{margin:8px 0}
 .role-other>summary{cursor:pointer;padding:8px 2px;list-style:none}
-.look-row{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;padding:8px 2px;border-bottom:1px solid rgba(128,128,128,.18)}
-.look-row>div:first-child{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1}
-.look-row small{opacity:.75;overflow-wrap:anywhere}
-.look-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:46%}
+.card-look-row{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;padding:8px 2px;border-bottom:1px solid rgba(128,128,128,.18)}
+.card-look-row>div:first-child{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1}
+.card-look-row small{opacity:.75;overflow-wrap:anywhere}
+.card-look-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:46%}
 .group-title-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
