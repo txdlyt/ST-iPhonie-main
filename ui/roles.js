@@ -181,11 +181,11 @@ export function rolesApp(ctx) {
   // ---------- 外貌库 ----------
   const preview = text => { const t = String(text || '').trim().replace(/\s+/g, ' '); return t.length > 60 ? t.slice(0, 59) + '…' : t; };
   function looksRow() {
-    const open = here(), looks = api.listLooks(), mine = open ? looks.filter(l => l.card === open).length : 0, global = api.getState().routes.filter(r => r.appearance?.trim()).length;
+    const open = here(), looks = api.listAppearances(), mine = open ? looks.filter(l => l.card === open).length : 0, global = api.getState().routes.filter(r => r.appearance?.trim()).length;
     return `<div class="group"><button class="list-row" data-action="looks"><span><strong>外貌库</strong><small>全局 ${global} 条${open ? ` · 本卡 ${mine} 条` : ''} · 本卡的外貌在这张卡里盖过全局的同名外貌</small></span>${icon('next')}</button></div>`;
   }
   function openLooks() {
-    const state = api.getState(), open = here(), cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), looks = api.listLooks();
+    const state = api.getState(), open = here(), cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), looks = api.listAppearances();
     const globals = state.routes.filter(r => r.appearance?.trim()), hasGlobal = name => globals.some(r => r.name === name);
     const row = (title, text, badge, buttons) => `<div class="look-row"><div><strong>${esc(title)}</strong>${badge ? `<small class="auto-chip">${badge}</small>` : ''}<small>${esc(preview(text))}</small></div><div class="look-actions">${buttons}</div></div>`;
     const mineRows = looks.filter(l => l.card === open).map(l => row(l.name, l.appearance, [hasGlobal(l.name) ? '盖过全局' : '', l.source === 'ai' ? '自动建的' : ''].filter(Boolean).join(' · '),
@@ -210,14 +210,14 @@ export function rolesApp(ctx) {
       switch (b.dataset.action) {
         case 'look-add': d.close(); lookEditor(null); break;
         case 'look-edit': d.close(); lookEditor(looks.find(l => l.id === id)); break;
-        case 'look-delete': done(async () => { if (!await ctx.confirm('删除这条外貌？', '只删这张卡里的这条，全局的不受影响。')) return; api.deleteLook(id); reopen(); })(); break;
+        case 'look-delete': done(async () => { if (!await ctx.confirm('删除这条外貌？', '只删这张卡里的这条，全局的不受影响。')) return; api.deleteAppearance(id); reopen(); })(); break;
         case 'look-promote': done(async () => {
           const look = looks.find(l => l.id === id);
           if (hasGlobal(look.name) && !await ctx.confirm(`替换全局的「${look.name}」？`, '全局里已经有这个名字的外貌，升上去会把它换成这一条；这条会离开本卡，所有卡都用它。')) return;
-          api.promoteLook(id); ctx.notify('已升为全局'); reopen();
+          api.promoteAppearance(id); ctx.notify('已升为全局'); reopen();
         })(); break;
-        case 'look-copy-role': done(async () => { api.copyLook({role: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
-        case 'look-copy-look': done(async () => { api.copyLook({look: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
+        case 'look-copy-role': done(async () => { api.copyAppearance({role: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
+        case 'look-copy-look': done(async () => { api.copyAppearance({look: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
         case 'look-open-role': d.close(); edit(id); break;
         case 'outfit-add': d.close(); outfitEditor(null); break;
         case 'outfit-edit': d.close(); outfitEditor(outfits.find(o => o.name === b.dataset.name)); break;
@@ -250,7 +250,7 @@ export function rolesApp(ctx) {
       if (!b) return;
       e.preventDefault();
       const get = f => d.body.querySelector(`[data-field="${f}"]`).value;
-      try { api.saveLook({id: look?.id, name: get('name'), appearance: get('appearance')}); d.close(); ctx.notify('已保存'); openLooks(); }
+      try { api.saveAppearance({id: look?.id, name: get('name'), appearance: get('appearance')}); d.close(); ctx.notify('已保存'); openLooks(); }
       catch (error) { ctx.notify(error.message, {error: true}); }
     });
   }

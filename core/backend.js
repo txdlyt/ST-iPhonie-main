@@ -2417,9 +2417,9 @@ export class TTSBackend {
         if (here.key && here.name) names[here.key] = here.name;
         return Object.entries(names).map(([key, name]) => ({ key, name, open: key === here.key })).sort((a, b) => (b.key === here.key) - (a.key === here.key) || a.name.localeCompare(b.name));
     }
-    listLooks() { return clone(this.settings.looks || []); }
+    listAppearances() { return clone(this.settings.looks || []); }
     /** Saves a look of a card (the open one unless card says another): {id?, name, appearance, card?, source?}. */
-    saveLook(value) {
+    saveAppearance(value) {
         const name = String(value?.name ?? '').trim().slice(0, LOOK_LIMITS.name), appearance = String(value?.appearance ?? '').trim().slice(0, LOOK_LIMITS.appearance);
         const card = String(value?.card ?? this.cardKey()).slice(0, 300);
         if (!name) throw Error('给角色起个名字');
@@ -2434,7 +2434,7 @@ export class TTSBackend {
         this.save(next);
         return clone(row);
     }
-    deleteLook(id) {
+    deleteAppearance(id) {
         const next = this.getState(), before = next.looks?.length || 0;
         next.looks = (next.looks || []).filter(l => l.id !== id);
         if (next.looks.length === before) return false;
@@ -2442,22 +2442,22 @@ export class TTSBackend {
         return true;
     }
     /** 升为全局: the look becomes the appearance of the role of that name (a role without a voice is made when there is none), and leaves the card. */
-    promoteLook(id) {
+    promoteAppearance(id) {
         const look = (this.settings.looks || []).find(l => l.id === id);
         if (!look) throw Error('这条外貌已经不在了');
         const route = this.settings.routes.find(r => r.name === look.name);
         this.saveRoute(route ? { ...route, appearance: look.appearance } : { name: look.name, engine: 'fish', voice: '', model: '', language: '', appearance: look.appearance });
-        this.deleteLook(id);
+        this.deleteAppearance(id);
         return true;
     }
     /** 复制到本卡: the look of a role (its global one, or another card's) is copied under the card open now, to be changed there. */
-    copyLook(source) {
+    copyAppearance(source) {
         if (!this.cardKey()) throw Error('先在酒馆里打开一张角色卡');
         const look = source?.look ? (this.settings.looks || []).find(l => l.id === source.look) : null;
         const route = source?.role ? this.settings.routes.find(r => r.id === source.role) : null;
         const name = look?.name ?? route?.name, appearance = look?.appearance ?? route?.appearance;
         if (!name || !appearance?.trim()) throw Error('没有可以复制的外貌');
-        return this.saveLook({ name, appearance });
+        return this.saveAppearance({ name, appearance });
     }
     /** Moves album photos under a card (key '' = 未分类). */
     async movePhotos(ids, key, name = '') {
@@ -3044,7 +3044,7 @@ export class TTSBackend {
             deleteFavorite: id => this.mutateLibrary('favorites', 'deleteFavorite', id),
             listPhotos: () => this.library.listPhotos(), addPhoto: value => this.mutateLibrary('photos', 'addPhoto', value),
             getPhoto: id => this.library.getPhoto(id), photoThumb: id => this.photoThumb(id), photoPreview: id => this.photoPreview(id), packablePhotos: days => this.packablePhotos(days), packPhotos: ids => this.packPhotos([...(ids || [])].map(String)), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
-            listLooks: () => this.listLooks(), saveLook: value => this.saveLook(clone(value)), deleteLook: id => this.deleteLook(String(id)), promoteLook: id => this.promoteLook(String(id)), copyLook: source => this.copyLook(clone(source || {})), cardList: () => this.cardList(),
+            listAppearances: () => this.listAppearances(), saveAppearance: value => this.saveAppearance(clone(value)), deleteAppearance: id => this.deleteAppearance(String(id)), promoteAppearance: id => this.promoteAppearance(String(id)), copyAppearance: source => this.copyAppearance(clone(source || {})), cardList: () => this.cardList(),
             listNotes: () => this.library.listNotes(), saveNote: value => this.mutateLibrary('notes', 'saveNote', value), deleteNote: id => this.mutateLibrary('notes', 'deleteNote', id),
             listBooks: () => this.library.listBooks(), getBook: id => this.library.getBook(id), saveBook: value => this.mutateLibrary('books', 'saveBook', clone(value)), deleteBook: id => this.mutateLibrary('books', 'deleteBook', id),
             getPhone: () => this.getPhone(), savePhone: patch => this.savePhone(patch), libraryStats: () => this.library.stats(), storageBudget: () => this.budget.read(),
