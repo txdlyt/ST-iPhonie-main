@@ -1,7 +1,9 @@
 // Drawing settings, the LLM-facing drawing preset, and <img>…</img> picture blocks in chat text.
 //
 // Two kinds of preset live here:
-//   styles  - "画风预设" edited in the drawing app: artist tags, fixed positive and fixed negative tags for NovelAI.
+//   styles  - "画风预设" edited in the drawing app: artist tags, fixed positive and fixed negative tags for NovelAI. Their
+//             order is the list's (dragged in the app); a style's `group` names one of styleGroups ({id, name, open}),
+//             and a group's styles sit together where its first one is.
 //   presets - "绘图预设" edited in the preset app: the rules the model follows when it plans pictures.
 //
 // A picture block is a plain paired tag (other plugins can exclude <img></img>) holding one line per field:
@@ -16,9 +18,12 @@ import {promptText, promptTemplate} from './prompt-rules.js';
 import {defaultDrawParams, normalizeDrawParams, guardParams, relayUrl, NAI_MODEL_NAMES} from './novelai.js';
 import {tokenBudget, counterNow, estimateTokens, countField, tagCost} from './tokens.js';
 import {strength as vibeStrength} from './vibes.js';
+import {normalizeGrid} from './nai-grid.js';
+import {tidyGroups, layerTree} from './layers.js';
 import {DRAW_ENGINES, DRAW_ENGINE_NAMES, defaultGpt, normalizeGpt, defaultComfy, normalizeComfy} from './image-engines.js';
 import {escapeHTML, isPlaceholderRole} from './protocol.js';
-import {baibaiDrawPreset, baibaiMessages, baibaiBodies, isBaibai} from './draw-baibai.js';
+import {baibaiDrawPreset, baibaiMessages, baibaiBodies, baibaiOutfits, isBaibai} from './draw-baibai.js';
+import {OUTFIT_RULE, outfitBlock, outfitLines} from './outfits.js';
 
 const BLOCK = ['<img>', '画幅：竖 / 横 / 方', '场景：英文 tag', '角色：名字｜这一刻的 tag｜不要出现的 tag｜站位（画面里每个人单独一行，每一行都以「角色：」开头）', '新外貌：名字｜固定外貌 tag（只在名单外的新角色第一次出现时写）', '</img>'];
 export const PIC_TAG_FORMAT = BLOCK.join('\n');
@@ -286,7 +291,7 @@ const OLD_DEFAULT_RULES = [
 
 // The NovelAI parameters a 画风 keeps: an artist string often wants its own model, sampler, steps and CFG. Picking the
 // 画风 puts them back; changing them while it is in use changes its own. The size and the seed belong to each picture.
-export const STYLE_PARAM_KEYS = Object.freeze(['model', 'steps', 'scale', 'sampler', 'schedule', 'cfgRescale', 'variety']);
+export const STYLE_PARAM_KEYS = Object.freeze(['model', 'steps', 'scale', 'sampler', 'schedule', 'cfgRescale', 'variety', 'effort', 'mode', 'quality', 'ucPreset', 'smea', 'decrisper']);
 /** The part of the drawing parameters a 画风 keeps. */
 export const styleParams = params => { const p = normalizeDrawParams(params); return Object.fromEntries(STYLE_PARAM_KEYS.map(k => [k, p[k]])); };
 const DEFAULT_STYLE = {id: 'default', name: '默认画风', artist: '', positive: 'masterpiece, best quality, very aesthetic, absurdres', negative: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digits, cropped, worst quality, jpeg artifacts, signature, watermark, blurry'};
@@ -304,18 +309,74 @@ export function normalizeVibeSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const groups = (Array.isArray(v.groups) ? v.groups : []).slice(0, 200).map(g => ({
     id: /^[\w-]{1,64}$/.test(String(g?.id || '')) ? String(g.id) : crypto.randomUUID(), name: text(g?.name, 40).trim() || 'Vibe 组',
-    items: (Array.isArray(g?.items) ? g.items : []).filter(i => /^[0-9a-f]{64}$/.test(String(i?.vibe || ''))).filter((i, n, all) => all.findIndex(x => x.vibe === i.vibe) === n).slice(0, 50).map(i => ({vibe: i.vibe, strength: vibeStrength(i.strength)}))
+    items: (Array.isArray(g?.items) ? g.items : []).filter(i => /^[0-9a-f]{64}$/.test(String(i?.vibe || ''))).filter((i, n, all) => all.findIndex(x => x.vibe === i.vibe) === n).slice(0, 50).map(i => ({vibe: i.vibe, strength: vibeStrength(i.strength), ...(i.enabled === false ? {enabled: false} : {})}))
   }));
   const kind = ['group', 'vibe'].includes(v.use?.kind) ? v.use.kind : '', id = typeof v.use?.id === 'string' ? v.use.id : '';
   const use = kind === 'group' && groups.some(g => g.id === id) || kind === 'vibe' && /^[0-9a-f]{64}$/.test(id) ? {kind, id} : {kind: '', id: ''};
-  return {enabled: !!v.enabled, use, groups};
+  return {enabled: !!v.enabled, use, groups, normalize: v.normalize !== false};
+}
+/** 提示词片段 (NovelAI's Prompt Chunks): words kept under a name, written as !macro:名字! or picked after typing @. */
+export const CHUNK_LIMITS = {count: 200, name: 40, text: 8000};
+export function normalizeChunks(value) {
+  const out = [], names = new Set();
+  for (const c of Array.isArray(value) ? value : []) {
+    const name = text(c?.name, CHUNK_LIMITS.name).replace(/[!\n]/g, '').trim(), words = text(c?.text, CHUNK_LIMITS.text);
+    if (!name || names.has(name) || out.length >= CHUNK_LIMITS.count) continue;
+    names.add(name);
+    out.push({id: /^[\w-]{1,64}$/.test(String(c?.id || '')) ? String(c.id) : crypto.randomUUID(), name, text: words,
+      ...(/^#[0-9a-f]{6}$/i.test(String(c?.color || '')) ? {color: String(c.color)} : {}), ...(c?.group ? {group: String(c.group)} : {})});
+  }
+  return out;
+}
+/** 锁定设置: what a picture's settings do not change when they are taken back (读图, 用它的设置). [key, name]. */
+export const LOCKS = Object.freeze([['model', '模型'], ['mode', '模式'], ['prompt', '提示词'], ['negative', '负面'], ['characters', '角色'], ['positions', '角色位置'], ['vibes', 'Vibe'], ['size', '尺寸'], ['steps', '步数'], ['scale', 'Scale'], ['cfgRescale', 'Rescale'], ['variety', 'Variety+'], ['sampler', '采样器'], ['schedule', '噪声调度'], ['seed', '种子'], ['smea', 'SMEA'], ['decrisper', 'Decrisper'], ['legacyUc', '旧版负面'], ['ucPreset', '负面预设'], ['quality', '质量标签']]);
+const LOCK_KEYS = new Set(LOCKS.map(([key]) => key));
+export const normalizeLocks = value => [...new Set((Array.isArray(value) ? value : []).map(String))].filter(key => LOCK_KEYS.has(key));
+/** The parameters to take from a picture, without the ones locked. */
+export function unlockedParams(params, locks = []) {
+  const out = {...params}, gone = new Set(locks);
+  if (gone.has('size')) { delete out.width; delete out.height; }
+  for (const key of ['model', 'mode', 'steps', 'scale', 'cfgRescale', 'variety', 'sampler', 'schedule', 'seed', 'smea', 'decrisper', 'legacyUc', 'ucPreset', 'quality']) if (gone.has(key)) delete out[key];
+  return out;
+}
+/** 站位画布的辅助线. */
+export const POSITION_GRIDS = Object.freeze(['none', 'thirds', 'golden', 'grid']);
+export function normalizePositionGrid(value) {
+  const size = v => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(12, Math.max(2, n)) : 5; };
+  return {type: POSITION_GRIDS.includes(value?.type) ? value.type : 'none', columns: size(value?.columns), rows: size(value?.rows)};
+}
+/** How 局部重绘's paint looks while painting: only there, the mask sent is the same. */
+export const MASK_PATTERNS = Object.freeze([['solid', '实心'], ['stripes', '线'], ['dots', '点'], ['crosshatch', '交叉'], ['grid', '网格'], ['checker', '棋盘'], ['hearts', '爱心']]);
+export function normalizeMaskLook(value) {
+  const opacity = Number(value?.opacity);
+  return {color: /^#[0-9a-f]{6}$/i.test(String(value?.color || '')) ? String(value.color) : '#ff2e6a', opacity: Number.isFinite(opacity) ? Math.min(100, Math.max(10, Math.round(opacity / 5) * 5)) : 60,
+    border: !!value?.border, pattern: MASK_PATTERNS.some(([k]) => k === value?.pattern) ? value.pattern : 'solid'};
 }
 export function defaultDraw() {
   return {enabled: false, auto: true, guard: true, fold: false, mode: 'separate', strip: true, engine: 'nai', gpt: defaultGpt(), comfy: defaultComfy(),
     connections: {nai: normalizeImageConnections('nai'), gpt: normalizeImageConnections('gpt')},
     queue: {gap: 3, retries: 4, cloud: {enabled: false, kind: 'room', url: '', room: ''}}, relay: {url: '', assumeOpus: false}, vibe: defaultVibe(), params: defaultDrawParams(),
-    styles: [structuredClone(DEFAULT_STYLE)], activeStyle: 'default', presets: [structuredClone(DEFAULT_PRESET)], activePreset: 'default'};
+    chunks: [], chunkGroups: [], stream: false, autoDownload: false, locks: [], grid: normalizeGrid(), positionGrid: normalizePositionGrid(), maskLook: normalizeMaskLook(), styles: [structuredClone(DEFAULT_STYLE)], styleGroups: [], activeStyle: 'default', presets: [structuredClone(DEFAULT_PRESET)], activePreset: 'default'};
 }
+
+/** 画风 groups made tidy, in place. */
+export function tidyStyleGroups(d) { [d.styles, d.styleGroups] = tidyGroups(d.styles, d.styleGroups); return d; }
+/** 提示词片段 groups (分类) made tidy, in place. */
+export function tidyChunkGroups(d) { [d.chunks, d.chunkGroups] = tidyGroups(d.chunks, d.chunkGroups); return d; }
+export const styleTree = d => layerTree(d.styles, d.styleGroups);
+/** A 效果图 is the tavern's own picture files; a link to anywhere else in imported settings is not shown. */
+const COVER_PATH = /^\/?user\/images\/[^"\\?#]+$/;
+/** The 画风 a picture was drawn with, by the 画师串 in its words (the longest that fits); null when none does. */
+export function styleOfWords(d, words) {
+  const text = String(words || '');
+  return d.styles.filter(s => s.artist.trim() && text.includes(s.artist.trim())).sort((a, b) => b.artist.trim().length - a.artist.trim().length)[0] || null;
+}
+/** 画一张 for a 画风's 效果图: inputs for generateImage, with that 画风's own settings whichever one is in use. */
+export function styleSample(d, style, words) {
+  const params = {...d.params, ...(style.params || {}), seed: -1};
+  return {prompt: [style.artist, style.positive, words].map(x => String(x || '').trim()).filter(Boolean).join(', '), negative: String(style.negative || '').trim(), characters: [], params: d.guard ? guardParams(params) : params};
+}
+export const chunkTree = d => layerTree(d.chunks || [], d.chunkGroups);
 
 /** Connection presets contain no secrets. Legacy single connections become the default preset. */
 export function normalizeImageConnections(engine, value, legacy = {}) {
@@ -375,9 +436,18 @@ export function normalizeDraw(value) {
     applyImageConnection(d, engine);
   }
   d.vibe = normalizeVibeSettings(d.vibe);
+  d.chunks = normalizeChunks(d.chunks);
+  tidyChunkGroups(d);
+  d.stream = !!d.stream;
+  d.autoDownload = !!d.autoDownload;
+  d.locks = normalizeLocks(d.locks);
+  d.grid = normalizeGrid(d.grid);
+  d.positionGrid = normalizePositionGrid(d.positionGrid);
+  d.maskLook = normalizeMaskLook(d.maskLook);
   d.params = normalizeDrawParams(d.params);
   d.styles = (Array.isArray(d.styles) && d.styles.length ? d.styles : base.styles).map(s => ({id: String(s.id || crypto.randomUUID()), name: text(s.name, 60) || '画风', artist: text(s.artist, 4000), positive: text(s.positive, 4000), negative: text(s.negative, 4000),
-    ...(s.params && typeof s.params === 'object' ? {params: styleParams({...d.params, ...s.params})} : {})}));
+    ...(s.params && typeof s.params === 'object' ? {params: styleParams({...d.params, ...s.params})} : {}), ...(s.group ? {group: String(s.group)} : {}), ...(COVER_PATH.test(s.cover?.thumb) && COVER_PATH.test(s.cover?.full) ? {cover: {thumb: String(s.cover.thumb), full: String(s.cover.full)}} : {})}));
+  tidyStyleGroups(d);
   d.activeStyle = d.styles.some(s => s.id === d.activeStyle) ? d.activeStyle : d.styles[0].id;
   // From before 画风 kept parameters: the one in use keeps the parameters in use now.
   const using = d.styles.find(s => s.id === d.activeStyle);
@@ -413,7 +483,9 @@ export function normalizeDraw(value) {
       count: Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1)),
       injection: {...DEFAULT_PRESET.injection, ...p.injection},
       // 柏宝绘: the preset that plans and reads pictures its own way, with its two switches.
-      ...(p.logic === 'baibai' ? {logic: 'baibai', baibai: {nl: p.baibai?.nl !== false, negative: p.baibai?.negative === true}} : {}),
+      // 当前服装: kept by 柏宝绘 unless switched off; by the others when switched on.
+      outfits: p.logic === 'baibai' ? p.outfits !== false : p.outfits === true,
+      ...(p.logic === 'baibai' ? {logic: 'baibai', baibai: {nl: p.baibai?.nl !== false, negative: p.baibai?.negative === true, min: Math.min(DRAW_COUNT_MAX, Math.max(0, Math.round(Number(p.baibai?.min)) || 0))}} : {}),
       entries: entries.map(e => ({id: String(e.id || crypto.randomUUID()), title: text(e.title, 80), enabled: e.enabled !== false, text: text(e.text, 20000), ...entryEngines(e.engines), ...(e.injection ? {injection: {...DEFAULT_PRESET.injection, ...e.injection}} : {})}))
     };
   });
@@ -610,13 +682,13 @@ export function paragraphs(message) {
   return (story.length ? story : out).map(({aside, ...p}) => p);
 }
 /** Chat-style request asking for the picture blocks of one reply. before: [{name, text}] earlier messages. */
-export function planRequest(settings, {message, before = [], preset, only = null, lore = ''} = {}) {
+export function planRequest(settings, {message, before = [], preset, only = null, lore = '', outfits = [], min = null} = {}) {
   const p = activePreset(settings.draw, preset);
-  if (isBaibai(p)) return baibaiRequest(settings, p, {message, before, only, lore});
+  if (isBaibai(p)) return baibaiRequest(settings, p, {message, before, only, lore, outfits, min});
   const {entries, fill, tail} = ruleText(settings, p, promptTemplate(settings.promptRules, 'draw-story', 'planFormat'), planContract, only);
-  const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail;
+  const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail + (p.outfits ? '\n\n' + OUTFIT_RULE : '');
   // 世界书: the entries the tavern would turn on for this story (the phone's choice of books), for era, places and looks.
-  const ask = promptText(settings.promptRules, 'draw-story', 'planAsk', {'世界书': lore.trim(), '前情': before.map(m => `${m.name}：${m.text}`).join('\n'),
+  const ask = promptText(settings.promptRules, 'draw-story', 'planAsk', {'世界书': lore.trim(), '前情': before.map(m => `${m.name}：${m.text}`).join('\n') + (p.outfits ? (before.length ? '\n\n' : '') + outfitBlock(outfits) : ''),
     '正文': paragraphs(message).map((x, i) => `[P${i + 1}] ${x.text}`).join('\n'), '出图数量': countOf(p)});
   return [{role: 'system', content: system}, {role: 'user', content: ask}];
 }
@@ -624,10 +696,10 @@ export function planRequest(settings, {message, before = [], preset, only = null
  * 柏宝绘: the request in BaiBai's way (its prompts and JSON contract). The library is the 角色 App: the people of this
  * story that have a look, one line each, for the model to copy; the others are for it to 建档 (saved to the 角色 App).
  */
-function baibaiRequest(settings, p, {message, before = [], only = null, lore = ''}) {
+function baibaiRequest(settings, p, {message, before = [], only = null, lore = '', outfits = [], min = null}) {
   const d = settings.draw, wanted = Array.isArray(only) ? new Set(only.map(n => String(n).trim())) : null;
   const library = drawable(settings).filter(r => !wanted || wanted.has(r.name)).map(r => `- ${r.name}: tag=${r.appearance.trim().replace(/\s*\n+\s*/g, ' ')}`);
-  return baibaiMessages({preset: p, engine: d.engine || 'nai', model: d.params?.model, story: paragraphs(message), library, lore, count: countOf(p),
+  return baibaiMessages({preset: p, engine: d.engine || 'nai', model: d.params?.model, story: paragraphs(message), library, lore, count: countOf(p), min: min ?? p.baibai?.min ?? 0, outfits, outfitsOn: p.outfits === true,
     previous: before.map(m => `${m.name}：${m.text}`).join('\n')});
 }
 /** True when the preset in use is 柏宝绘: its pictures are planned in a request of their own (after the reply). */
@@ -635,6 +707,23 @@ export const usesBaibai = draw => isBaibai(draw?.presets?.find(x => x.id === dra
 /** Pictures are planned after the reply: the draw mode, or a preset (柏宝绘) that can only work that way. */
 export const drawSeparate = draw => draw?.mode === 'separate' || usesBaibai(draw);
 export {baibaiDrawPreset};
+/** Who changed clothes, as an answer wrote it: the phone's 服装 lines or 柏宝绘's JSON. [{name, outfit}] */
+export function readOutfits(answer) {
+  const found = new Map();
+  for (const o of [...baibaiOutfits(answer), ...outfitLines(answer)]) found.set(o.name, o);
+  return [...found.values()];
+}
+/** The preset in use keeps 当前服装 (the clothes each person wears, per chat). */
+export const wantsOutfits = draw => !!activePreset(draw)?.outfits;
+/** 柏宝绘's range of pictures for a reply: {min, max}; null for the other presets (a fixed number of them). */
+export function baibaiRange(draw) {
+  const p = activePreset(draw);
+  if (!isBaibai(p)) return null;
+  const max = countOf(p);
+  return {min: Math.min(max, Math.max(0, Math.round(Number(p.baibai?.min)) || 0)), max};
+}
+/** True when a reply may come back with no picture at all (柏宝绘 with 最少 0): that is an answer, not a failure. */
+export const noneOk = draw => baibaiRange(draw)?.min === 0;
 
 /** 「从剧情生成」 in the drawing app: a request of its own (no story preset, no chain of thought), worded for the engine. */
 export function suggestRequest(settings, {before = [], only = null} = {}) {
@@ -751,12 +840,12 @@ export function cleanSuggestion(text) {
   return (tagged.length ? tagged : lines).join(', ').replace(/\s*,\s*/g, ', ').replace(/(, )+$/, '').trim();
 }
 /** Puts planned blocks into the reply after their paragraphs. Blocks without a usable 位置 go after the last one. */
-export function insertPlanned(message, reply) {
+export function insertPlanned(message, reply, {outfits = false} = {}) {
   const source = String(message), paras = paragraphs(source), blocks = [];
   // A model that thinks out loud may write sample blocks in its thinking: only the answer counts.
   const answer = String(reply ?? '').replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
   // 柏宝绘 answers in JSON: its images become blocks here, and all the rest (placing, queue, drawing) is the phone's.
-  const bodies = baibaiBodies(answer) || [...answer.matchAll(/<img\b[^<>]*>([^<]*)<\/img\s*>/gi)].map(m => m[1]);
+  const bodies = baibaiBodies(answer, {outfits}) || [...answer.matchAll(/<img\b[^<>]*>([^<]*)<\/img\s*>/gi)].map(m => m[1]);
   // Cut off at the length limit: the last block, without its unfinished line, when it is the only one.
   const open = !bodies.length && !/"images"/.test(answer) && answer.match(/<img\b[^<>]*>([^<]*)$/i);
   if (open) bodies.push(/\n\s*$/.test(open[1]) ? open[1] : open[1].replace(/\n[^\n]*$/, ''));
@@ -790,7 +879,7 @@ export function hashText(value) {
   return h.toString(36);
 }
 
-const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at', 负面: 'negative', 原样: 'whole'};
+const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at', 负面: 'negative', 原样: 'whole', 服装: 'outfitLine'};
 const split = value => value.split(/[|｜]/).map(x => x.trim());
 /** Reads a block body; null when it has none of the field lines (an older one-line tag). */
 export function parseBlock(body) {
@@ -819,6 +908,8 @@ export function parseBlock(body) {
     else if (key === 'register') { const [name, ...rest] = split(value); if (name && rest.join(', ').trim()) spec.register.push({name, appearance: rest.join(', ').trim()}); }
     // 原样：是 — the tags already hold everyone's looks (柏宝绘 blocks without 角色 lines): the phone adds none of its own.
     else if (key === 'whole') spec.whole = /^(?:是|true|yes|1)/i.test(value);
+    // 服装：名字｜衣服 tag — who changed clothes: kept in the chat's 当前服装 (readOutfits), not part of the picture's own fields.
+    else if (key === 'outfitLine') { /* read by readOutfits */ }
     else if (key !== 'at') spec[key] = spec[key] ? spec[key] + ', ' + value : value;
   }
   return found ? spec : null;
@@ -848,6 +939,58 @@ export function parsePictures(message) {
     const characters = tag.who.split(/[,，、]/).map(x => x.trim()).filter(Boolean), index = found.length;
     const hash = tag.spec ? hashText(index + '|' + tag.body) : hashText(index + '|' + tag.prompt + '|' + characters.join(','));
     found.push({index, start: tag.start, end: tag.end, prompt: (tag.prompt || '').slice(0, 4000), characters, hash, spec: tag.spec || null, ...(tag.spec ? {body: tag.body} : {})});
+  }
+  return found;
+}
+
+// ---------- <img> blocks in the 助手 App ----------
+// A reply there is written for this very app, so whatever it puts in <img>…</img> is meant to be drawn: other names for
+// the fields, tags with no field at all, <img prompt="…">. The story keeps to parsePictures: its text may come from any
+// preset, and what looks like a tag there may be someone else's.
+const OTHER_NAMES = [[/^(提示词|正面|正面提示词|标签|画面|画面描述|场景描述|tags?|prompts?|positive|scene)$/i, '场景'], [/^(比例|方向|画幅比例|size|ratio|orientation|aspect)$/i, '画幅'],
+  [/^(characters?|cast|persons?|people)$/i, '角色'], [/^(description|nl)$/i, '描述'], [/^(appearance|register)$/i, '新外貌'], [/^(负面|反向|负面提示词|反向提示词|不要|negative|uc)$/i, 'negative']];
+function readLooseBody(body) {
+  const lines = [], loose = [];
+  let negative = '', named = false, list = false;
+  for (const raw of String(body).split(/\r?\n/)) {
+    const line = raw.trim().replace(/^(?:[-*•·]|\d+[.、)）])\s*/, '');
+    if (!line) continue;
+    const m = line.match(/^([^\s:：|｜,，]{1,8}?)\s*\d*\s*[:：]\s*(.*)$/);
+    const name = m && (OTHER_NAMES.find(([word]) => word.test(m[1]))?.[1] ?? (FIELDS[m[1]] ? m[1] : ''));
+    if (!name) { if (list && /[|｜]/.test(line)) lines.push(line); else loose.push(line); continue; }
+    named = true;
+    if (name === 'negative') { negative = [negative, m[2].trim()].filter(Boolean).join(', '); list = false; continue; }
+    lines.push(`${name}：${m[2]}`);
+    list = ['cast', 'register'].includes(FIELDS[name]);
+  }
+  if (!named) return null;
+  // Tags on a line of their own among the named ones.
+  if (loose.length) lines.push('场景：' + loose.join(', '));
+  return {spec: parseBlock(lines.join('\n')), negative};
+}
+/**
+ * Every picture block of a 助手 reply, however it was written: {start, end, prompt, characters, spec (or null), negative}.
+ * Images with src are left alone, and so is an <img> that says nothing to draw.
+ */
+export function assistantBlocks(message) {
+  const text = String(message), found = [], open = /<img\b(?![^<>]*\bsrc\s*=)([^<>]*?)\/?>/gi;
+  let m;
+  while ((m = open.exec(text))) {
+    // 「`<img>` 开头」: words about the tag.
+    if (text[m.index - 1] === '`') continue;
+    const start = m.index, after = text.slice(open.lastIndex), close = /<\/img\s*>/i.exec(after), next = after.search(/<img\b/i);
+    let end = open.lastIndex, body = '';
+    if (close && (next < 0 || close.index < next)) { body = after.slice(0, close.index); end += close.index + close[0].length; open.lastIndex = end; }
+    const said = attribute(m[1], 'prompt') ?? '', who = attribute(m[1], 'characters') ?? '', read = body.trim() ? readLooseBody(body) : null;
+    if (read) {
+      const {spec} = read;
+      if (spec?.tags || spec?.nl || spec?.cast.length) found.push({start, end, prompt: spec.tags, characters: spec.cast.map(c => c.name), spec, negative: read.negative});
+      continue;
+    }
+    const [tags, ...names] = (body.trim() || said).split(/[|｜]/);
+    const prompt = tags.split(/\r?\n/).map(l => l.trim()).filter(Boolean).join(', ').slice(0, 4000);
+    // (「用 <img> 开头、</img> 结尾」 is not something to draw.)
+    if (prompt.length >= 4 && !/[、，,：:]$/.test(prompt)) found.push({start, end, prompt, characters: (who || names.join(',')).split(/[,，、]/).map(x => x.trim()).filter(Boolean), spec: null, negative: ''});
   }
   return found;
 }
@@ -888,6 +1031,8 @@ export function peopleCount(prompt) {
   return n;
 }
 const drawable = settings => settings.routes.filter(r => r.appearance?.trim() && !isPlaceholderRole(r.name));
+/** The role a name in a picture means: by its name, else by one of its 别名 (roles merged keep their old names that way). */
+const roleNamed = (roles, name) => roles.find(r => sameName(r.name, name)) || roles.find(r => r.aliases?.some(a => sameName(a, name)));
 /**
  * Roles whose appearance goes into an older one-line picture tag. Names in the tag come first; when the tag names
  * nobody we know, the roles mentioned in the story just before the tag are used, up to the number of people.
@@ -895,7 +1040,7 @@ const drawable = settings => settings.routes.filter(r => r.appearance?.trim() &&
 export function pictureRoles(settings, tag, text = '') {
   const roles = drawable(settings), named = [];
   for (const name of tag.characters) {
-    const role = roles.find(r => sameName(r.name, name));
+    const role = roleNamed(roles, name);
     if (role && !named.includes(role)) named.push(role);
   }
   if (named.length || !text) return named;
@@ -924,14 +1069,34 @@ export function photoTags({text = '', tags = '', owner = '', names = []}) {
   return kept.join(', ');
 }
 
+const PERSON_TAGS = /\b(?:\d+\+?\s*(?:girl|boy|other)s?|girls?|boys?|wom[ae]n|m[ae]n|person|people|solo|selfie|portrait|upper body|cowboy shot|full body|close-?up|looking at viewer|from behind|smil(?:e|ing)|hair|eyes|wearing|hands?)\b/i;
+/** Tags that say what someone looks like: on a phone photo of someone with a saved look they would fight it. */
+const LOOK_TAGS = /\b(?:hair|eyes|bangs|ponytail|twintails|braids?|ahoge|sidelocks|hair ornament)\b/i;
+/**
+ * A phone photo's words and people for pictureInputs: the people's saved looks go in, so the looks a model made up for
+ * the photo leave its tags; people counted when the model did not, from the looks themselves. settings: for the looks.
+ */
+export function photoPicture(settings, {text = '', tags = '', owner = '', names = []}) {
+  const drawn = photoTags({text, tags, owner, names}), cast = photoCast({text, tags: drawn, owner, names}), roles = drawable(settings);
+  const looks = cast.map(n => roleNamed(roles, n)?.appearance || '').filter(Boolean);
+  if (!looks.length) return {prompt: drawn, characters: cast};
+  let list = drawn.split(',').map(t => t.trim()).filter(t => t && !LOOK_TAGS.test(t));
+  if (!/\b\d+\+?\s*(?:girl|boy|other)s?\b/i.test(drawn)) {
+    const count = word => looks.filter(l => new RegExp(`\\b(?:1\\s*)?${word}\\b`, 'i').test(l)).length, said = (n, word) => n ? [`${n}${word}${n > 1 ? 's' : ''}`] : [];
+    list = [...said(count('girl'), 'girl'), ...said(count('boy'), 'boy'), ...list.filter(t => !/^(?:girls?|boys?)$/i.test(t))];
+  }
+  return {prompt: sceneTags(list.join(', '), cast.length), characters: cast};
+}
+
 /**
  * Who a phone photo (查手机相册, a chat photo, a 朋友圈 picture) shows, as names for pictureInputs: nobody when its tags
  * show no person (a view, a meal); the people its description names (registered roles, the user); the owner too when
  * it is a selfie or a photo together, or when nobody else is named. names: everyone who could be in it.
  */
 export function photoCast({text = '', tags = '', owner = '', names = []}) {
-  if (!/(\d+(?:girl|boy|other)s?|solo|selfie|portrait|upper body|cowboy shot)/i.test(tags)) return [];
   const said = String(text);
+  // A model does not always count people: 「girl, smile, cafe」 shows someone just as 「1girl」 does.
+  if (/\bno humans\b/i.test(tags) || !(PERSON_TAGS.test(tags) || /自拍|合照|合影/.test(said))) return [];
   const others = [...new Set(names)].filter(n => n && n !== '我' && n !== owner && !sameName(n, owner))
     .map(n => [n, said.indexOf(n)]).filter(([, at]) => at >= 0).sort((a, b) => a[1] - b[1]).map(([n]) => n);
   const self = !others.length || (owner && said.includes(owner)) || /自拍|合照|合影|我们|我和|和我|selfie/i.test(said);
@@ -951,6 +1116,16 @@ export function sceneTags(tags, people) {
  *  the others (all of them when no 站位 is given), and ComfyUI joins every negative into one. */
 const PEOPLE_TAG = /^(?:\d\+?\s*)?(?:girls?|boys?|others?|males?|females?|man|men|woman|women|multiple (?:girls|boys|others)|(?:male|female) focus)$/i;
 export const withoutPeopleTags = tags => String(tags || '').split(',').map(t => t.trim()).filter(t => t && !PEOPLE_TAG.test(t.replace(/^[\d.]+::|::$/g, '').replace(/[()\[\]{}]/g, '').trim())).join(', ');
+/** A role's 固定负面 for a picture; with others in it, without the gender and count tags that would hit them too. */
+const fixedNegative = (role, others = false) => { const tags = String(role?.negative || '').trim(); return others ? withoutPeopleTags(tags) : tags; };
+/**
+ * 试画一张 from the 角色 App: this look as it stands (saved or not), alone, on the 画风 in use: inputs for generateImage.
+ */
+export function lookTest(settings, {appearance = '', negative = ''} = {}) {
+  const draw = settings.draw, style = activeStyle(draw) || {}, gender = genderOf(appearance);
+  const words = [style.artist, style.positive, ...(gender ? [`1${gender}, solo`] : []), 'upper body, looking at viewer, simple background'].map(x => String(x || '').trim()).filter(Boolean);
+  return {prompt: words.join(', '), negative: String(style.negative || '').trim(), characters: [{prompt: soloTags(String(appearance).trim()), negative: String(negative).trim(), position: -1}], params: {...(draw.guard ? guardParams(draw.params) : draw.params), seed: -1}};
+}
 /** Character prompts count nobody: 1girl/1boy/1other in a fixed appearance become girl/boy/other. */
 const soloTags = tags => String(tags).replace(/\b1\s*(girl|boy|other)\b/gi, '$1');
 function mergeTags(...lists) {
@@ -997,7 +1172,7 @@ function pictureInputsOf(settings, tag, text = '') {
   if (!spec) {
     const roles = pictureRoles(settings, tag, text);
     return {prompt: [...head, tag.prompt].join(', '), negative: style.negative.trim(),
-      characters: roles.map(r => ({prompt: r.appearance.trim(), negative: '', position: -1})), names: roles.map(r => r.name), params};
+      characters: roles.map(r => ({prompt: r.appearance.trim(), negative: fixedNegative(r, roles.length > 1), position: -1})), names: roles.map(r => r.name), params};
   }
   const roles = drawable(settings);
   // A block with no 角色 lines still shows somebody when its scene counts people: the registered ones the reply
@@ -1005,7 +1180,7 @@ function pictureInputsOf(settings, tag, text = '') {
   if (!spec.cast.length && peopleCount(spec.tags)) {
     const seen = pictureRoles(settings, {...tag, characters: [], prompt: spec.tags}, text);
     if (seen.length) return {prompt: [...head, sceneTags(spec.tags, seen.length), spec.nl].filter(Boolean).join(', '), negative: style.negative.trim(),
-      characters: seen.map(r => ({prompt: soloTags(r.appearance.trim()), negative: '', position: -1})), names: seen.map(r => r.name), params};
+      characters: seen.map(r => ({prompt: soloTags(r.appearance.trim()), negative: fixedNegative(r, seen.length > 1), position: -1})), names: seen.map(r => r.name), params};
   }
   const many = spec.cast.length > 1, taken = new Set();
   // Two people on one cell are drawn as one: a later one moves to the nearest free cell (below, above, right, left).
@@ -1021,8 +1196,10 @@ function pictureInputsOf(settings, tag, text = '') {
     return cell;
   };
   const characters = spec.cast.map(c => {
-    const fixed = roles.find(r => sameName(r.name, c.name))?.appearance || spec.register.find(x => sameName(x.name, c.name))?.appearance || '';
-    return {prompt: [mergeTags(soloTags(fixed), c.tags), c.nl].filter(Boolean).join(', '), negative: many ? mergeTags(withoutPeopleTags(c.negative), 'fused bodies') : c.negative || '', position: place(c.position)};
+    const role = roleNamed(roles, c.name), fixed = role?.appearance || spec.register.find(x => sameName(x.name, c.name))?.appearance || '';
+    // 固定负面 first (a role can have one with no 外貌 yet), then what this picture asks. Gender and count tags would hit the others.
+    const unwanted = mergeTags((role || roleNamed(settings.routes, c.name))?.negative, c.negative);
+    return {prompt: [mergeTags(soloTags(fixed), c.tags), c.nl].filter(Boolean).join(', '), negative: many ? mergeTags(withoutPeopleTags(unwanted), 'fused bodies') : unwanted, position: place(c.position)};
   });
   return {prompt: [...head, sceneTags(spec.tags, spec.cast.length), spec.nl].filter(Boolean).join(', '), negative: style.negative.trim(), characters, names: spec.cast.map(c => c.name), params};
 }

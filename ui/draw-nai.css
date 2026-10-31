@@ -68,7 +68,7 @@
 .mask-editor header .text-button{color:#ddd}
 .mask-editor footer{flex-wrap:wrap;justify-content:center;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 18px)}
 .mask-editor .segmented{margin:0}
-.mask-editor .segmented button{display:inline-flex;align-items:center;gap:4px}
+.mask-editor .segmented button{display:inline-flex;align-items:center;justify-content:center;gap:4px}
 .mask-editor .segmented .icon{width:16px;height:16px}
 .mask-editor footer .text-button{color:#ff8fa8}
 .mask-stage{flex:1;min-height:0;display:grid;place-items:center;padding:6px 12px}
@@ -82,8 +82,151 @@
 /* 一次画几张, beside 生成 */
 .draw-count{flex-shrink:0;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:var(--card2);box-shadow:inset 0 0 0 1.5px var(--line)}
 .draw-count button{width:30px;height:30px;border-radius:50%;font-size:14px;font-weight:700;color:var(--ink2)}
-.draw-count button[aria-pressed=true]{background:var(--accent);color:#fff;box-shadow:0 2px 6px -2px var(--accent)}
+.draw-count button[aria-pressed=true]{background:var(--accent-btn);color:var(--on-accent);box-shadow:0 2px 6px -2px var(--accent-btn)}
 .draw-count small{padding:0 6px 0 2px;font-size:12px;color:var(--ink2)}
 .savebar .draw-count+.primary{flex:1}
 /* 变体 / 增强: choices with their numbers under them */
 .sheet .segmented button small{display:block;font-size:10.5px;font-weight:500;opacity:.75;margin-top:1px}
+/* 提示词框里的权重、随机和片段：一层底色叠在框上，字还是框自己的 */
+.word-mark{position:relative;display:block;min-width:0}
+.word-mark>textarea{display:block;width:100%}
+/* (not stretched: the layer is as tall as this, and would show past the box) */
+.char-body .word-mark{flex:1 1 0;align-self:flex-start}
+.word-mark-layer{position:absolute;inset:0;z-index:1;box-sizing:border-box;border:0 solid transparent;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;color:transparent;pointer-events:none;user-select:none}
+.word-mark-layer span{border-radius:3px}
+.w-up.w1{background:color-mix(in srgb,#ff9f43 22%,transparent)}.w-up.w2{background:color-mix(in srgb,#ff9f43 36%,transparent)}.w-up.w3{background:color-mix(in srgb,#ff9f43 50%,transparent)}
+.w-down.w1{background:color-mix(in srgb,#4c9cf0 20%,transparent)}.w-down.w2{background:color-mix(in srgb,#4c9cf0 32%,transparent)}.w-down.w3{background:color-mix(in srgb,#4c9cf0 46%,transparent)}
+.w-neg{background:color-mix(in srgb,#e8505c 34%,transparent)}.w-rand{background:color-mix(in srgb,#a070e0 26%,transparent)}.w-chunk{background:color-mix(in srgb,#30b8a8 28%,transparent)}
+/* 随机提示词 */
+.random-card .row-heading{gap:6px}
+.random-card .row-heading strong{white-space:nowrap}
+.random-card .chip-button{padding:0 10px;white-space:nowrap}
+.random-words{margin:8px 0 0;font-size:12.5px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere}
+.random-words b{color:var(--ink);font-weight:700}
+/* 站位画布的辅助线 */
+.pos-line{position:absolute;background:color-mix(in srgb,var(--ink) 30%,transparent);pointer-events:none}
+.pos-line.v{top:0;bottom:0;width:1px}.pos-line.h{left:0;right:0;height:1px}
+.pos-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 10px}
+.pos-tools-all{justify-content:flex-end;margin-top:4px}
+.char-pos>summary .chip{margin-left:4px}
+.char-pos-body{display:flex;align-items:flex-start;gap:12px}
+.char-pos-body .pos-tools{flex:1;min-width:0}
+.pos-guide{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
+.pos-guide .select{min-width:92px}
+.pos-guide input{width:52px}
+/* 片段的分类和颜色 */
+.chunk-line{gap:10px}
+.chunk-line small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chunk-line>span{min-width:0;flex:1}
+.chunk-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--line)}
+.chunk-colors{display:flex;flex-wrap:wrap;gap:8px}
+.chunk-colors button{width:30px;height:30px;border-radius:50%;background:var(--card2);box-shadow:inset 0 0 0 2px var(--line)}
+.chunk-colors button[aria-pressed=true]{outline:2.5px solid var(--ink);outline-offset:2px}
+[data-chunk-page][hidden]{display:none}
+/* 参数网格、锁定 */
+.grid-axis{display:flex;flex-direction:column;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line)}
+.grid-axis>b{font-size:13px}
+.grid-entry{display:flex;flex-direction:column;gap:6px;width:100%}
+.grid-entry .inline-row{display:flex;align-items:center;gap:4px}
+.grid-entry .select{flex:1;min-width:0}
+.grid-entry textarea,.grid-entry input[type=text]{width:100%;box-sizing:border-box}
+.grid-choices{display:flex;flex-wrap:wrap;gap:6px}
+.grid-choices button{min-height:32px;padding:4px 11px;border-radius:12px;background:var(--card2);color:var(--ink);font-size:12.5px;font-weight:700}
+.grid-choices button[aria-pressed=true]{background:var(--e-btn,var(--accent-btn));color:var(--e-on,var(--on-accent))}
+/* 读图 */
+.import-picture{display:grid;place-items:center;margin-bottom:10px}
+.import-picture img{max-width:min(220px,62%);max-height:220px;border-radius:14px;background:var(--card2)}
+.import-row small{display:block;font-size:11px;font-weight:500;color:var(--ink2)}
+.import-row.locked{opacity:.6}
+.import-row small .icon{width:11px;height:11px;vertical-align:-1px}
+.import-how{margin:0 14px 10px}
+/* 单个开关、额度、遮罩样式 */
+.ref-card.off .ref-thumb{opacity:.45}
+.ref-card .ref-actions{align-items:center}
+.vibe-item.off>img,.vibe-item.off>.vibe-blank,.vibe-item.off .grow{opacity:.45}
+/* 组里一行：图、名字、开关、移出，滑块在下面占满 */
+.vibe-item{display:grid;grid-template-columns:44px minmax(0,1fr) auto auto;align-items:center;gap:0 8px}
+.vibe-item>img,.vibe-item>.vibe-blank{grid-row:1/3}
+.vibe-item .grow{display:contents}
+.vibe-item .meter-label{grid-column:2;min-width:0}
+.vibe-item .slider{grid-column:2/-1}
+.vibe-item .switch{grid-column:3;grid-row:1}
+.vibe-item .text-button{grid-column:4;grid-row:1;min-height:36px;padding:4px 6px}
+.chip.as-button{border:0;cursor:pointer;font-family:inherit}
+.usage-sheet p{margin:8px 0 0;font-size:13px}
+.mask-look{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 14px;padding:0 14px 6px;font-size:12px}
+.mask-look[hidden]{display:none}
+.mask-look-row{display:inline-flex;align-items:center;gap:6px;color:#ccc}
+.mask-look-row input{accent-color:#ff2e6a}
+.mask-look .segmented button{padding:0 2px}
+.mask-look .segmented{flex:1 1 100%;margin:0}
+.mask-look .segmented button{min-height:32px;font-size:12px}
+.mask-look input[type=color]{width:34px;height:26px;padding:0;border:0;background:none}
+.mask-look input[type=range]{width:96px}
+/* 窄屏时「生成（会扣 Anlas）」折成两行，不挤出屏幕 */
+[data-app=draw] .savebar>.primary{min-width:0;white-space:normal;line-height:1.15}
+.partition-select{flex:none;width:112px}
+/* 角色 App：列表是图层的样子 */
+.role-list.sorting{overflow:visible}
+.role-list .sw-row{content-visibility:auto;contain-intrinsic-size:auto 73px}
+.role-list .sw-row.style-group{contain-intrinsic-size:auto 68px}
+.role-list .style-group-row strong,.role-list .style-group-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.role-list .sw-row.lifted,.role-list.sorting .sw-row{content-visibility:visible}
+.role-row-text strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.role-row-text small{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.role-voice{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.role-row-text .auto-chip{margin:0;flex:none}
+.list-row.style-group-row>span.chip{flex:none}
+.role-search{margin:0 0 8px}
+.role-filters{margin:0 0 10px}
+.role-none{padding:14px}
+.role-try{align-items:center;margin-top:4px}
+.role-tried{margin-top:8px}
+.role-tried img{display:block;max-width:100%;max-height:320px;margin:0 auto;border-radius:14px}
+/* 自己的接口：自动识别的结果 */
+.custom-report{margin:8px 0 12px;padding:10px 12px;border-radius:14px;background:var(--card2);font-size:13px;line-height:1.5}
+.custom-report p{margin:0}
+.custom-report .hint{margin-top:4px;white-space:pre-line}
+.custom-report.good{background:color-mix(in srgb,var(--accent) 12%,var(--card2))}
+.custom-report.bad{background:color-mix(in srgb,var(--danger) 10%,var(--card2))}
+.custom-report .grid-choices,.custom-report .actions{margin-top:8px}
+.custom-now{margin:-4px 0 12px}
+.custom-services{margin-bottom:6px}
+/* 画风列表：和图层一样的卡片，左边是效果图（没有图也是同样大小的格子，排起来整齐），在用的整行换颜色 */
+.style-picker .style-list .sw-row{border-top:0;padding-bottom:6px;content-visibility:auto;contain-intrinsic-size:auto 94px}
+.style-picker .style-list .sw-row.style-group{contain-intrinsic-size:auto 62px}
+.style-picker .style-list.sorting .sw-row,.style-picker .style-list .sw-row.lifted{content-visibility:visible}
+.style-picker .style-list .sw-actions{bottom:6px}
+.style-picker .style-list .sw-main,.style-picker .style-list .sw-open .sw-main{border-radius:16px;background:var(--card)}
+.style-picker .style-list .sw-chosen .sw-main{background:color-mix(in srgb,var(--accent) 16%,var(--card))}
+.style-picker .style-group-inner .sw-row{margin-left:22px}
+.style-picker .style-group-inner .sw-body{padding-left:0}
+.style-picker .style-group-inner .sw-body::before{display:none}
+.style-picker .style-list .list-row{min-height:0;padding:8px 12px 8px 8px;gap:12px}
+.style-picker .style-list .style-group-row{min-height:56px;padding:10px 12px 10px 14px}
+.style-row>span{min-width:0}
+.style-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.style-cover{flex:none;position:relative;display:grid;place-items:center;box-sizing:border-box;width:56px;height:72px;padding:0;border-radius:11px;overflow:hidden;background:var(--card2);color:var(--ink2);box-shadow:inset 0 0 0 1px var(--line);transition:transform .25s cubic-bezier(.2,1.5,.4,1)}
+button.style-cover:active{transform:scale(.94)}
+.style-cover svg{width:20px;height:20px;opacity:.65}
+.style-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 18%;pointer-events:none;-webkit-user-drag:none}
+.style-picker .style-list .sw-row.style-on .sw-main,.style-picker .style-list .sw-row.style-on.lifted .sw-main{background:var(--accent-btn)}
+.style-on .style-row strong,.style-on .style-row small,.style-on .style-row small.style-params,.style-on .sw-more{color:var(--on-accent)}
+.style-on .style-row small{opacity:.8}
+.style-on .style-cover{background:color-mix(in srgb,var(--on-accent) 16%,transparent);color:var(--on-accent);box-shadow:none}
+.style-on .sw-check{border-color:color-mix(in srgb,var(--on-accent) 70%,transparent)}
+.chip-cover{flex:none;width:20px;height:20px;border-radius:50%;object-fit:cover;object-position:50% 18%}
+/* 效果图的弹窗 */
+.cover-big{margin-bottom:12px;border-radius:16px;overflow:hidden;background:var(--card2)}
+.cover-big button{display:block;width:100%;padding:0}
+.cover-big img{display:block;width:100%;max-height:44vh;object-fit:contain}
+.cover-none{display:grid;place-items:center;height:132px;color:var(--ink2)}
+.cover-none svg{width:34px;height:34px;opacity:.5}
+.cover-actions{margin-top:0}
+.cover-clear{justify-content:center}
+.style-edit-cover{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.style-edit-cover>span{flex:1;min-width:0;display:grid;gap:2px}
+.style-edit-cover small{font-size:12px;color:var(--ink2)}
+.cover-choice{width:100%;gap:12px;padding:8px;margin-bottom:6px;border-radius:16px;background:var(--card);text-align:left}
+.list-row.cover-choice>span.style-cover{flex:none}
+.cover-choice strong{font-size:15px}

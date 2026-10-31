@@ -75,6 +75,12 @@ export interface Route {
     bindings: Partial<Record<Engine, VoiceBinding>>;
     /** Fixed appearance tags added when this character appears in a picture. */
     appearance?: string;
+    /** 固定负面: tags kept away from this character in every picture. */
+    negative?: string;
+    /** The group it is in, in the 角色 App (Settings.roleGroups). */
+    group?: string;
+    /** Taken out of a group by hand: it does not go in its card's group by itself. */
+    loose?: boolean;
     /** The voice was picked by 自动挑音色 (cleared when it is changed by hand), with the voice's name and why. */
     autoVoice?: boolean; autoName?: string; autoReason?: string;
     /** 别名: other names the story calls this role by; their lines use this voice. */
@@ -152,6 +158,9 @@ export interface Settings {
     /** 候选音色池 for 自动挑音色. */
     voicePool?: VoicePoolEntry[];
     selected: string;
+    roleGroups: RoleGroup[];
+    /** The roles from before there were groups have been sorted by card. */
+    roleGroupsSorted?: boolean;
     activePreset: string;
     routes: Route[];
     connections: Record<Engine, Connection>;
@@ -174,6 +183,9 @@ export interface Settings {
 export interface DrawParams {
     model: string; width: number; height: number; steps: number; scale: number;
     sampler: string; schedule: string; /** -1 picks a random seed. */ seed: number; cfgRescale: number; variety: boolean;
+    /** V5 Full: 'medium' is its smaller model, with steps and sampler fixed. */ effort: 'high' | 'medium'; /** What the prompt starts with on V4 and newer. */ mode: 'anime' | 'furry' | 'background';
+    /** Preset ids of the model (qualityPresets, ucPresets in core/novelai.js). */ quality: string; ucPreset: string; /** V3 only. */ smea: 'auto' | 'on' | 'dyn' | 'off'; decrisper: boolean; transparent?: boolean;
+    /** 旧版负面: V4 only. */ legacyUc?: boolean; /** 负面强度, only with a picture of 参数网格; 1 is what is sent without it. */ uncondScale?: number;
 }
 export type AssistantPresetId = 'companion';
 export interface AssistantPresetEntry { id: string; title: string; text: string; enabled: boolean; }
@@ -202,10 +214,32 @@ export interface AssistantMessage extends AssistantVariant { id: string; role: '
 export interface AssistantThread { id: string; kind: 'assistant'; title: string; titleEdited?: boolean; revision?: number; memoryRevision?: number; restoredAt?: number; createdAt: number; updatedAt: number; at: number; messages: AssistantMessage[]; }
 export interface AssistantThreadSummary extends Omit<AssistantThread, 'messages'> { messageCount: number; preview: string; }
 /** 画风预设: artist and fixed tags sent to NovelAI. */
-export interface DrawStyle { id: string; name: string; artist: string; positive: string; negative: string; }
+export interface DrawStyle { id: string; name: string; artist: string; positive: string; negative: string; /** The 画风 group it is in. */ group?: string; }
+/** A group in the 角色 App; card: the tavern card whose new roles go in it. */
+export interface RoleGroup { id: string; name: string; open: boolean; card?: string; }
+/** A 画风 group in the drawing app: shown open (its styles under it) or closed. */
+export interface DrawStyleGroup { id: string; name: string; open: boolean; }
 /** 绘图预设: rules injected into the chat request so the model writes <img> tags. */
-export interface DrawPreset { id: string; name: string; /** Pictures per reply, 1 to drawCountMax. */ count: number; injection: Injection; entries: PresetEntry[]; /** 'baibai': plans and reads pictures the way ST-BaiBai-Image does (its own prompts and JSON), in a request after the reply. */ logic?: 'baibai'; /** 柏宝绘: also write English sentences (nl); write a negative line for each picture. */ baibai?: { nl: boolean; negative: boolean }; }
+export interface DrawPreset { id: string; name: string; /** Pictures per reply, 1 to drawCountMax. */ count: number; injection: Injection; entries: PresetEntry[]; /** 'baibai': plans and reads pictures the way ST-BaiBai-Image does (its own prompts and JSON), in a request after the reply. */ logic?: 'baibai'; /** 柏宝绘: also write English sentences (nl); write a negative line for each picture; fewest pictures (count is the most). */ baibai?: { nl: boolean; negative: boolean; min?: number }; /** Keeps 当前服装 (what each person wears, per chat). */ outfits?: boolean; }
+/** 提示词片段: words kept under a name (!macro:name!). */
+export interface PromptChunk { id: string; name: string; text: string; /** Its tint in the prompt box. */ color?: string; /** The 分类 it is in. */ group?: string; }
+/** 参数网格: the parameters along each axis, as written. */
+export interface DrawGridEntry { param: string; text: string; choices: string[]; }
+export interface DrawGrid { x: DrawGridEntry[]; y: DrawGridEntry[]; }
+/** The guide lines over V5's free-position pad. */
+export interface DrawPositionGrid { type: 'none' | 'thirds' | 'golden' | 'grid'; columns: number; rows: number; }
+/** How 局部重绘's paint looks while painting. */
+export interface DrawMaskLook { color: string; opacity: number; border: boolean; pattern: 'solid' | 'stripes' | 'dots' | 'crosshatch' | 'grid' | 'checker' | 'hearts'; }
 export interface DrawSettings {
+    /** 提示词片段, and their 分类 (groups as 画风 has them). */
+    chunks: PromptChunk[]; chunkGroups: DrawStyleGroup[];
+    /** 边画边看 in the drawing app. */
+    stream: boolean;
+    /** Each picture drawn in the drawing app is downloaded. */
+    autoDownload: boolean;
+    /** 锁定设置: what 读图 and 用它的设置 leave as it is (LOCKS in core/draw.js). */
+    locks: string[];
+    grid: DrawGrid; positionGrid: DrawPositionGrid; maskLook: DrawMaskLook;
     connections: Record<'nai' | 'gpt', {active: string; presets: ImageConnection[]}>;
     /** Inject the drawing preset into chat requests. */
     enabled: boolean;
@@ -221,7 +255,7 @@ export interface DrawSettings {
     strip: boolean;
     queue: DrawQueueSettings;
     params: DrawParams;
-    styles: DrawStyle[]; activeStyle: string;
+    styles: DrawStyle[]; styleGroups: DrawStyleGroup[]; activeStyle: string;
     presets: DrawPreset[]; activePreset: string; /** 柏宝绘 was added once; deleting it sticks. */ baibaiSeeded?: boolean;
     /** A NovelAI relay ('' = NovelAI itself); assumeOpus counts small pictures as free when the relay gives no subscription. */
     relay: { url: string; assumeOpus: boolean };
@@ -243,14 +277,16 @@ export interface ComfyWorkflow { id: string; name: string; workflow: string; sou
  *  controls: the parameters its workflow takes; missing: what stops a picture; restorable: its imported workflow can be put back. */
 export interface ComfyLoraInfo { error?: string; nodes: Array<{id: string; name: string; strength_model: number; strength_clip?: number; modelOnly: boolean; reason?: string}>; sources: Array<{id: string; name: string; modelOnly: boolean}>;
     disabled: string[]; auto: string; builtIn: boolean; restorable: boolean; controls: string[]; missing: string; }
+export interface ComfyNodeField { key: string; label: string; kind: 'text' | 'number' | 'bool' | 'combo' | 'link' | 'other'; value?: unknown; role?: string; follow?: string; absent?: boolean; options?: unknown[]; upload?: boolean; long?: boolean; min?: number; max?: number; step?: number | string; from?: {id: string; title: string}; }
+export interface ComfyNode { id: string; type: string; title: string; fills: string[]; off: boolean; canOff: boolean; isOutput: boolean; output: boolean; unknown: boolean; fields: ComfyNodeField[]; }
 export interface ComfySettings extends Omit<ComfyWorkflow, 'id' | 'name'> { url: string; loraTransport: 'tavern' | 'direct'; style: string; activeWorkflow: string; workflows: ComfyWorkflow[]; }
-export interface VibeGroup { id: string; name: string; items: Array<{ vibe: string; strength: number }>; }
-export interface VibeSettings { enabled: boolean; use: { kind: '' | 'group' | 'vibe'; id: string }; groups: VibeGroup[]; }
-/** One saved vibe as the phone sees it: never the image or the encodings. keys: models it is encoded for (v4-5full …). */
-export interface VibeSummary { id: string; name: string; thumb: string; strength: number; ie: number; image: boolean; keys: string[]; }
+export interface VibeGroup { id: string; name: string; items: Array<{ vibe: string; strength: number; /** false: switched off, not used. */ enabled?: boolean }>; }
+export interface VibeSettings { enabled: boolean; use: { kind: '' | 'group' | 'vibe'; id: string }; groups: VibeGroup[]; /** Strengths adding up to more than 1 are scaled down. */ normalize: boolean; }
+/** One saved vibe as the phone sees it: never the image or the encodings. keys: models it is encoded for (v4-5full …); ready: those needing no encoding at its 提取信息量 now; ies: the values each is encoded at. */
+export interface VibeSummary { id: string; name: string; thumb: string; strength: number; ie: number; image: boolean; keys: string[]; ready?: string[]; ies?: Record<string, number[]>; }
 /** The vibes a picture would use: encode = how many need encoding first (2 Anlas each), over = left out by the free-tier guard. */
 export interface VibePlan { on: boolean; model: boolean; used: Array<{ id: string; name: string; strength: number; encode: boolean }>; skipped: Array<{ name: string; why: 'missing' | 'model' | 'no-encoding' }>; over: number; encode: number; extra: number; }
-export interface DrawSettingsPatch { enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; }
+export interface DrawSettingsPatch { chunks?: PromptChunk[]; stream?: boolean; autoDownload?: boolean; locks?: string[]; grid?: DrawGrid; positionGrid?: Partial<DrawPositionGrid>; maskLook?: Partial<DrawMaskLook>; enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; }
 /** gap: seconds between two NovelAI requests (0-60). retries: how often an "account busy" (429) is retried (0-10). */
 export interface DrawQueueSettings { gap: number; retries: number; cloud: CloudQueueSettings; }
 /** Shared queue service (cloud-queue/worker.js) that everyone using one NovelAI account joins with the same room code. */
@@ -262,16 +298,18 @@ export interface DrawJob { key: string; label: string; state: 'waiting' | 'spaci
     /** While waiting in the cloud queue: people ahead, who is drawing, and the shared cooldown in ms. */
     cloud: { position: number; holder: string; cooldown: number } | null; }
 /** unlimited: an active Opus subscription (free small images). usage: the V5 allowance, when NovelAI reports it. */
-export interface NovelAISubscription { tier: number; active: boolean; unlimited: boolean; usage: { percent: number; negative: boolean } | null; anlas: number; checkedAt: number; }
+export interface NovelAISubscription { tier: number; active: boolean; unlimited: boolean; usage: { percent: number; negative: boolean; /** Bought on top, in percent. */ purchased?: number; /** Over 100%: it does not come back meanwhile. */ over?: boolean; /** Seconds until one percent more. */ nextPercentIn?: number } | null; anlas: number; checkedAt: number; }
 export interface DrawQuote { params: DrawParams; clamped: boolean; /** null when the subscription is unknown. */ free: boolean | null; guard: boolean; v5: boolean; usage: NovelAISubscription['usage'];
     /** The vibes this picture would use; vibeAnlas: what encoding them and vibes past four add (2 each). */
     vibes: VibePlan; vibeAnlas: number; /** 角色参考: Anlas they add; base: a base picture is used. */ referenceAnlas?: number; base?: boolean;
     /** GPT / ComfyUI only: which engine; paid: GPT (every picture costs money). */
     engine?: DrawEngine; paid?: boolean; }
-export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on a 5x5 grid, -1 lets the model decide. */ position: number; }
+export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on a 5x5 grid, -1 lets the model decide. */ position: number; /** V5: anywhere in the picture, 0-1 (other models take the nearest grid cell). */ center?: { x: number; y: number }; /** false: left out of this picture. */ enabled?: boolean; }
 export interface DrawInput { prompt: string; negative?: string; characters?: DrawCharacter[]; params?: Partial<DrawParams>; allowPaid?: boolean; name?: string; /** Queue key; the same key joins the waiting job. */ key?: string; label?: string;
     /** NovelAI: 图生图 (no mask) or 局部重绘 (mask: white where it is drawn again); the picture is drawn at the base's size. */
-    base?: { image: string; width: number; height: number; strength: number; noise?: number; mask?: string } | null;
+    base?: { image: string; width: number; height: number; strength: number; noise?: number; mask?: string; /** 局部重绘: put the untouched parts back as they were. */ overlay?: boolean; /** 增强. */ enhance?: boolean; /** 增强 at 最大 (V5): the picture as it is, doubled by NovelAI. */ upscaled?: boolean } | null;
+    /** 边画边看 when it is switched on: the steps and the picture on its way come as 'draw' events. */
+    preview?: boolean;
     /** NovelAI V4.5: 角色参考 (fitted pictures). */
     refs?: Array<{ image: string; kind: 'character' | 'style' | 'both'; strength: number; fidelity: number }>; }
 /** seed is -1 for GPT (it takes none); params are what the engine used (GPT has no steps). */
@@ -324,6 +362,7 @@ export interface CallsSettings { auto: boolean; every: number; dailyMax: number;
 /** 音效: volumes 0..1; vary: each playing a little different; generate: missing sounds made by ElevenLabs, at most `versions` of a name. */
 export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
+export interface OutfitRow { name: string; outfit: string; at: number; by: 'ai' | 'me'; }
 export interface CardLook { id: string; name: string; card: string; appearance: string; source: 'manual' | 'ai'; at: number; }
 export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** link sound: its sound is kept here */ cached?: boolean; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
 /** A name the story asked for that the library has none of. */
@@ -600,6 +639,16 @@ export interface BackendFacade {
     /** 自动挑音色 for one character again (in the tavern): resolves to the saved route, marked autoVoice. */
     autoPickVoice?(name: string): Promise<Route>;
     deleteRoute(id: string): Settings;
+    /** Several at once: one save. */
+    deleteRoutes(ids: string[]): Settings;
+    /** Roles that are one person: the first with a voice stays, the others' names become its 别名. Returns the one kept. */
+    mergeRoutes(ids: string[]): Route;
+    /** The role list in a new order with its groups (a role's id under `style`). */
+    arrangeRoles(tree: Array<{style: string} | {group: Partial<RoleGroup>; styles: string[]}>): Route[];
+    /** Once: roles met before there were groups go in a group of the card they were first met in. Whether anything was done. */
+    sortRolesByCard(cards?: Array<{key: string; name: string}>): boolean;
+    /** The tavern's cards and group chats, by the key roles remember them by (in the tavern). */
+    tavernCards?(): Array<{key: string; name: string}>;
     /** Returns a changed draft; it does not save the route. */
     switchRouteEngine(route: RouteInput, engine: Engine): Route;
     /** A role's 别名 cleaned: from a comma list or an array, without its own name. */
@@ -658,8 +707,32 @@ export interface BackendFacade {
     selectComfyWorkflow(id: string): void;
     deleteComfyWorkflow(id: string): void;
     comfyLoras(options?: {transport?: 'tavern' | 'direct'; signal?: AbortSignal}): Promise<string[]>;
-    saveStyle(style: Omit<DrawStyle, 'id'> & { id?: string }): DrawStyle;
+    /** What ComfyUI says of the node types in use (read through the tavern's proxy or directly); kept per address. */
+    comfyNodeSpecs(options?: {fresh?: boolean; types?: string[]; signal?: AbortSignal}): Promise<Record<string, unknown>>;
+    /** Every node of the scheme in use, with all its values. */
+    comfyNodeList(): ComfyNode[];
+    /** Changes the nodes of the scheme in use and saves it; on the built-in default a copy is made first (copied: true). */
+    editComfyNodes(change: {set?: Array<{id: string; key: string; value: string | number | boolean | null}>; off?: Record<string, boolean>; output?: string; params?: Partial<ComfyWorkflow>}): {copied: boolean; name: string};
+    /** Reads a workflow in any form (text: JSON; buffer: a picture ComfyUI saved) and works out which node takes what. */
+    prepareComfyImport(source: {text?: string; buffer?: ArrayBuffer; prompt?: {id: string; key: string}}): Promise<{workflow: string; params: Partial<ComfyWorkflow>; mapped: string[]; needsPrompt: boolean; candidates: Array<{id: string; key: string; title: string; text: string}>}>;
+    /** Workflows saved in ComfyUI itself, one of them as text, and what it drew lately. */
+    comfySavedWorkflows(): Promise<string[]>;
+    comfySavedWorkflow(name: string): Promise<string>;
+    comfyRecentRuns(): Promise<Array<{id: string; label: string; graph: string}>>;
+    /** Puts a picture into ComfyUI's input folder; answers the name to put in the node. */
+    comfyUploadPicture(file: File): Promise<string>;
+    /** after: a new style (a copy) goes right below this one, in its group. */
+    saveStyle(style: Omit<DrawStyle, 'id'> & { id?: string; after?: string }): DrawStyle;
     deleteStyle(id: string): DrawSettings;
+    /** Several at once; at least one has to stay. */
+    deleteStyles(ids: string[]): DrawSettings;
+    /** The 画风 list in a new order, with its groups (styles not given keep their order after the rest). */
+    arrangeStyles(tree: Array<{style: string} | {group: Partial<DrawStyleGroup>; styles: string[]}>): DrawSettings;
+    /** 效果图 of a 画风, from any picture: kept as files in the tavern. */
+    setStyleCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
+    clearStyleCover(id: string): void;
+    /** The 提示词片段 list in a new order with its 分类, in the same shape (a 片段's id under `style`). */
+    arrangeChunks(tree: Array<{style: string} | {group: Partial<DrawStyleGroup>; styles: string[]}>): DrawSettings;
     saveDrawPreset(preset: Omit<DrawPreset, 'id'> & { id?: string }): DrawPreset;
     deleteDrawPreset(id: string): DrawSettings;
     /** Text injected for the active drawing preset, or for the given draft. */
@@ -675,22 +748,28 @@ export interface BackendFacade {
     testCloudQueue(value?: Partial<CloudQueueSettings>): Promise<{ ok: true; length: number; holder: string; cooldown: number } | { ok: false; message: string }>;
     newRoomCode(): string;
     /** extra: a base picture (图生图 / 局部重绘) and how many 角色参考 — both cost Anlas. */
-    drawQuote(params?: Partial<DrawParams>, extra?: { base?: boolean; refs?: number }): DrawQuote;
+    drawQuote(params?: Partial<DrawParams>, extra?: { base?: boolean; /** 局部重绘: takes no vibes. */ mask?: boolean; refs?: number; size?: { width: number; height: number } }): DrawQuote;
     /** NovelAI's 导演工具 (tool: bg-removal | lineart | sketch | colorize | emotion | declutter) or 放大 (tool: upscale) on a picture; the result goes into the album. */
-    naiTool(input: { tool: string; image: string; width: number; height: number; prompt?: string; mood?: string; defry?: number; name?: string }): Promise<DrawResult & { tool: string }>;
+    naiTool(input: { tool: string; image: string; width: number; height: number; prompt?: string; mood?: string; defry?: number; name?: string }): Promise<DrawResult & { tool: string; more: Array<DrawResult & { tool: string }> }>;
+    /** Tags beginning with a word, for the model and mode in use. */
+    naiSuggestTags(word: string, options?: { signal?: AbortSignal }): Promise<Array<{ tag: string; count: number }>>;
     /** Saved vibes (summaries, newest first). */
     listVibes(): VibeSummary[];
     /** Makes the pictures of saved vibes small (encodings stay): how many changed, and the bytes before and after. */
     compactVibes(): Promise<{ count: number; before: number; after: number }>;
     /** Imports .naiv4vibe, .naiv4vibebundle, 智绘姬 exports and pictures; groups in the files become groups. */
     importVibes(files: ArrayLike<File>, options?: { names?: boolean }): Promise<{ added: number; updated: number; renamed: number; groups: number; errors: Array<{ name: string; message: string }> }>;
-    updateVibe(id: string, patch: { name?: string; strength?: number }): Promise<VibeSummary>;
+    updateVibe(id: string, patch: { name?: string; strength?: number; /** 提取信息量; a vibe without its picture cannot change it. */ ie?: number }): Promise<VibeSummary>;
+    /** Vibes read from a picture's parameters: a new group in use, or added to the group in use. How many, or null when none. */
+    importPictureVibes(list: Array<{ encoding: string; strength: number; ie: number }>, options?: { model?: string; name?: string; append?: boolean }): Promise<number | null>;
+    /** A PNG with the target's vibes inside, where NovelAI's app reads them. */
+    embedVibes(target: { vibe?: string; group?: string; encodings?: boolean }, picture: Blob, name?: string): Promise<{ name: string; blob: Blob }>;
     /** Deletes a vibe and takes it out of every group. */
     deleteVibe(id: string): Promise<void>;
     /** Deletes several vibes at once; returns how many were deleted. */
     deleteVibes(ids: string[]): Promise<number>;
-    /** {vibe} → .naiv4vibe, {group} → .naiv4vibebundle, {all} → everything in the 智绘姬 form. */
-    exportVibes(target: { vibe?: string; group?: string; all?: boolean }): Promise<{ name: string; blob: Blob }>;
+    /** {vibe} → .naiv4vibe, {group} → .naiv4vibebundle, {all} → everything in the 智绘姬 form. encodings: no pictures, only what the model in use needs. */
+    exportVibes(target: { vibe?: string; group?: string; all?: boolean; encodings?: boolean }): Promise<{ name: string; blob: Blob }>;
     vibePlan(model?: string): VibePlan;
     /** Generates one image and saves it to the album. Rejects paid requests unless allowPaid. */
     generateImage(input: DrawInput): Promise<DrawResult>;
@@ -710,6 +789,12 @@ export interface BackendFacade {
     toggle(): void | Promise<void>;
     resume(): void | Promise<void>;
     audition(route: RouteInput): void;
+    /** 自己的接口: whether a service can be reached; if not, why and what to do, in plain words. */
+    customReach(address: string): Promise<{ok: boolean; base?: string; via?: string; notes?: string[]; message?: string; hint?: string; address?: string}>;
+    /** 自己的接口 → 自动识别: which service answers there and the settings for it; nothing is saved. */
+    customDetect(address: string): Promise<{ok: boolean; base?: string; via?: string; notes?: string[]; message?: string; hint?: string; address?: string; found?: {id: string; name: string; params: Record<string, unknown> | null; unknown: string[]; voices?: number; note?: string} | null}>;
+    /** 自己的接口: where something answers among the ports such services usually take. */
+    customScan(): Promise<string[]>;
     /** 自己的接口 → 试一试: says one line with the first voice of these (unsaved) settings. */
     customTest(connection?: unknown): Promise<{ voice: string; bytes: number; type: string }>;
     lineState(line: DialogueLine): Promise<LineState>;
@@ -1010,6 +1095,11 @@ export interface BackendAPI extends BackendFacade {
     planLatestPictures(): Promise<boolean>;
     /** 回复后单独配音: voices the newest reply again; how many lines were voiced. */
     planLatestVoice?(): Promise<number>;
+    /** 当前服装: what each person wears now in the open chat (kept in the chat's own data). */
+    outfitsList?(): OutfitRow[];
+    outfitSave?(name: string, outfit: string): OutfitRow[];
+    outfitDelete?(name: string): OutfitRow[];
+    outfitsClear?(): OutfitRow[];
     /** Deletes every picture of the open chat from the tavern; their tags show "点击生成" again. */
     clearChatPictures(): Promise<{ count: number; failed: number }>;
     /** A picture the chat asked to open in the drawing app, if any. */

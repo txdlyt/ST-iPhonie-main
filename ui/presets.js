@@ -86,8 +86,13 @@ export function presetsApp(ctx) {
   }
 
   /** 柏宝绘: what the preset says about itself, and its two switches. */
+  /** 当前服装: this chat keeps what each person wears, and the planner is told it. */
+  function outfitFields(p) {
+    return toggle('outfits', '记住角色当前的服装（按聊天）', p.outfits === true, '打开后，出图规划时会告诉模型这个聊天里每个人此刻穿什么，换了衣服模型会报告，下次接着用。衣服仍然由模型写进每张图的 tag，所以剧情里换装不会冲突；世界书里写的固定服装当作起点，聊天里的变化优先。记录按聊天分开：新聊天从头开始，回到旧聊天旧的还在。可以在「角色」→「外貌库」里看、改、清空。');
+  }
   function baibaiFields(p) {
     return `<p class="hint">这是柏宝绘预设：规划图片用柏宝绘的提示词（破限、规范、思维链），模型按它的 JSON 回答，再换成手机自己的出图块来画。固定在「回复后单独配图」里工作；角色外貌用「角色」App 里的，新角色按柏宝绘的建档写进「角色」App。下面的条目可以改，按出图引擎自动选用对应的规范和思维链（没有哪条对应时用柏宝绘原文）。</p>
+      ${field('最少出几张', input('baibai.min', p.baibai?.min ?? 0, 'number', `min="0" max="${api.drawCountMax}" step="1"`), '0 表示没有值得画的画面时可以不出图（只提示一句）；大于 0 时模型至少出这么多张。手动点「给这层楼生图」时至少出一张。')}
       ${toggle('baibai.nl', '同时写自然语言（nl）', p.baibai?.nl !== false, 'NovelAI V4.5 / V5、ComfyUI、GPT 才有：模型除了 tag 还写一两句英文描述。V3 / V4 只吃 tag，这个开关对它们无效。')}
       ${toggle('baibai.negative', '每张图单独写负面词', p.baibai?.negative === true, '模型为每张图写专用的负面 tag（只排除正文冲突的内容），加在画风的负面词后面。')}`;
   }
@@ -198,7 +203,7 @@ export function presetsApp(ctx) {
     const used = p.id && p.id === o.active();
     const books = (p.loreSkipBooks || []).length, entries = (p.loreSkipEntries || []).length;
     const basics = chat ? ''
-      : draw ? field('每条回复出图数量', input('count', p.count ?? 1, 'number', `min="1" max="${api.drawCountMax}" step="1"`), '每条回复固定出这么多张图。规则里写 {{出图数量}} 会换成这个数字；插件还会在规则最后加一段硬性要求，让张数更稳定。张数越多，出图越久。\n\n规则里写 {{出图格式}} 会换成下面这段（回复后单独配图时，还会多一行「位置」）；{{角色列表}} 会换成已登记的角色和他们的固定外貌。别的插件要排除出图内容时，排除标签填 <img></img>。\n\n' + api.picTagFormat) + (p.logic === 'baibai' ? baibaiFields(p) : '')
+      : draw ? field(p.logic === 'baibai' ? '最多出几张' : '每条回复出图数量', input('count', p.count ?? 1, 'number', `min="1" max="${api.drawCountMax}" step="1"`), (p.logic === 'baibai' ? '柏宝绘预设：这是最多的张数，出几张由模型按剧情定，最少几张在下面设。\n\n' : '') + '每条回复固定出这么多张图。规则里写 {{出图数量}} 会换成这个数字；插件还会在规则最后加一段硬性要求，让张数更稳定。张数越多，出图越久。\n\n规则里写 {{出图格式}} 会换成下面这段（回复后单独配图时，还会多一行「位置」）；{{角色列表}} 会换成已登记的角色和他们的固定外貌。别的插件要排除出图内容时，排除标签填 <img></img>。\n\n' + api.picTagFormat) + outfitFields(p) + (p.logic === 'baibai' ? baibaiFields(p) : '')
       : field('正文显示', select('voiceLayout', p.format===FREE_FORMAT?'free':'paired', [['paired','译文与原文配对'],['free','自由正文 · 只渲染 tts 标签']]), '自由正文保留对白的语言和排版，英语、双语括号都可以。标签内仍写角色、情绪、朗读原文。') + field('台词格式', textArea('format', p.format, 'class="code short" rows="3"'), '配对模式：{译文}、{角色}、{情绪}、{文本} 各保留一次。自由正文模式：<tts>{角色}|{情绪}|{文本}</tts>，前面的正文不限制格式。译文供阅读，原语言供语音生成。默认格式是成对的 <tts></tts>，别的插件要排除语音原文时，排除标签填 <tts></tts>。\n\n这里的格式只管正文；手机里的语音消息和电话固定用默认格式，不跟着改。');
     const marks = p.marks || {inner: [], phone: []}, marked = (marks.inner || []).length + (marks.phone || []).length;
     const folds = chat

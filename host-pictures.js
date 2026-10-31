@@ -11,7 +11,8 @@
 // When the last version is deleted the record becomes {removed: true, versions: []}, so it is not drawn again
 // automatically. Older records ({url, seed, …}) read as a single version.
 import {storyReply} from './core/outgoing.js';
-import {drawSeparate, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
+import {OUTFIT_KEY, normalizeBook, outfitsBefore, currentOutfits, recordOutfits, forgetOutfit} from './core/outfits.js';
+import {drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
 import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
@@ -128,10 +129,39 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       texts: [...prior.map(m => `${m.name}: ${m.text}`), plainStory(withoutPictures(source))]});
   }
   /** The picture planner's request for one reply, with the story's 世界书 and the card's 名单. */
-  async function pictureRequest(id, source) {
-    const prior = before(id);
-    return planRequest(settings(), {message: source, before: prior, only: castNow(), lore: await storyLore(prior, source)});
+  async function pictureRequest(id, source, {manual = false} = {}) {
+    const prior = before(id), s = settings();
+    // manual: someone asked for this floor's pictures: at least one, even where 柏宝绘 may come back with none.
+    return planRequest(s, {message: source, before: prior, only: castNow(), lore: await storyLore(prior, source), outfits: wantsOutfits(s.draw) ? outfitsNow(id) : [], min: manual ? 1 : null});
   }
+  // ---------- 当前服装 (per chat, in the chat's own data) ----------
+  const outfitBook = () => normalizeBook(context()?.chatMetadata?.[OUTFIT_KEY]);
+  function outfitsNow(id) { return outfitsBefore(outfitBook(), id); }
+  function saveBook(book) {
+    const ctx = context();
+    if (!ctx?.chatMetadata) throw Error('先在酒馆里打开一个聊天');
+    ctx.chatMetadata[OUTFIT_KEY] = book;
+    (ctx.saveMetadataDebounced || ctx.saveMetadata)?.call(ctx);
+  }
+  /** What an answer says about who changed clothes goes into the chat's record (when the preset keeps one). */
+  function keepOutfits(id, reply) {
+    try {
+      if (!wantsOutfits(settings().draw)) return;
+      const found = readOutfits(reply);
+      if (found.length) saveBook(recordOutfits(outfitBook(), id, found));
+    } catch { /* a record that could not be kept is not worth a failed reply */ }
+  }
+  const outfitsList = () => currentOutfits(outfitBook());
+  /** Said by hand: it starts from the floor before the newest, so the next picture already uses it. */
+  function outfitSave(name, outfit) {
+    const ctx = context();
+    if (!ctx?.chat?.length) throw Error('先在酒馆里打开一个聊天');
+    if (!String(name).trim() || !String(outfit).trim()) throw Error('名字和衣服都要写');
+    saveBook(recordOutfits(outfitBook(), Math.max(0, ctx.chat.length - 2), [{name, outfit}], 'me'));
+    return outfitsList();
+  }
+  function outfitDelete(name) { saveBook(forgetOutfit(outfitBook(), name)); return outfitsList(); }
+  function outfitsClear() { saveBook({}); return []; }
   /** Earlier messages for the planner: names and plain text, oldest first. */
   function before(id, limit = 2) {
     const chat = context().chat, out = [];
@@ -144,12 +174,15 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     return out;
   }
   /** The pictures of a reply asked for on their own: put in, asked once more when none came out. {text, count} */
-  async function planOnce(id, source) {
+  async function planOnce(id, source, {manual = false} = {}) {
     let last = {text: source, count: 0};
-    for (let round = 0; round < 2 && !last.count; round++) {
-      const reply = await backend.generateText(context(), {prompt: await pictureRequest(id, source), trimNames: false, responseLength: planLength(settings(), activeDrawPreset().count)});
-      last = insertPlanned(source, reply);
-      if (!last.count) backend.reportDiagnostic?.('正文出图', {message: round ? '又试了一次，还是没有挑出画面' : '没有挑出画面，再试一次', reply: String(reply ?? '').slice(0, 2000)}, 'warn');
+    // 柏宝绘 with 最少 0: a reply with nothing worth drawing is a proper answer, so it is not asked again.
+    const rounds = !manual && noneOk(settings().draw) ? 1 : 2;
+    for (let round = 0; round < rounds && !last.count; round++) {
+      const reply = await backend.generateText(context(), {prompt: await pictureRequest(id, source, {manual}), trimNames: false, responseLength: planLength(settings(), activeDrawPreset().count)});
+      last = insertPlanned(source, reply, {outfits: wantsOutfits(settings().draw)});
+      keepOutfits(id, reply);
+      if (!last.count && rounds > 1) backend.reportDiagnostic?.('正文出图', {message: round ? '又试了一次，还是没有挑出画面' : '没有挑出画面，再试一次', reply: String(reply ?? '').slice(0, 2000)}, 'warn');
     }
     return last;
   }
@@ -166,8 +199,9 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     notice('正在给这条回复挑画面……');
     try {
       const source = force ? withoutPictures(message.mes) : message.mes;
-      const {text, count} = await planOnce(id, source);
+      const {text, count} = await planOnce(id, source, {manual: force});
       if (context().chat[id] !== message) return false;
+      if (!count && noneOk(settings().draw) && !force) { notice('这条回复没有值得画的画面'); return false; }
       if (!count) throw Error('这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
       message.mes = text;
       if (Array.isArray(message.swipes)) message.swipes[message.swipe_id ?? 0] = text;
@@ -184,12 +218,18 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   async function planReply(id, {voiced: wantVoice, pictured: wantPictures, force = false, phoned = false}) {
     const ctx = context(), s = settings(), message = ctx.chat[id];
     if (!message || message.is_user || message.is_system || planning.has(id) || (!wantVoice && !wantPictures)) return {voiced: 0, pictured: 0};
+    // 柏宝绘 answers in its own JSON, which cannot share one answer with the voice lines: two requests, one after the other.
+    if (wantVoice && wantPictures && usesBaibai(s.draw)) {
+      const a = await planReply(id, {voiced: true, pictured: false, force, phoned});
+      const b = await planReply(id, {voiced: false, pictured: true, force});
+      return {voiced: a.voiced, pictured: b.pictured};
+    }
     planning.add(id);
     notice(wantVoice && wantPictures ? '正在给这条回复配音、挑画面……' : wantVoice ? '正在给这条回复配音……' : '正在给这条回复挑画面……');
     try {
       const source = force && wantPictures ? withoutPictures(message.mes) : message.mes, format = voice?.format();
       const preset = s.draw.presets.find(p => p.id === s.draw.activePreset) || s.draw.presets[0];
-      const pictures = wantPictures ? await pictureRequest(id, source) : null;
+      const pictures = wantPictures ? await pictureRequest(id, source, {manual: force}) : null;
       const asked = wantVoice && wantPictures ? combinedRequest({rules: voice.rules(), format, pictures})
         : wantVoice ? voicePlanRequest({rules: voice.rules(), format, message: source, before: before(id)}) : pictures;
       // 正文联动手机: what happens on the phone is asked for at the end of the same request (【手机】).
@@ -200,12 +240,12 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (context().chat[id] !== message) return {voiced: 0, pictured: 0};
       const {rest: reply, phone: sent} = phoneRule ? phoneSection(answer) : {rest: answer, phone: ''};
       let text = source, pictured = 0, voiced = 0;
-      if (wantPictures) ({text, count: pictured} = insertPlanned(text, reply));
+      if (wantPictures) { ({text, count: pictured} = insertPlanned(text, reply, {outfits: wantsOutfits(s.draw)})); keepOutfits(id, reply); }
       if (wantVoice) ({text, count: voiced} = insertVoiced(text, reply, format));
       // No pictures came out with the rest: they are asked for on their own (once more at most).
-      if (wantPictures && !pictured) {
+      if (wantPictures && !pictured && !(noneOk(s.draw) && !force)) {
         backend.reportDiagnostic?.('正文出图', {message: '和配音一起请求时没有挑出画面，单独再请求一次', reply: String(reply ?? '').slice(0, 2000)}, 'warn');
-        ({text, count: pictured} = await planOnce(id, text));
+        ({text, count: pictured} = await planOnce(id, text, {manual: force}));
         if (context().chat[id] !== message) return {voiced: 0, pictured: 0};
       }
       // The phone part is kept at the end of the reply like the story's own <phone> (shown as a note), then delivered.
@@ -218,6 +258,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
           phone.deliver(id).catch(() => {});
         }
       }
+      if (!voiced && !pictured && wantPictures && !wantVoice && noneOk(s.draw) && !force) { notice('这条回复没有值得画的画面'); return {voiced: 0, pictured: 0}; }
       if (!voiced && !pictured) throw Error(wantVoice ? '这次没有配上音，可以在小手机的「设置 → 正文」里点「给最新回复配音」再试一次' : '这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
       message.mes = text;
       if (Array.isArray(message.swipes)) message.swipes[message.swipe_id ?? 0] = text;
@@ -228,7 +269,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       // The lines are in now: 提前生成 can make them.
       if (voiced) lined(id);
       if (wantVoice && !voiced) notice('画面挑好了，台词这次没配上，可以在「设置 → 正文」里点「给最新回复配音」');
-      if (wantPictures && !pictured) notice('台词配好了，画面这次没挑出来，可以在「设置 → 正文」里点「给最新回复配图」');
+      if (wantPictures && !pictured && !(noneOk(s.draw) && !force)) notice('台词配好了，画面这次没挑出来，可以在「设置 → 正文」里点「给最新回复配图」');
       return {voiced, pictured};
     } finally { planning.delete(id); }
   }
@@ -626,5 +667,5 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const permission = await allowed(true); if (!permission) return;
     for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {tagText, drawMessage, voiceMessage, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {tagText, drawMessage, voiceMessage, outfitsList, outfitSave, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }

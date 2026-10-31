@@ -1,5 +1,8 @@
 import {createView, esc, engines, btn, field, input, select, textArea, heading, help, groupTitle, plate, avatar, languageField, languageName, typedLanguages, toggle} from './common.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
+import {layerSort} from './layer-sort.js';
+import {layerTree} from '../core/layers.js';
+import {lookTest} from '../core/draw.js';
 import {VOICE_GENDERS, VOICE_AGES, poolLine, readPoolFile, poolFile, guessVoice} from '../core/auto-voice.js';
 import {saveFile} from '../download.js';
 import {icon, halo} from './icons.js';
@@ -25,40 +28,156 @@ export function rolesApp(ctx) {
   const favorites = () => api.getState().voicePool || [];
   const isFavorite = (engine, voice) => favorites().some(f => f.engine === engine && f.voice === voice);
 
-  // 角色 by card, as BaiBai keeps its libraries: 全局 (everyone's), 本卡 (the card open now) and the other cards.
-  const here = () => api.cardList().find(c => c.open)?.key || '';
-  const clip = (text, n = 16) => { const chars = [...String(text || '')]; return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : chars.join(''); };
-  let listDrawn = '';
+  // ---------- the list: rows that go the way Procreate's layers do ----------
+  let listDrawn = '', query = '', filter = '', swipe = null, sort = null, seenCard = null;
+  const space = () => api.phoneSpace?.() || {};
+  const inCard = (r, sp) => !!sp.key && ((sp.members || []).includes(r.name) || !!r.cards?.includes(sp.key));
+  /** What the 筛选 chips ask for. */
+  const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim()]};
+  const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
+  const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
+  /** Picked rows as roles: a group's row stands for its roles. */
+  const rolesOf = ids => [...new Set(ids.flatMap(id => id.startsWith('g:') ? tree().find(e => e.group?.id === id.slice(2))?.styles || [] : [id]))];
+  function roleRow(r, pool) {
+    const voiced = !!r.voice, engine = voiced ? r.engine : 'none';
+    const actions = [...(voiced ? [{key: 'audition', label: '试听', icon: 'play'}] : []), {key: 'edit', label: '改', icon: 'edit'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}];
+    return swipeRow(r.id, `<button type="button" class="list-row role-row" data-action="edit-role" data-id="${esc(r.id)}" data-engine="${engine}">${avatar(r.name, engine, 44)}<span class="role-row-text"><strong>${esc(r.name)}</strong>${voiced
+      ? `<small>${plate(engines[r.engine])}<span class="role-voice">${esc(voiceLabel(r.voice, pool))}</span>${r.autoVoice ? ' <span class="auto-chip">自动挑的</span>' : ''}</small>`
+      : '<small class="unset">待配音</small>'}</span></button>`, actions, {label: r.name});
+  }
+  const GROUP_ACTIONS = [{key: 'rename', label: '改名', icon: 'edit'}, {key: 'ungroup', label: '解散', icon: 'layers'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}];
+  function listRows() {
+    const state = api.getState(), pool = poolNames(), sp = space(), word = query.trim().toLowerCase();
+    if (word || filter) {
+      const shown = state.routes.filter(r => (!filter || FILTERS[filter][1](r, sp)) && (!word || [r.name, ...(r.aliases || []), r.voice ? voiceLabel(r.voice, pool) : ''].join(' ').toLowerCase().includes(word)));
+      return shown.map(r => roleRow(r, pool)).join('') || '<p class="hint role-none">没有这样的角色</p>';
+    }
+    return layerTree(state.routes, state.roleGroups).map(e => e.style ? roleRow(e.style, pool) : swipeRow('g:' + e.group.id, `<div class="list-row style-group-row" aria-expanded="${e.group.open}"><span class="style-group-chevron">${icon('chevron')}</span><span class="style-group-art">${icon('layers')}</span><span><strong data-group-name>${esc(e.group.name)}</strong><small>${e.styles.length} 个角色${e.styles.some(r => !r.voice) ? ` · ${e.styles.filter(r => !r.voice).length} 个待配音` : ''}</small></span>${sp.key && e.group.card === sp.key ? '<span class="chip">在玩</span>' : ''}</div>`, GROUP_ACTIONS, {className: 'style-group', label: e.group.name})
+      + `<div class="style-group-body" data-group-body="${esc(e.group.id)}"${e.group.open ? '' : ' data-closed'}><div class="style-group-inner">${e.styles.map(r => roleRow(r, pool)).join('')}</div></div>`).join('');
+  }
+  // (Whatever was being looked for stays in sight when so many have been deleted that the box would otherwise go.)
+  function listTools(roles) {
+    const sp = space(), chips = Object.entries(FILTERS).map(([key, [label, test]]) => [key, label, roles.filter(r => test(r, sp)).length]).filter(([key, , n]) => n > 0 || filter === key);
+    return (roles.length > 8 || query ? `<div class="field role-search"><input class="search" type="search" data-role-search value="${esc(query)}" placeholder="搜索名字、别名、音色" aria-label="搜索角色" autocomplete="off"></div>` : '')
+      + ((roles.length > 3 || filter) && chips.length ? `<div class="grid-choices role-filters" role="group" aria-label="筛选">${chips.map(([key, label, n]) => `<button type="button" data-action="role-filter" data-key="${key}" aria-pressed="${filter === key}">${label} · ${n}</button>`).join('')}</div>` : '');
+  }
+  function listHTML(rows = listRows()) {
+    const roles = api.getState().routes;
+    return heading('角色', help('给聊天里说话的角色配一个声音。也可以直接点聊天里的声波，遇到没配过的角色会带你来这里。') + btn('add-role', icon('add'), 'round-button', 'aria-label="新增角色"'), `Character · ${String(roles.length).padStart(2, '0')}`)
+      + autoGroup() + looksRow() + listTools(roles)
+      + (roles.length ? `<div class="group style-list role-list" data-role-list>${rows}</div>` : `<div class="actions">${btn('add-role', icon('add') + '新增角色', 'secondary')}</div>`);
+  }
+  /** Only the rows: typing in the search box keeps the keyboard up, and a moved row glides. */
+  function paintRows() {
+    const list = v.root.querySelector('[data-role-list]'), rows = listRows();
+    if (list) list.innerHTML = rows;
+    listDrawn = listHTML(rows);
+  }
+  /** The list as put in order. Drafts go along (one saved later would put its role back in the group it was in); a group opened or shut has already changed by itself, nothing needs drawing again for it. */
+  function keepOrder(next) {
+    for (const r of api.arrangeRoles(next)) { const draft = drafts.get(r.id); if (!draft) continue; if (r.group) draft.group = r.group; else delete draft.group; }
+    listDrawn = listHTML();
+  }
   function renderList() {
-    const roles = api.getState().routes, pool = poolNames(), cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), open = here();
-    const tile = (r, i) => {
-      const voiced = !!r.voice, engine = voiced ? r.engine : 'none';
-      return `<button class="role-card" data-action="edit-role" data-id="${esc(r.id)}" data-engine="${engine}">
-        <span class="role-top"><span class="role-no">${number(i)}</span>${voiced ? halo() : ''}${avatar(r.name, engine, 54)}</span>
-        <span class="role-body"><strong>${esc(r.name)}</strong>${voiced
-          ? `<span>${plate(engines[r.engine])}</span><small>${esc(voiceLabel(r.voice, pool))}<br>${esc(r.language ? languageName(r.language) : '跟随默认语言')}</small>${r.autoVoice ? '<small class="auto-chip">自动挑的</small>' : ''}`
-          : '<small class="unset">待选择音色</small><small>出现在聊天里时会等你配音</small>'}</span></button>`;
-    };
-    const global = [], mine = [], others = new Map();
-    roles.forEach((r, i) => {
-      const keys = Array.isArray(r.cards) ? r.cards : [];
-      if (!keys.length) global.push(tile(r, i));
-      else if (open && keys.includes(open)) mine.push(tile(r, i));
-      else for (const k of keys) { if (!others.has(k)) others.set(k, []); others.get(k).push(tile(r, i)); }
-    });
-    const add = `<button class="role-card add" data-action="add-role">${icon('add')}新增角色</button>`;
-    const grid = (list, withAdd) => `<div class="role-grid">${list.join('')}${withAdd ? add : ''}</div>`;
-    const sections = (open ? groupTitle('本卡：' + clip(names.get(open) || '当前卡'), `<small>${mine.length} 个</small>`) + grid(mine, true) : '')
-      + groupTitle('全局', `<small>${global.length} 个 · 每张卡都能用</small>`) + grid(global, !open)
-      + [...others].map(([k, list]) => `<details class="role-other" data-group="role-card-${esc(k)}"><summary>${esc(clip(names.get(k) || '没有名字的卡', 20))}<small class="fold-note">${list.length} 个</small></summary>${grid(list, false)}</details>`).join('');
-    const html = heading('角色', help('给聊天里说话的角色配一个声音。也可以直接点聊天里的声波，遇到没配过的角色会带你来这里。分成「全局」（每张卡都能用）和各张角色卡自己的角色，点开一个角色可以改它的「归属」。') + btn('add-role', icon('add'), 'round-button', 'aria-label="新增角色"'), `Character · ${String(roles.length).padStart(2, '0')}`)
-      + autoGroup() + looksRow() + sections;
+    if (v.root.querySelector('.role-list.sorting')) return;
+    // Those met before there were groups go in the groups of their cards, once.
+    if (!api.getState().roleGroupsSorted) api.sortRolesByCard?.(api.tavernCards?.() || []);
+    const html = listHTML();
     // Reopening 角色 draws the list again only when something in it changed: with dozens of roles, drawing them all
     // again for nothing was most of the time it took. (A switch flipped but not saved still gets drawn again.)
-    if (html === listDrawn && v.root.querySelector('.role-grid') && ![...v.root.querySelectorAll('input[type=checkbox]')].some(b => b.checked !== b.defaultChecked)) return;
+    if (html === listDrawn && v.root.querySelector('[data-role-list]') && swipe && ![...v.root.querySelectorAll('input[type=checkbox]')].some(b => b.checked !== b.defaultChecked)) return;
     listDrawn = html;
+    swipe?.dispose(); swipe = null;
     v.draw(html);
+    mountList();
   }
+  /** Coming in with another card in the tavern: its group opens, and is brought into view. */
+  function showPlaying() {
+    if (v.disposed || current) return;
+    // Made before it is on the page, there is nothing to measure yet.
+    if (!v.root.isConnected) { ctx.win.setTimeout(showPlaying, 0); return; }
+    const key = space().key || '';
+    if (key === seenCard) return;
+    const first = seenCard === null;
+    seenCard = key;
+    if (!key || query || filter) return;
+    const state = api.getState(), group = state.roleGroups.find(g => g.card === key);
+    if (!group || !sort) return;
+    if (!group.open) sort.toggle(group.id);
+    const row = sort.rowOf('g:' + group.id);
+    if (!row) return;
+    // (The phone may be growing out of its icon just now: in the view's own pixels.)
+    const box = v.root.getBoundingClientRect(), top = (row.getBoundingClientRect().top - box.top) / (box.height / v.root.offsetHeight || 1);
+    if (!first || top > v.root.clientHeight * .6) v.root.scrollTop += top - 8;
+  }
+  function mountList() {
+    const list = v.root.querySelector('[data-role-list]');
+    if (!list) return;
+    sort = layerSort({ctx, list, tree, commit: keepOrder, paint: paintRows, groupName, scroller: () => v.root});
+    swipe = mountSwipeList(list, {ctx,
+      hint: '点一下改，按住可以拖动排序；左滑：试听、改、删除；右滑：多选、建组、合并；点组：展开或收起',
+      mouseHint: '点一下改，按住可以拖动排序；⋯ 或右键：试听、改、删除；Ctrl / ⌘ 点：多选、建组、合并；点组：展开或收起',
+      sort: {start: (row, point) => query || filter ? null : sort.lift(row, point)},
+      onTap: id => { if (id.startsWith('g:')) sort.toggle(id.slice(2)); },
+      onAction: async (key, id) => {
+        try {
+          if (id.startsWith('g:')) {
+            const gid = id.slice(2), entry = tree().find(e => e.group?.id === gid);
+            if (!entry) return;
+            if (key === 'rename') sort.rename(gid);
+            else if (key === 'ungroup') sort.arrange(tree().flatMap(e => e.group?.id === gid ? e.styles.map(style => ({style})) : [e]));
+            else if (key === 'delete' && await ctx.confirm(`删除组「${entry.group.name}」？`, `里面的 ${entry.styles.length} 个角色和他们的音色设置会一起删掉。只想拆开组，用「解散」。`)) dropRoles(entry.styles);
+            return;
+          }
+          const role = api.getState().routes.find(r => r.id === id);
+          if (!role) return;
+          if (key === 'edit') edit(id);
+          else if (key === 'audition') api.audition(role);
+          else if (key === 'delete' && await ctx.confirm(`删除角色「${role.name}」？`, '其他角色的音色和预设会保留。')) dropRoles([id]);
+        } catch (error) { ctx.notify(error.message, {error: true}); }
+      },
+      bulk: [{key: 'group', label: '建组', icon: 'layers'}, {key: 'merge', label: '合并', icon: 'person'}, ...(api.autoPickVoice ? [{key: 'voice', label: '挑音色', icon: 'wave'}] : []), {key: 'delete', label: '删除', icon: 'trash', danger: true}],
+      onBulk: async (key, ids) => {
+        const picked = rolesOf(ids);
+        if (key === 'group') return sort.makeGroup(ids);
+        if (key === 'merge') return mergeRoles(picked);
+        if (key === 'voice') return pickVoices(picked);
+        if (key === 'delete' && await ctx.confirm(`删除这 ${picked.length} 个角色？`, '他们的音色设置会一起删掉，其他角色保留。')) dropRoles(picked);
+      }});
+  }
+  function dropRoles(ids) {
+    api.deleteRoutes(ids);
+    for (const id of ids) drafts.delete(id);
+    listDrawn = ''; render();
+  }
+  /** Picked roles that are one person (the same name written two ways): the one with a voice stays. */
+  async function mergeRoles(ids) {
+    const roles = ids.map(id => api.getState().routes.find(r => r.id === id)).filter(Boolean);
+    if (roles.length < 2) { ctx.notify('至少选两个角色才能合并'); return; }
+    const keep = roles.find(r => r.voice) || roles[0], others = roles.filter(r => r !== keep);
+    if (!await ctx.confirm(`合并成「${keep.name}」？`, `${others.map(r => r.name).join('、')} 会变成这个角色的别名，以后都用同一个音色。没写的外貌和资料从被合并的人那里补上。`)) return;
+    api.mergeRoutes(roles.map(r => r.id));
+    for (const r of others) drafts.delete(r.id);
+    drafts.delete(keep.id);
+    listDrawn = ''; render();
+    ctx.notify(`已合并成「${keep.name}」`);
+  }
+  /** 挑音色 for the picked roles that have none, one after another. */
+  async function pickVoices(ids) {
+    const roles = ids.map(id => api.getState().routes.find(r => r.id === id)).filter(r => r && !r.voice);
+    if (!roles.length) { ctx.notify('选中的角色都有音色了'); return; }
+    if (!await ctx.confirm(`给 ${roles.length} 个角色挑音色？`, '每个角色会调用一两次文字模型。')) return;
+    let done = 0, failed = '';
+    for (const r of roles) {
+      ctx.notify(`正在挑「${r.name}」（${done + 1}/${roles.length}）`);
+      try { await api.autoPickVoice(r.name); done++; } catch (error) { failed = error.message; }
+    }
+    listDrawn = ''; render();
+    ctx.notify(failed ? `挑好了 ${done} 个，有的没挑成：${failed}` : `挑好了 ${done} 个`, failed ? {error: true} : undefined);
+  }
+  // 外貌库 (looks by card): the card open now, and names cut short so a title never runs off the sheet.
+  function here() { return api.cardList().find(c => c.open)?.key || ''; }
+  function clip(text, n = 16) { const chars = [...String(text || '')]; return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : chars.join(''); }
   // ---------- 外貌库 ----------
   const preview = text => { const t = String(text || '').trim().replace(/\s+/g, ' '); return t.length > 60 ? t.slice(0, 59) + '…' : t; };
   function looksRow() {
@@ -75,10 +194,13 @@ export function rolesApp(ctx) {
       (open && !looks.some(l => l.card === open && l.name === r.name) ? btn('look-copy-role', '复制到本卡', 'chip-button', `data-id="${esc(r.id)}"`) : '') + btn('look-open-role', '去角色里改', 'chip-button', `data-id="${esc(r.id)}"`))).join('');
     const byCard = new Map();
     for (const l of looks) if (l.card !== open) { if (!byCard.has(l.card)) byCard.set(l.card, []); byCard.get(l.card).push(l); }
+    const outfits = (() => { try { return api.outfitsList?.() || []; } catch { return []; } })();
+    const outfitRows = outfits.map(o => row(o.name, o.outfit, o.by === 'me' ? '手填的' : '', btn('outfit-edit', '改', 'chip-button', `data-name="${esc(o.name)}"`) + btn('outfit-delete', '清', 'chip-button', `data-name="${esc(o.name)}"`))).join('');
     const otherRows = [...byCard].map(([k, list]) => `<details class="role-other"><summary>${esc(clip(names.get(k) || '没有名字的卡', 20))}<small class="fold-note">${list.length} 条</small></summary>${list.map(l => row(l.name, l.appearance, '', (open ? btn('look-copy-look', '复制到本卡', 'chip-button', `data-id="${esc(l.id)}"`) : '') + btn('look-delete', '删', 'chip-button', `data-id="${esc(l.id)}"`))).join('')}</details>`).join('');
     const d = ctx.dialog('外貌库', `<p class="help-copy">全局的外貌每张卡都用；本卡的外貌只在这张卡里用，并盖过全局里同名的。新角色第一次出场时，模型写的外貌会记成本卡的，全局的只有你自己改。</p>`
       + (open ? groupTitle('本卡：' + clip(names.get(open) || '当前卡'), btn('look-add', '新增', 'chip-button')) + (mineRows || '<p class="help-copy">这张卡还没有自己的外貌。</p>') : '<p class="help-copy">在酒馆里打开一张角色卡，才能给它记本卡外貌。</p>')
       + groupTitle('全局') + (globalRows || '<p class="help-copy">还没有角色写了外貌。</p>')
+      + groupTitle('当前服装（这个聊天）', btn('outfit-add', '新增', 'chip-button') + (outfits.length ? btn('outfit-clear', '全清', 'chip-button') : '')) + (outfitRows || '<p class="help-copy">还没有记录。出图预设里打开「记住角色当前的服装」后，出图时会记下；也可以在这里手填。世界书里写的固定服装是起点，聊天里的换装优先。</p>')
       + (otherRows ? groupTitle('其他卡') + otherRows : ''));
     const done = fn => async e => { try { await fn(); } catch (error) { ctx.notify(error.message, {error: true}); } };
     d.body.addEventListener('click', e => {
@@ -97,7 +219,25 @@ export function rolesApp(ctx) {
         case 'look-copy-role': done(async () => { api.copyLook({role: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
         case 'look-copy-look': done(async () => { api.copyLook({look: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
         case 'look-open-role': d.close(); edit(id); break;
+        case 'outfit-add': d.close(); outfitEditor(null); break;
+        case 'outfit-edit': d.close(); outfitEditor(outfits.find(o => o.name === b.dataset.name)); break;
+        case 'outfit-delete': done(async () => { if (!await ctx.confirm('清掉这条服装记录？', `「${b.dataset.name}」下次出图按剧情和世界书重新定。`)) return; api.outfitDelete(b.dataset.name); reopen(); })(); break;
+        case 'outfit-clear': done(async () => { if (!await ctx.confirm('清空这个聊天的服装记录？', '每个人下次出图按剧情和世界书重新定。')) return; api.outfitsClear(); reopen(); })(); break;
       }
+    });
+  }
+  /** 当前服装 by hand: a name and what they wear now (tags). */
+  function outfitEditor(row) {
+    const d = ctx.dialog(row ? '改当前服装' : '新增当前服装', `${field('名字', input('name', row?.name || '', 'text', 'maxlength="40" placeholder="角色的名字，要和正文里一样"'))}
+      ${field('现在穿的衣服', textArea('outfit', row?.outfit || '', 'class="code" rows="3" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '只写衣服和配饰的 tag，不写长相、姿势、动作。下次出图起生效，剧情里再换装模型会更新它。')}
+      <div class="actions">${btn('outfit-save', '保存', 'primary')}</div>`);
+    d.body.addEventListener('click', e => {
+      const b = e.target.closest('[data-action="outfit-save"]');
+      if (!b) return;
+      e.preventDefault();
+      const get = f => d.body.querySelector(`[data-field="${f}"]`).value;
+      try { api.outfitSave(get('name'), get('outfit')); d.close(); ctx.notify('已保存'); openLooks(); }
+      catch (error) { ctx.notify(error.message, {error: true}); }
     });
   }
   /** A card's look: a name and the tags. */
@@ -123,6 +263,7 @@ export function rolesApp(ctx) {
 
   function renderEditor() {
     listDrawn = '';
+    swipe?.dispose(); swipe = null;
     const r = current, c = api.getState().connections[r.engine], schema = api.engineSchema(r.engine);
     const saved = api.getState().routes.findIndex(x => x.id === r.id), pending = api.pendingRole() === r.name && !!r.name;
     const voiced = !!r.voice, model = r.model || c.model;
@@ -138,8 +279,8 @@ export function rolesApp(ctx) {
           <div class="barcode">${barcode((r.name || '') + r.engine + (r.voice || ''))}</div><span class="id-stamp">${voiced ? '已配音' : '待配音'}</span>
         </div>
         <div class="group pad">${field('角色名称', input('name', r.name, 'text', 'placeholder="与台词里的说话者一致"'))}
-          ${field('归属', select('scope', scopeValue(r), scopeChoices(r)), '「全局」的角色每张卡都能用；「仅这张卡」的只在这张卡的故事里出现。新角色默认记在现在打开的卡下。')}
-          ${field('别名', input('aliases', Array.isArray(r.aliases) ? r.aliases.join('、') : r.aliases || '', 'text', 'placeholder="正文里的其他叫法，用逗号隔开"'), '正文里有时写全名、有时只写名或姓，比如「夏尔」和「夏尔·凡多姆海恩」：把其他叫法填在这里，都用这个角色的音色，不会再多出一个角色。全名里带「·」的会自动认出来。')}</div>
+          ${field('别名', input('aliases', Array.isArray(r.aliases) ? r.aliases.join('、') : r.aliases || '', 'text', 'placeholder="正文里的其他叫法，用逗号隔开"'), '正文里有时写全名、有时只写名或姓，比如「夏尔」和「夏尔·凡多姆海恩」：把其他叫法填在这里，都用这个角色的音色，不会再多出一个角色。全名里带「·」的会自动认出来。')}
+          ${api.getState().roleGroups.length ? field('分组', select('group', r.group || '', [['', '不分组'], ...api.getState().roleGroups.map(g => [g.id, g.name])])) : ''}</div>
         ${groupTitle('引擎', help('每个角色在各家引擎里各自记住一套音色和模型，切过去再切回来不会丢。'))}
         <div class="engine-tabs">${Object.entries(engines).map(([k, label]) => {
           const bound = k === r.engine ? r.voice : r.bindings?.[k]?.voice;
@@ -158,7 +299,10 @@ export function rolesApp(ctx) {
           ${languageField('language', r.language || '', true, typedLanguages(api.getState()))}
         </div></details>
         <details data-group="role-persona"><summary>角色资料<small class="fold-note">${r.persona?.trim() ? r.persona.trim().length + ' 字' : '没写（读角色卡）'}</small></summary><div class="fold-body">${field('角色资料', textArea('persona', r.persona || '', 'rows="4" maxlength="4000" placeholder="例如：Hina，17 岁，学生会会长，嘴硬心软，和小春是青梅竹马"'), '聊天、论坛、朋友圈、查手机和电话写这个人时用的资料：身份、性格、说话方式、和谁是什么关系。\n\n酒馆里有这个人的角色卡时，不写也会读角色卡；写了就用这里的。没出场过、也没有角色卡的人（比如只在别的卡里出现的），在这里写几句，模型就不用凭空猜了。世界书照常按名字去找，最近的剧情也一直会带上。')}</div></details>
-        <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}</div></details>
+        <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
+          ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
+          <div class="actions role-try">${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
+          ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}</div></details>
         <div class="savebar" data-engine="${r.engine}"><span class="save-state" data-save-state>草稿</span>${btn('audition', icon('play', true) + '试听', 'secondary')}${btn('save-role', '保存', 'primary')}</div>
         ${pending ? `<div class="actions" data-engine="${r.engine}">${btn('continue-role', '保存并继续朗读', 'primary')}</div>` : ''}
         ${r.id ? `<div class="actions">${btn('delete-role', icon('trash') + '删除角色配音', 'text-button danger-text')}</div>` : ''}`);
@@ -285,23 +429,16 @@ export function rolesApp(ctx) {
     drafts.set('new', current);
     render();
   }
-  // 归属: everyone's (全局), or only the card open now; a role that belongs to other cards can stay as it is.
-  const scopeValue = r => { const keys = Array.isArray(r.cards) ? r.cards : [], open = here(); if (!keys.length) return !r.id && open ? 'here' : 'global'; return keys.length === 1 && keys[0] === open ? 'here' : 'keep'; };
-  const scopeChoices = r => {
-    const keys = Array.isArray(r.cards) ? r.cards : [], open = here(), name = api.cardList().find(c => c.open)?.name;
-    return [['global', '全局（每张卡都能用）'], ...(open ? [['here', '仅这张卡：' + clip(name || '当前卡')]] : []), ...(keys.length && !(keys.length === 1 && keys[0] === open) ? [['keep', `现在属于 ${keys.length} 张卡（不改）`]] : [])];
-  };
-  function setScope(value) {
-    if (value === 'global') { current.cards = []; current.global = true; }
-    else if (value === 'here') { current.cards = [here()]; delete current.global; }
-  }
   v.edit = edit;
   v.create = create;
   // Back on the list where it was left.
   let listScroll = 0;
-  v.back = () => { if (!current) return false; current = null; render(); v.root.scrollTop = listScroll; return true; };
-  v.refresh = () => { if (!current) render(); };
+  v.back = () => { if (!current) return false; current = null; render(); v.root.scrollTop = listScroll; showPlaying(); return true; };
+  v.refresh = () => { if (!current) { render(); showPlaying(); } };
 
+  v.on('input', '[data-role-search]', el => { query = el.value; swipe?.done(); paintRows(); });
+  const dispose = v.dispose;
+  v.dispose = () => { swipe?.dispose(); swipe = null; if (tried) ctx.win.URL.revokeObjectURL(tried.url); dispose(); };
   v.on('change', '[data-field=autoVoice]', el => { api.updateGeneral({autoVoice: el.checked}); ctx.notify(el.checked ? '新角色第一次说话时会自动挑音色' : '已关闭自动挑音色'); });
   v.on('input', '[data-field]', el => {
     if (!current) return;
@@ -312,13 +449,13 @@ export function rolesApp(ctx) {
     if (el.dataset.field === 'voice') { const n = v.root.querySelector('[data-id-voice]'); if (n) n.textContent = el.value ? voiceLabel(el.value) : '未选择'; }
   });
   // A MiMo model change turns the 音色 field into a description or a clone sample name.
-  v.on('change', 'select[data-field]', el => {
-    if (el.dataset.field === 'scope') { setScope(el.value); changed(); return; }
-    current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'model' && current.engine === 'mimo') render(); });
+  v.on('change', 'select[data-field]', el => { current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'model' && current.engine === 'mimo') render(); });
   v.on('click', '[data-action]', async el => {
     switch (el.dataset.action) {
       case 'add-role': create(); break;
       case 'looks': openLooks(); break;
+      case 'role-filter': filter = filter === el.dataset.key ? '' : el.dataset.key; swipe?.done(); for (const b of v.root.querySelectorAll('[data-action=role-filter]')) b.setAttribute('aria-pressed', String(b.dataset.key === filter)); paintRows(); break;
+      case 'role-try': await tryLook(el); break;
       case 'edit-role': edit(el.dataset.id); break;
       case 'route-engine':
         current = api.switchRouteEngine(current, el.dataset.engine);
@@ -338,6 +475,7 @@ export function rolesApp(ctx) {
         }
         const previous = current.id || 'new';
         current = api.saveRoute(current);
+        if (tried?.id === previous) tried.id = current.id;
         drafts.delete(previous);
         drafts.set(current.id, current);
         render();
@@ -371,6 +509,26 @@ export function rolesApp(ctx) {
       }
     }
   });
+
+  /** 试画一张: this look as it stands, on the 画风 in use. */
+  let tried = null;
+  async function tryLook(el) {
+    if (!current.appearance?.trim()) { ctx.notify('先写外貌 tag'); return; }
+    if (!api.drawReady()) { ctx.notify(api.drawMissing(), {error: true}); return; }
+    const input = lookTest(api.getState(), current), ask = api.paidPrompt(), paid = api.drawQuote(input.params).free === false, name = current.name?.trim() || '新角色', id = current.id || 'new';
+    if (paid && !await ctx.confirm(ask.title, ask.text)) return;
+    const label = el.innerHTML;
+    await v.busy(el, async () => {
+      el.textContent = '正在画…';
+      try {
+        const made = await api.generateImage({...input, allowPaid: paid, name: '试画-' + name, label: `试画 · ${name}`}), photo = await api.getPhoto(made.photoId);
+        if (!photo?.blob) return;
+        if (tried) ctx.win.URL.revokeObjectURL(tried.url);
+        tried = {id, url: ctx.win.URL.createObjectURL(photo.blob)};
+        if (current && (current.id || 'new') === id) { render(); changed(); }
+      } finally { el.innerHTML = label; }
+    });
+  }
 
   function pickVoice() {
     const target = current, engine = target.engine, saved = api.getState().connections[engine], connection = {...saved, model: target.model || saved.model};
@@ -424,5 +582,6 @@ export function rolesApp(ctx) {
   }
 
   render();
+  showPlaying();
   return v;
 }

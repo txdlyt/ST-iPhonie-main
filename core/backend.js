@@ -24,10 +24,13 @@ import { withLooks, LOOK_LIMITS } from './looks.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, writeBackup, readBackup, sealKeys, openKeys } from './backup.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, SHOP_GIFTS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
-import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, normalizeGpt, gptBase, gptSize, gptPrompt, gptGenerate, normalizeComfy, comfyUrl, checkWorkflow, workflowPlaceholders, COMFY_LIMITS, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS, applyComfyWorkflow } from './image-engines.js';
+import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, normalizeGpt, gptBase, gptSize, gptPrompt, gptGenerate, normalizeComfy, comfyUrl, checkWorkflow, workflowPlaceholders, COMFY_LIMITS, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, comfyProgress, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS, applyComfyWorkflow } from './image-engines.js';
 import {activeLoraWorkflow, normalizeDisabledLoras, inspectLoras, editLoras, pickLoraSource} from './comfy-loras.js';
+import {keepOneOutput, switchNodesOff} from './comfy-graph.js';
 import { normalizeSettings, validateSettings, modelRules, freshState } from './state.js';
 import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases } from './routes.js';
+import { cleanAddress, reachService, explainReach, detectService, scanTargets } from './custom-detect.js';
+import { arrangeRows } from './layers.js';
 import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
 import { normalizeMarks, withMarks } from './voice-fx.js';
 import { TTSParameters, FISH_API, tauriTavern } from './parameters.js';
@@ -39,13 +42,13 @@ import { createStorageBudget } from './storage-budget.js';
 import { DialoguePlayer } from './player.js';
 import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS } from './library.js';
 import { makeThumb, makePreview, packPicture } from './thumbnail.js';
-import { NovelAIClient, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, guardParams, isFree, isV5, normalizeDrawParams, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
+import { NovelAIClient, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, guardParams, isFree, isV5, normalizeDrawParams, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, PRESET_REV as DRAW_PRESET_REV, drawPromptPlan, planRequest, drawCast, validateDrawPreset, normalizeDraw, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection } from './draw.js';
-import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
+import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
 import { ChatStore, money, currentDm } from './chats.js';
 import { DrawQueue } from './draw-queue.js';
 import { CloudQueue, KeyHashQueue, newRoomCode, validRoom, sha256Hex } from './cloud-queue.js';
-import { vibeKey, readVibeFile, imageVibe, mergeVibe, encodingFor, withEncoding, vibeSummary, vibeParameters, singleFile, bundleFile, chatu8File, strength as vibeStrength, MAX_FREE_VIBES, VIBE_ANLAS } from './vibes.js';
+import { vibeKey, vibeMode, vibeReady, readVibeFile, imageVibe, encodingVibe, mergeVibe, encodingFor, withEncoding, vibeSummary, vibeParameters, rawVibeParameters, encodingsOnly, embedVibeFile, embeddedVibeFile, singleFile, bundleFile, chatu8File, extracted as vibeExtracted, strength as vibeStrength, MAX_FREE_VIBES, VIBE_ANLAS } from './vibes.js';
 /** musicFetch's answer when a 取歌地址 gave the song itself. */
 const AUDIO = Symbol('audio');
 
@@ -80,6 +83,20 @@ async function smallVibeImage(base64) {
         return small && small.length < base64.length * 0.8 ? small : base64;
     } catch { return base64; }
 }
+/** A vibe's picture as V3 takes it: fitted whole into 448×448 on black, as a PNG. Unchanged where there is no canvas. */
+async function rawVibeImage(base64) {
+    try {
+        if (typeof createImageBitmap !== 'function' || !globalThis.document?.createElement) return base64;
+        const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), c => c.charCodeAt(0))]));
+        const canvas = document.createElement('canvas'), g = canvas.getContext('2d'), scale = Math.min(448 / bitmap.width, 448 / bitmap.height), w = bitmap.width * scale, h = bitmap.height * scale;
+        canvas.width = canvas.height = 448;
+        g.fillStyle = '#000'; g.fillRect(0, 0, 448, 448);
+        g.drawImage(bitmap, (448 - w) / 2, (448 - h) / 2, w, h); bitmap.close?.();
+        return canvas.toDataURL('image/png').replace(/^data:[^,]*,/, '');
+    } catch { return base64; }
+}
+/** The card a role was first met in (a 按聊天 mark, card#save, is not a card). */
+const firstCard = route => (Array.isArray(route.cards) ? route.cards.find(k => !k.includes('#')) : '') || '';
 const clone = value => structuredClone(value);
 // a 歌单 the user made was deleted meanwhile (in another tab, say)
 const listGone = error => { throw error?.code === 'MISSING' ? Error('这个歌单已经删掉了') : error; };
@@ -115,7 +132,7 @@ export class TTSBackend {
     #previewing = new Set();
     constructor({ settings, persist = () => {}, notify = () => {}, change = () => {}, unknown = () => {},
         providers = new Providers(), cache, library, keyStore, sink, novelai, chats, indexedDB = globalThis.indexedDB, syncStorage = () => globalThis.localStorage,
-        imageFetch = (...args) => globalThis.fetch(...args), soundPack = '', speech = null, tavernHeaders = () => globalThis.SillyTavern?.getContext?.()?.getRequestHeaders?.() || {} } = {}) {
+        imageFetch = (...args) => globalThis.fetch(...args), soundPack = '', speech = null, comfyPictures = () => ({}), tavernHeaders = () => globalThis.SillyTavern?.getContext?.()?.getRequestHeaders?.() || {} } = {}) {
         this.settings = normalizeSettings(settings);
         validateSettings(this.settings);
         this.persist = persist;
@@ -165,6 +182,8 @@ export class TTSBackend {
         // GPT 生图 and ComfyUI: the key of the GPT image engine; requests go out with these (tests pass their own).
         this.gptKey = '';
         this.assetFetch = imageFetch;
+        // Where the tavern keeps the avatars of the chat in use, for workflows that draw from them.
+        this.comfyPictures = comfyPictures;
         this.musicTransport = this.requestLog.fetch((...args) => this.assetFetch(...args), '音乐音源');
         this.imageFetch = this.requestLog.fetch(withProxyHeaders(imageFetch, tavernHeaders), '绘图接口');
         this.proxyFetch = this.requestLog.fetch(withProxyHeaders(imageFetch, tavernHeaders), '酒馆转发');
@@ -203,7 +222,7 @@ export class TTSBackend {
     }
     /** Reads the Fish reference audio and the MiMo clone samples the settings use into memory, for requests. */
     async loadReferences() {
-        for (const reference of [...this.settings.connections.fish.params.references, ...(this.settings.connections.mimo?.params.samples || [])]) {
+        for (const reference of [...this.settings.connections.fish.params.references, ...(this.settings.connections.mimo?.params.samples || []), ...(this.settings.connections.custom?.params.voices || []).filter(v => v.ref_file).map(v => ({ audio: v.ref_file }))]) {
             const record = await this.library.getReference(reference.audio);
             if (record && !this.closed) { const audio = await this.base64(record.blob); if (!this.closed) this.providers.references.set(record.id, audio); }
         }
@@ -228,7 +247,7 @@ export class TTSBackend {
         // The 视觉小说's 立绘 and 模型 are files in the tavern; the settings only name them. A backup carries the files.
         let vnFiles = null;
         if (want.includes('vnFiles')) {
-            const paths = castFiles([this.settings.vn.cast, this.settings.vn.moves]);
+            const paths = castFiles([this.settings.vn.cast, this.settings.vn.moves, this.settings.draw.styles.map(s => s.cover || null)]);
             if (paths.length && !this.syncFiles?.readPath) throw Error('要在酒馆里打开小手机，才能把视觉小说的立绘和模型放进备份（不要的话把这一项关掉）');
             vnFiles = [];
             for (const path of paths) { const blob = await this.syncFiles.readPath(path).catch(() => null); if (blob) vnFiles.push({ path, blob }); }
@@ -271,7 +290,7 @@ export class TTSBackend {
                 moved[f.path] = await this.syncFiles.writePath(f.path, f.blob);
                 done.vnFiles++;
             }
-            if (settings) { settings.vn.cast = moveCastFiles(settings.vn.cast, moved); settings.vn.moves = moveCastFiles(settings.vn.moves, moved); }
+            if (settings) { settings.vn.cast = moveCastFiles(settings.vn.cast, moved); settings.vn.moves = moveCastFiles(settings.vn.moves, moved); if (settings.draw?.styles) settings.draw.styles = moveCastFiles(settings.draw.styles, moved); }
         }
         const rows = {};
         for (const part of want) for (const store of PART_STORES[part]) if (backup.library[store]) rows[store] = backup.library[store];
@@ -279,7 +298,7 @@ export class TTSBackend {
         // settings that point at them.
         if (Object.keys(rows).length) Object.assign(done, await this.library.importRows(rows, { replace }));
         if (settings) { this.save(settings); done.settings = true; await this.loadReferences(); }
-        else if (moved && Object.entries(moved).some(([a, b]) => a !== b)) this.saveVn({ cast: moveCastFiles(this.settings.vn.cast, moved), moves: moveCastFiles(this.settings.vn.moves, moved) });
+        else if (moved && Object.entries(moved).some(([a, b]) => a !== b)) { this.saveVn({ cast: moveCastFiles(this.settings.vn.cast, moved), moves: moveCastFiles(this.settings.vn.moves, moved) }); const next = this.getState(); next.draw.styles = moveCastFiles(next.draw.styles, moved); this.save(next); }
         if (want.has('vibes') && backup.library.vibes) {
             // The groups: replace takes the backup's; merge keeps the current ones and adds or overwrites by id.
             const now = this.settings.draw.vibe, incoming = backup.vibeGroups || [];
@@ -403,12 +422,84 @@ export class TTSBackend {
         const route = normalizeRoute({ ...(index >= 0 ? next.routes[index] : { engine: 'fish', voice: '', model: '', language: '' }), ...clone(value), id, name: value.name.trim() });
         // 角色资料: who they are, for the phone's apps when the tavern has no card for them.
         if (typeof route.persona === 'string') { route.persona = route.persona.slice(0, 4000); if (!route.persona.trim()) delete route.persona; } else delete route.persona;
-        // A new role belongs to the card it was made in (分区); one made with no card open is everyone's.
-        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true) route.cards = [this.cardKey()];
+        // 固定负面: the tags kept away from this person in every picture.
+        if (typeof route.negative === 'string') { route.negative = route.negative.slice(0, 1000); if (!route.negative.trim()) delete route.negative; } else delete route.negative;
+        // 不分组, picked: it stays out of the group of its card too.
+        if (route.group) delete route.loose; else { delete route.group; if (value.group === '') route.loose = true; }
+        // A new role belongs to the card it was made in (分区), and goes in that card's group unless it was given one
+        // (no group at all, when that was picked); one made with no card open is everyone's.
+        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true) {
+            route.cards = [this.cardKey(), ...(this.saveKey() ? [this.saveKey()] : [])];
+            if (value.group === undefined) this.#joinCard(next, route, this.cardKey(), this.space.name);
+        }
         if (index >= 0) next.routes[index] = route; else next.routes.push(route);
         next.selected = id;
         this.save(next);
         return clone(this.settings.routes.find(row => row.id === id));
+    }
+    /**
+     * A role first met in a card goes in that card's group. There is none until the card has two roles: one person in a
+     * group of their own would only make the list longer. A role taken out of a group by hand (loose) stays out.
+     * name: the card's name, else one is made from its key.
+     */
+    #joinCard(next, route, key, name = '') {
+        if (route.loose) return;
+        next.roleGroups ??= [];
+        let group = next.roleGroups.find(g => g.card === key);
+        if (group) { route.group = group.id; return; }
+        const mates = next.routes.filter(r => r !== route && !r.group && !r.loose && firstCard(r) === key);
+        if (!mates.length) return;
+        group = { id: crypto.randomUUID(), name: String(name || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '') || '角色').slice(0, 40), open: true, card: key };
+        next.roleGroups.push(group);
+        for (const r of [...mates, route]) r.group = group.id;
+    }
+    /** The role list in a new order with its groups, in the shape of arrangeStyles (a role's id under `style`). */
+    arrangeRoles(tree) {
+        if (!Array.isArray(tree)) throw Error('角色顺序无效');
+        const next = this.getState(), had = new Set(next.routes.filter(r => r.group).map(r => r.id));
+        [next.routes, next.roleGroups] = arrangeRows(next.routes, tree);
+        for (const r of next.routes) { if (r.group) delete r.loose; else if (had.has(r.id)) r.loose = true; }
+        return clone(this.save(next).routes);
+    }
+    /**
+     * Once: the roles met before there were groups go in a group of the card they were first met in, the groups first,
+     * then the others. cards: [{key, name}], the tavern's, for the groups' names. Whether anything was done.
+     */
+    sortRolesByCard(cards = []) {
+        if (this.settings.roleGroupsSorted) return false;
+        const next = this.getState(), names = new Map(cards.map(c => [c.key, c.name]));
+        next.roleGroupsSorted = true;
+        for (const route of next.routes) { const key = firstCard(route); if (key && !route.group) this.#joinCard(next, route, key, names.get(key)); }
+        // Shut, so the list fits on a screen or two; the card being played opens by itself.
+        for (const group of next.roleGroups || []) group.open = false;
+        next.routes = [...next.routes.filter(r => r.group), ...next.routes.filter(r => !r.group)];
+        this.save(next);
+        return true;
+    }
+    /** Several roles at once (a group's, the ones picked): one save. */
+    deleteRoutes(ids) {
+        let next = this.getState();
+        for (const id of ids || []) next = removeRoute(next, String(id));
+        return this.save(next);
+    }
+    /**
+     * Several roles that are one person: the first with a voice stays (else the first), the others' names become its 别名,
+     * and it takes what it lacks from them. Returns the role kept.
+     */
+    mergeRoutes(ids) {
+        const next = this.getState(), list = (ids || []).map(id => next.routes.find(r => r.id === String(id))).filter(Boolean);
+        if (list.length < 2) throw Error('至少选两个角色才能合并');
+        const keep = list.find(r => r.voice) || list[0], others = list.filter(r => r !== keep);
+        keep.aliases = cleanAliases([...(keep.aliases || []), ...others.flatMap(r => [r.name, ...(r.aliases || [])])], keep.name);
+        for (const key of ['appearance', 'negative', 'persona']) if (!keep[key]?.trim()) { const from = others.find(r => r[key]?.trim()); if (from) keep[key] = from[key]; }
+        keep.bindings = Object.assign({}, ...others.map(r => r.bindings), keep.bindings);
+        // Its cards too; a role that is everyone's stays so.
+        if (keep.cards?.length) { if (others.some(r => !r.cards?.length)) delete keep.cards; else keep.cards = [...new Set([keep.cards, ...others.map(r => r.cards)].flat())]; }
+        const gone = new Set(others.map(r => r.id));
+        next.routes = next.routes.filter(r => !gone.has(r.id));
+        if (gone.has(next.selected)) next.selected = keep.id;
+        this.save(next);
+        return clone(this.settings.routes.find(r => r.id === keep.id));
     }
     /** 候选音色池: the voices 自动挑音色 picks from first. */
     saveVoicePool(list) {
@@ -1038,8 +1129,10 @@ export class TTSBackend {
         for (const file of [...(files || [])]) {
             const name = String(file?.name || 'vibe');
             try {
-                const picture = /^image\//.test(file.type || '') && !/\.naiv4vibe/i.test(name) || /\.(png|jpe?g|webp|avif|gif)$/i.test(name) && !/\.naiv4vibe/i.test(name);
-                const found = picture ? { vibes: [await imageVibe(name, await this.base64(file))], groups: [] } : await readVibeFile(name, await file.text());
+                // By how the name ends: x.naiv4vibebundle.png is a picture with a vibe in it.
+                const picture = !/\.naiv4vibe(bundle)?$/i.test(name) && (/^image\//.test(file.type || '') || /\.(png|jpe?g|webp|avif|gif)$/i.test(name));
+                const carried = picture ? await embeddedVibeFile(await file.arrayBuffer()).catch(() => null) : null;
+                const found = picture && !carried ? { vibes: [await imageVibe(name, await this.base64(file), '', this.settings.draw.params.model)], groups: [] } : await readVibeFile(name, carried || await file.text());
                 for (const doc of found.vibes) {
                     if (this.vibes.has(doc.id)) {
                         const merged = mergeVibe(await this.vibeDoc(doc.id), doc);
@@ -1088,11 +1181,49 @@ export class TTSBackend {
         this.emit('draw', { vibes: true });
         return { count, before: total(rows), after: total(await this.library.listVibes()) };
     }
-    /** Renames a vibe or sets its own strength (used when it is used alone, and as the default when added to a group). */
+    /** A picture (PNG, as a Blob) with the vibes of exportVibes' target inside, where NovelAI's app reads them: {name, blob}. */
+    async embedVibes(target, picture, name = '') {
+        const file = await this.exportVibes(target), text = await file.blob.text();
+        const stem = String(name || '').replace(/\.[^.]+$/, '') || file.name.replace(/\.[^.]+$/, '');
+        return { name: `${stem}.${target.group ? 'naiv4vibebundle' : 'naiv4vibe'}.png`, blob: new Blob([embedVibeFile(await picture.arrayBuffer(), text)], { type: 'image/png' }) };
+    }
+    /** Vibes read from a picture's parameters (they are encodings there): kept, and used as a group, or added to the group in use. */
+    async importPictureVibes(list, { model, name = '读入的 Vibe', append = false } = {}) {
+        this.assertOpen();
+        const items = [];
+        if (!vibeKey(model)) model = 'nai-diffusion-4-5-full';
+        for (const [i, v] of (list || []).entries()) {
+            const doc = await encodingVibe(`${name} ${i + 1}`, v.encoding, model, v.ie, v.strength);
+            await this.storeVibe(this.vibes.has(doc.id) ? mergeVibe(await this.vibeDoc(doc.id), doc) : doc);
+            items.push({ vibe: doc.id, strength: vibeStrength(v.strength) });
+        }
+        if (!items.length) return null;
+        const next = this.getState(), v = next.draw.vibe, using = append && v.use.kind === 'group' ? v.groups.find(g => g.id === v.use.id) : null;
+        if (using) { for (const item of items) if (!using.items.some(x => x.vibe === item.vibe)) using.items.push(item); }
+        else {
+            const taken = new Set(v.groups.map(g => g.name));
+            let groupName = name, n = 1;
+            while (taken.has(groupName)) groupName = `${name} (${++n})`;
+            const id = crypto.randomUUID();
+            v.groups.push({ id, name: groupName, items });
+            v.use = { kind: 'group', id };
+        }
+        v.enabled = true;
+        next.draw.vibe = normalizeVibeSettings(v);
+        this.save(next);
+        this.emit('draw', { vibes: true });
+        return items.length;
+    }
+    /** Renames a vibe, sets its own strength (used when it is used alone, and as the default when added to a group) or its 提取信息量. */
     async updateVibe(id, patch = {}) {
         const doc = await this.vibeDoc(id);
         if ('name' in patch) { const name = String(patch.name || '').trim().slice(0, 80); if (!name) throw Error('请填写 Vibe 名字'); doc.name = name; }
         if ('strength' in patch) doc.importInfo.strength = vibeStrength(patch.strength, doc.importInfo.strength);
+        if ('ie' in patch && vibeExtracted(patch.ie) !== doc.importInfo.information_extracted) {
+            // Without its picture a vibe has only the encodings it came with.
+            if (!doc.image) throw Error('这个 Vibe 没有原图，不能改提取信息量');
+            doc.importInfo.information_extracted = vibeExtracted(patch.ie); doc.importInfo.picked = true;
+        }
         const summary = await this.storeVibe(doc);
         this.emit('draw', { vibes: true });
         return clone(summary);
@@ -1111,16 +1242,25 @@ export class TTSBackend {
         this.emit('draw', { vibes: true });
         return gone.size;
     }
-    /** A file to save: {vibe: id} → .naiv4vibe; {group: id} → .naiv4vibebundle; {all: true} → everything, in the 智绘姬 form. */
+    /**
+     * A file to save: {vibe: id} → .naiv4vibe; {group: id} → .naiv4vibebundle; {all: true} → everything, in the 智绘姬 form.
+     * encodings: without the pictures, only what the model in use needs (it cannot be encoded again for anything else).
+     */
     async exportVibes(target = {}) {
         const safe = name => String(name).replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) || 'vibe';
-        if (target.vibe) { const doc = await this.vibeDoc(target.vibe); // Not marked as JSON: saving would add .json after .naiv4vibe.
+        const asked = async doc => {
+            if (!target.encodings) return doc;
+            const only = await encodingsOnly(doc, this.settings.draw.params.model);
+            if (!only) throw Error(`「${doc.name}」还没有当前模型和提取信息量的编码：先用它画一张，或者换成有编码的模型`);
+            return only;
+        };
+        if (target.vibe) { const doc = await asked(await this.vibeDoc(target.vibe)); // Not marked as JSON: saving would add .json after .naiv4vibe.
             return { name: safe(doc.name) + '.naiv4vibe', blob: new Blob([singleFile(doc)], { type: 'application/octet-stream' }) }; }
         if (target.group) {
             const group = this.settings.draw.vibe.groups.find(g => g.id === target.group);
             if (!group) throw Error('这个 Vibe 组已经不在了');
             const entries = [];
-            for (const item of group.items) if (this.vibes.has(item.vibe)) entries.push({ doc: await this.vibeDoc(item.vibe), strength: item.strength });
+            for (const item of group.items) if (this.vibes.has(item.vibe)) entries.push({ doc: await asked(await this.vibeDoc(item.vibe)), strength: item.strength });
             if (!entries.length) throw Error('这个组里没有 Vibe');
             return { name: safe(group.name) + '.naiv4vibebundle', blob: new Blob([bundleFile(entries)], { type: 'application/octet-stream' }) };
         }
@@ -1133,24 +1273,38 @@ export class TTSBackend {
     /**
      * The vibes a picture with this model would use (see VibePlan in ui/backend-client.d.ts). The free-tier guard keeps
      * the first four; a vibe without an encoding for the model is encoded first (2 Anlas), or left out without a picture.
+     * V3 takes the pictures themselves: nothing is encoded, and a vibe without its picture is left out. One switched off
+     * in its group is not used.
      */
     vibePlan(model) {
-        const v = this.settings.draw.vibe, empty = { on: false, model: !!vibeKey(model), used: [], skipped: [], over: 0, encode: 0, extra: 0 };
+        const v = this.settings.draw.vibe, mode = vibeMode(model), empty = { on: false, model: !!mode, used: [], skipped: [], over: 0, encode: 0, extra: 0 };
         if (!v.enabled || !v.use.kind) return empty;
-        const items = v.use.kind === 'group' ? (v.groups.find(g => g.id === v.use.id)?.items || []).map(i => ({ id: i.vibe, strength: i.strength }))
+        const items = v.use.kind === 'group' ? (v.groups.find(g => g.id === v.use.id)?.items || []).filter(i => i.enabled !== false).map(i => ({ id: i.vibe, strength: i.strength }))
             : [{ id: v.use.id, strength: this.vibes.get(v.use.id)?.strength ?? 0.6 }];
         const key = vibeKey(model), used = [], skipped = [];
         for (const item of items) {
             const s = this.vibes.get(item.id);
             if (!s) { skipped.push({ name: '已删除的 Vibe', why: 'missing' }); continue; }
-            if (!key) { skipped.push({ name: s.name, why: 'model' }); continue; }
-            const encoded = s.keys.includes(key);
+            if (!mode) { skipped.push({ name: s.name, why: 'model' }); continue; }
+            if (mode === 'raw') { if (s.image) used.push({ id: item.id, name: s.name, strength: item.strength, encode: false }); else skipped.push({ name: s.name, why: 'no-encoding' }); continue; }
+            const encoded = vibeReady(s, key);
             if (!encoded && !s.image) { skipped.push({ name: s.name, why: 'no-encoding' }); continue; }
             used.push({ id: item.id, name: s.name, strength: item.strength, encode: !encoded });
         }
+        if (used.length > 16) used.length = 16;
         const over = this.settings.draw.guard ? Math.max(0, used.length - MAX_FREE_VIBES) : 0;
         if (over) used.length = MAX_FREE_VIBES;
-        return { on: true, model: !!key, used, skipped, over, encode: used.filter(u => u.encode).length, extra: Math.max(0, used.length - MAX_FREE_VIBES) };
+        return { on: true, model: !!mode, used, skipped, over, encode: used.filter(u => u.encode).length, extra: Math.max(0, used.length - MAX_FREE_VIBES) };
+    }
+    /** What a picture sends for its vibes: the encodings (encoded first where missing), or on V3 the pictures themselves. */
+    async vibeFields(used, model, signal) {
+        const normalize = this.settings.draw.vibe.normalize !== false;
+        if (vibeMode(model) === 'raw') {
+            const list = [];
+            for (const u of used) { const doc = await this.vibeDoc(u.id); list.push({ image: await rawVibeImage(doc.image), ie: doc.importInfo.information_extracted, strength: u.strength }); }
+            return rawVibeParameters(list, normalize);
+        }
+        return vibeParameters(await this.vibeEncodings(used, model, signal), normalize);
     }
     /** The encodings to send, encoding (and keeping) those missing for the model first. */
     async vibeEncodings(used, model, signal) {
@@ -1203,28 +1357,42 @@ export class TTSBackend {
         }
         const c = comfy || draw.comfy, seed = p.seed >= 0 ? p.seed : Math.floor(Math.random() * 4294967295);
         const text = comfyPrompt({ prompt, negative, characters });
-        const workflow = fillWorkflow(activeLoraWorkflow(c.workflow || defaultWorkflow(c), c.disabledLoras), comfyValues(c, { prompt: text.prompt, negative: text.negative, width: p.width, height: p.height, seed }));
-        const blob = await comfyGenerate({ fetch: this.imageFetch, headers: this.tavernHeaders(), url: c.url, workflow, signal });
+        const graph = keepOneOutput(switchNodesOff(activeLoraWorkflow(c.workflow || defaultWorkflow(c), c.disabledLoras), c.disabledNodes || []), c.output || '');
+        const workflow = fillWorkflow(graph, { ...comfyValues(c, { prompt: text.prompt, negative: text.negative, width: p.width, height: p.height, seed }), ...await this.comfyTavernValues(graph) });
+        const stopSteps = comfyProgress({ url: c.url, onStep: (value, max) => this.emit('draw', { steps: `${value}/${max} 步` }) });
+        let blob;
+        try { blob = await comfyGenerate({ fetch: this.imageFetch, headers: this.tavernHeaders(), url: c.url, workflow, signal }); }
+        catch (error) { throw error.refused ? await this.comfyRefusal(error, workflow, c) : error; }
+        finally { stopSteps(); }
         return { blob, seed, params: { model: c.model || '工作流', width: p.width, height: p.height, steps: c.steps, scale: c.scale, sampler: c.sampler }, prompt: text.prompt };
     }
     /** How a picture was drawn, as the viewer's 参数 rows (kept with the album photo). */
     pictureInfo(engine, { params = {}, seed, prompt }, { negative = '', characters = [] } = {}) {
         return [
             ['引擎', DRAW_ENGINE_NAMES[engine] || engine], ['模型', NAI_MODEL_NAMES[params.model] || params.model],
-            ['尺寸', params.width && params.height ? `${params.width} × ${params.height}` : ''], ['步数', params.steps], ['CFG', params.scale], ['采样器', params.sampler],
+            ['尺寸', params.width && params.height ? `${params.width} × ${params.height}` : ''], ['步数', params.steps], ['CFG', params.scale], ['Rescale', params.cfgRescale || ''], ['采样器', params.sampler],
+            ...(params.effort === 'medium' ? [['努力程度', '中']] : []), ...(params.quality && params.quality !== 'none' ? [['质量标签', qualityPresets(params.model).find(q => q.id === params.quality)?.name]] : []), ...(params.ucPreset && params.ucPreset !== 'none' ? [['负面预设', ucPresets(params.model).find(u => u.id === params.ucPreset)?.name]] : []),
             ['种子', seed >= 0 ? seed : ''], ['画于', new Date().toLocaleString('zh-CN', { hour12: false })],
             ['提示词', prompt], ['负面', negative], ['角色', (characters || []).map(c => c?.prompt).filter(Boolean).join(' | ')]
         ].filter(([, v]) => v !== undefined && v !== null && String(v).trim());
     }
+    /** Tags that begin with a word, as NovelAI's own prompt box suggests them; it answers for the model and mode in use. */
+    async naiSuggestTags(word, { signal } = {}) {
+        this.assertOpen();
+        if (!this.novelai.configured) return [];
+        this.novelai.relay = this.settings.draw.relay.url;
+        const p = this.settings.draw.params;
+        return this.novelai.suggestTags({ model: p.model, prompt: word, mode: p.mode, signal });
+    }
     /** Generates one image and keeps it in the album. Requests wait in the NovelAI queue (see draw-queue.js).
      *  key identifies the job in the queue (the same key joins the job already waiting); label is shown in the line. */
-    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [] } = {}) {
+    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [], preview = false } = {}) {
         this.assertOpen();
         if (!String(prompt || '').trim()) return Promise.reject(Error('请先写提示词'));
         const engine = this.settings.draw.engine;
         if (!this.drawReady()) return Promise.reject(Error(this.drawMissing()));
         // 底图 (图生图 / 局部重绘) and 角色参考 are NovelAI's: the drawing app sends them only when NovelAI draws.
-        const extra = engine === 'nai' ? { base: !!base?.image, refs: (refs || []).filter(r => r?.image).length } : {};
+        const extra = engine === 'nai' ? { base: !!base?.image, mask: !!base?.mask, refs: (refs || []).filter(r => r?.image).length, ...(base?.image ? { size: { width: base.width, height: base.height } } : {}) } : {};
         // GPT's 参考图 (up to 16, known by their order): the pictures and what the user wrote each one is.
         const gptRefs = engine === 'gpt' ? (refs || []).filter(r => typeof r?.image === 'string' && r.image).slice(0, GPT_MAX_REFS).map(r => ({ image: r.image, type: /^image\/(png|jpeg|webp)$/.test(r.type) ? r.type : 'image/png', label: String(r.label || '').slice(0, 80) })) : [];
         const quote = this.drawQuote(params, extra);
@@ -1232,7 +1400,7 @@ export class TTSBackend {
             if (quote.free === false && !allowPaid) return Promise.reject(Object.assign(Error('GPT 生图每张都要花钱，需要确认后再生成'), { code: 'PAID' }));
             // A queued ComfyUI picture keeps the scheme it was asked with, whatever is changed while it waits.
             const c = this.settings.draw.comfy;
-            const comfy = engine === 'comfy' ? clone(Object.fromEntries(['url', 'workflow', 'disabledLoras', ...COMFY_PARAM_KEYS].map(k => [k, c[k]]))) : undefined;
+            const comfy = engine === 'comfy' ? clone(Object.fromEntries(['url', 'workflow', 'disabledLoras', 'disabledNodes', 'output', ...COMFY_PARAM_KEYS].map(k => [k, c[k]]))) : undefined;
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, refs: gptRefs};
             const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
                 this.assertOpen();
@@ -1252,26 +1420,32 @@ export class TTSBackend {
             return job;
         }
         if (quote.free === false && !allowPaid) return Promise.reject(Object.assign(Error('这张图会扣 Anlas，需要确认后再生成'), { code: 'PAID' }));
-        const request = buildImageRequest({ prompt, negative, characters, params: quote.params, base: extra.base ? clone(base) : null, refs: extra.refs ? clone(refs) : [] });
+        let request;
+        try { request = buildImageRequest({ prompt, negative, characters, params: quote.params, base: extra.base ? clone(base) : null, refs: extra.refs ? clone(refs) : [], chunks: this.settings.draw.chunks || [] }); }
+        catch (error) { return Promise.reject(error); }
+        // 边画边看: the drawing app asks for it, when it is switched on; a picture from the story just comes when it is done.
+        const stream = preview && this.settings.draw.stream;
         const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
             this.assertOpen();
             this.emit('draw', { phase: 'generating' });
-            if (quote.vibes.used.length && !request.refs) Object.assign(request.body.parameters, vibeParameters(await this.vibeEncodings(quote.vibes.used, request.params.model, signal)));
+            // References and 局部重绘 go without vibes, as in NovelAI's own app.
+            if (quote.vibes.used.length && !request.refs && request.body.action !== 'infill') Object.assign(request.body.parameters, await this.vibeFields(quote.vibes.used, request.params.model, signal));
             this.novelai.relay = this.settings.draw.relay.url;
+            const send = () => stream ? this.novelai.generateStream(request.body, signal, frame => this.emit('draw', { steps: frame.steps > 1 ? `${Math.min(frame.step + 1, frame.steps)}/${frame.steps} 步` : '', preview: frame.image })) : this.novelai.generate(request.body, signal);
             let blob;
-            try { blob = await this.novelai.generate(request.body, signal); }
+            try { blob = await send(); }
             catch (error) {
                 // 透明背景's flags are not in NovelAI's public documents: refused, the picture is asked for once more without them.
                 const p = request.body.parameters;
                 if (!p.straight_alpha || ![400, 422, 500].includes(error?.status)) throw error;
                 delete p.straight_alpha; delete p.tag_hint_transparent_background;
-                blob = await this.novelai.generate(request.body, signal);
+                blob = await send();
             }
             this.assertOpen();
             const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, { negative, characters });
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
             if (request.refs) info.push(['角色参考', `${request.refs} 张`]);
-            const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + '.png', blob, info, card: this.cardKey(), cardName: this.space.name });
+            const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + (blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '.png'), blob, info, card: this.cardKey(), cardName: this.space.name });
             this.#thumbSoon(photo.id);
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
@@ -1285,7 +1459,8 @@ export class TTSBackend {
     /**
      * NovelAI's tools on a picture (base64 PNG of width×height): 导演工具 (tool: a DIRECTOR_TOOLS key, with prompt, mood,
      * defry for 上色 / 换表情) or tool 'upscale' (放大 by upscaleBy). Waits in the NovelAI queue like a drawing; the result
-     * goes into the album. They cost Anlas, so the drawing app asks first.
+     * goes into the album, and what 去背景 gives besides (it answers with several versions) as `more`. They cost Anlas,
+     * so the drawing app asks first.
      */
     naiTool({ tool, image, width, height, prompt = '', mood = 'neutral', defry = 0, name = 'NovelAI' } = {}) {
         this.assertOpen();
@@ -1293,21 +1468,26 @@ export class TTSBackend {
         if (!image || !(width > 0) || !(height > 0)) return Promise.reject(Error('没有图片'));
         const scale = tool === 'upscale' ? upscaleBy(width, height) : 0;
         if (tool === 'upscale' && !scale) return Promise.reject(Error(`这张图已经很大了，放大后会超过 ${UPSCALE_MAX} 像素`));
-        const body = tool === 'upscale' ? { image, width, height, scale } : augmentBody({ tool, image, width, height, prompt, mood, defry });
+        const body = tool === 'upscale' ? upscaleBody(image) : augmentBody({ tool, image, width, height, prompt, mood, defry });
         const label = tool === 'upscale' ? `放大 ×${scale}` : DIRECTOR_TOOLS[tool];
         const job = this.drawQueue.add({ key: `nai-tool:${tool}:${Date.now()}`, label: '绘图 App · ' + label, task: async signal => {
             this.assertOpen();
             this.emit('draw', { phase: 'generating' });
             this.novelai.relay = this.settings.draw.relay.url;
-            const blob = tool === 'upscale' ? await this.novelai.upscale(body, signal) : await this.novelai.augment(body, signal);
+            const blobs = tool === 'upscale' ? [await this.novelai.upscale(body, signal)] : await this.novelai.augment(body, signal);
             this.assertOpen();
             const info = [['引擎', 'NovelAI'], ['工具', label], ['原图', `${width} × ${height}`], ...(body.prompt ? [['说明', body.prompt.replace(';;', ' · ')]] : []), ['画于', new Date().toLocaleString('zh-CN', { hour12: false })]];
-            const photo = await this.library.addPhoto({ name: `${name}-${label}-${Date.now()}.png`, blob, info, card: this.cardKey(), cardName: this.space.name });
-            this.#thumbSoon(photo.id);
+            const results = [];
+            for (const [i, blob] of blobs.entries()) {
+                const named = blobs.length > 1 ? `${label} ${i + 1}` : label;
+                const photo = await this.library.addPhoto({ name: `${name}-${named}-${Date.now()}.png`, blob, info: blobs.length > 1 ? info.map(([k, v]) => k === '工具' ? [k, named] : [k, v]) : info, card: this.cardKey(), cardName: this.space.name });
+                this.#thumbSoon(photo.id);
+                results.push({ photoId: photo.id, seed: -1, params: { width: width * (scale || 1), height: height * (scale || 1) }, prompt: named, engine: 'nai', tool });
+            }
             this.emit('library', { collection: 'photos' });
             this.emit('draw', { phase: 'done' });
             if (this.subscription) this.subscription.checkedAt = 0;
-            return { photoId: photo.id, seed: -1, params: { width: width * (scale || 1), height: height * (scale || 1) }, prompt: label, engine: 'nai', tool };
+            return { ...results[0], more: results.slice(1) };
         } });
         job.catch(error => { this.emit('draw', { phase: error.cancelled ? 'cancelled' : 'error', message: error.message }); });
         return job;
@@ -1340,7 +1520,7 @@ export class TTSBackend {
         const next = this.getState(), contact = validateContact(normalizeContact(clone(value || {})), next.routes);
         if (next.chat.contacts.some(c => c.name === contact.name && c.id !== contact.id)) throw Error('已经有同名的联系人');
         const index = next.chat.contacts.findIndex(c => c.id === contact.id);
-        if (index < 0 && this.cardKey()) contact.space = this.cardKey();
+        if (index < 0 && this.cardKey()) Object.assign(contact, this.spaceTag());
         if (index >= 0 && next.chat.contacts[index].space) contact.space = next.chat.contacts[index].space;
         if (index < 0) next.chat.contacts.push(contact); else next.chat.contacts[index] = contact;
         this.save(next);
@@ -1360,7 +1540,7 @@ export class TTSBackend {
         // 主动发消息: {on, every, dailyMax}.
         if (patch?.proactive && typeof patch.proactive === 'object') next.chat.proactive = normalizeProactive({ ...next.chat.proactive, ...patch.proactive });
         if (Array.isArray(patch?.stickers)) next.chat.stickers = normalizeStickers(patch.stickers);
-        if (patch?.partition !== undefined) { if (!['none', 'card'].includes(patch.partition)) throw Error('分区方式无效'); next.chat.partition = patch.partition; }
+        if (patch?.partition !== undefined) { if (!['none', 'card', 'chat'].includes(patch.partition)) throw Error('分区方式无效'); next.chat.partition = patch.partition; queueMicrotask(() => this.emit('partition', {})); }
         // remarks (备注) and netNames (网名): {name: other name | '' | null}; empty takes it away.
         for (const key of ['remarks', 'netNames']) if (patch?.[key] && typeof patch[key] === 'object') {
             const merged = { ...next.chat[key] };
@@ -1636,7 +1816,8 @@ export class TTSBackend {
         if (id) row = await this.music.change(id, p => { p.name = title; }).catch(listGone);
         else {
             if (all.length >= MUSIC_LIMITS.lists) throw Error(`最多建 ${MUSIC_LIMITS.lists} 个歌单`);
-            [row] = await this.music.put([{ id: 'playlist:' + globalThis.crypto.randomUUID().slice(0, 8), kind: 'playlist', at: Date.now(), name: title, songs: [] }]);
+            // (Later than the last one, also within the same millisecond: the 歌单 stay in the order they were made.)
+            [row] = await this.music.put([{ id: 'playlist:' + globalThis.crypto.randomUUID().slice(0, 8), kind: 'playlist', at: Math.max(Date.now(), (all.at(-1)?.at || 0) + 1), name: title, songs: [] }]);
         }
         this.emit('music', { library: true });
         return row;
@@ -2070,9 +2251,15 @@ export class TTSBackend {
     // ---------- 分区 ----------
     /** The card open in the tavern now: {key, name, members}. With 分区 on, the phone shows that card's own things. */
     setSpace(space) {
-        const next = { key: String(space?.key || '').slice(0, 300), name: String(space?.name || '').slice(0, 80), members: (Array.isArray(space?.members) ? space.members : []).map(String).filter(Boolean).slice(0, 30) };
-        if (next.key === this.space.key && next.name === this.space.name && next.members.join('\n') === this.space.members.join('\n')) return;
+        const next = { key: String(space?.key || '').slice(0, 300), name: String(space?.name || '').slice(0, 80), members: (Array.isArray(space?.members) ? space.members : []).map(String).filter(Boolean).slice(0, 30), ...(space?.save ? { save: String(space.save).slice(0, 80) } : {}) };
+        if (next.key === this.space.key && next.save === this.space.save && next.name === this.space.name && next.members.join('\n') === this.space.members.join('\n')) return;
         this.space = next;
+        // 按聊天: the first chat of a card seen takes what the card had from before.
+        if (next.key && next.save && this.settings.chat?.partition === 'chat' && !this.settings.chat.firstSaves?.[next.key]) {
+            const state = this.getState();
+            state.chat.firstSaves = { ...state.chat.firstSaves, [next.key]: next.save };
+            this.save(state);
+        }
         // The card's own characters belong to it (so they do not show up in other cards as roles no story has met).
         if (next.key && next.members.length) this.tagRoles(next.members, next.key);
         if (next.key && next.name) this.noteCard(next.key, next.name);
@@ -2087,17 +2274,25 @@ export class TTSBackend {
     /** The card open now, whether 分区 is on or not: new things remember the card they were made in, so turning 分区 on
      *  later sorts them. ('' when no card is open: shared.) */
     cardKey() { return this.space.key || ''; }
+    /** The tavern chat open now, when the tavern says (分区 按聊天): `card#chat`, else ''. New things remember it too. */
+    saveKey() { return this.space.key && this.space.save ? `${this.space.key}#${this.space.save}` : ''; }
+    /** What a new thing is marked with. */
+    spaceTag() { return { space: this.cardKey(), ...(this.saveKey() ? { save: this.saveKey() } : {}) }; }
     /** Who the picture rules name: the open card's people and the given speakers (null: everyone). */
     drawCast(speakers = []) { return drawCast(this.drawSettings(), this.space, speakers); }
     /** The roles that speak in a card's story belong to that card's contacts. Saved only when something changed. */
     tagRoles(names, key = this.space.key) {
+        // Met in a tavern chat: that goes for its card as well.
+        const keys = key && key === this.saveKey() ? [this.space.key, key] : [key];
         if (!key || !names?.length) return false;
         const want = new Set(names.map(String)), next = this.getState();
         let changed = false;
         for (const route of next.routes) {
             if (!want.has(route.name)) continue;
-            const cards = Array.isArray(route.cards) ? route.cards : [];
-            if (!cards.includes(key)) { route.cards = [...cards, key].slice(-100); changed = true; }
+            const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
+            if (add.length) { route.cards = [...cards, ...add].slice(-100); changed = true; }
+            // Met in a story for the first time: it goes in that card's group.
+            if (!cards.length && !route.group) this.#joinCard(next, route, keys[0], keys[0] === this.space.key ? this.space.name : '');
         }
         if (changed) this.save(next);
         return changed;
@@ -2174,7 +2369,7 @@ export class TTSBackend {
     crowd() {
         const here = this.here(), all = this.contacts();
         if (!here) return all;
-        const own = all.filter(c => c.source === 'manual' || (here.members || []).includes(c.name) || this.settings.routes.some(r => r.name === c.name && Array.isArray(r.cards) && r.cards.includes(here.key)));
+        const own = all.filter(c => c.source === 'manual' || (here.members || []).includes(c.name) || this.settings.routes.some(r => r.name === c.name && roleInSpace(r, here)));
         return own.length ? own : all;
     }
     /** Phone chats of the card open now. */
@@ -2183,7 +2378,7 @@ export class TTSBackend {
     async clearHere(list, remove, clearAll) {
         const here = this.here();
         if (!here) return clearAll();
-        const mine = (await list()).filter(x => x.space === here.key);
+        const mine = (await list()).filter(x => here.card ? inSpace(x, here) : x.space === here.key);
         for (const x of mine) await remove(x.id);
         return mine.length;
     }
@@ -2198,10 +2393,10 @@ export class TTSBackend {
         return result;
     }
     /** New posts from the board (characters and strangers), with made-up likes and 热度; the oldest go past the limit. */
-    async addForumPosts(posts, { source = 'auto', space = this.cardKey() } = {}) {
+    async addForumPosts(posts, { source = 'auto', space = this.cardKey(), save = this.saveKey() } = {}) {
         // The first post the model wrote is shown on top (newest first).
         const now = Date.now(), id = () => crypto.randomUUID();
-        const docs = posts.map((p, i) => cleanForumPost({ ...p, source, space, ...(source === 'me' ? { likes: 0, heat: 1 } : startingHeat(p)) }, id(), now - i * 10, id));
+        const docs = posts.map((p, i) => cleanForumPost({ ...p, source, space, ...(save ? { save } : {}), ...(source === 'me' ? { likes: 0, heat: 1 } : startingHeat(p)) }, id(), now - i * 10, id));
         return this.appsMutate('forum', () => this.apps.put(docs, { keep: FORUM_LIMITS.posts }));
     }
     /** id: the 热搜 of the card the request was made for (hotId() when it was asked). */
@@ -2244,7 +2439,7 @@ export class TTSBackend {
     /** The private chat with `name` on this card (made when there is none yet). */
     async dmThread(name) {
         const here = currentDm(await this.threads(), name);
-        return here || this.chats.create({ type: 'dm', members: [name], space: this.cardKey() });
+        return here || this.chats.create({ type: 'dm', members: [name], ...this.spaceTag() });
     }
     /** The user deletes a contact: the chat is put away (kept), and what they send meanwhile becomes 好友申请. */
     async unfriend(name) {
@@ -2474,6 +2669,7 @@ export class TTSBackend {
         const next = this.getState();
         next.connections.fish.params.references = next.connections.fish.params.references.filter(reference => reference.audio !== id);
         next.connections.mimo.params.samples = next.connections.mimo.params.samples.filter(sample => sample.audio !== id);
+        for (const voice of next.connections.custom?.params.voices || []) if (voice.ref_file === id) voice.ref_file = '';
         this.save(next); await this.library.deleteReference(id); this.providers.references.delete(id);
     }
     getEngineSchema(engine, connection = this.settings.connections[engine]) {
@@ -2532,7 +2728,10 @@ export class TTSBackend {
         this.assertOpen();
         this.player.stop('试一试自己的接口');
         const unlock = Promise.resolve(this.player.sink.unlock?.());
-        const c = clone(connection || this.settings.connections.custom), voice = (c.params?.voices || []).find(v => String(v.name || '').trim());
+        const c = clone(connection || this.settings.connections.custom);
+        let voice = (c.params?.voices || []).find(v => String(v.name || '').trim());
+        // None added: the first the service lists.
+        if (!voice && c.params?.listUrl) { const listed = await this.providers.voices('custom', c).catch(() => null); if (listed?.voices?.[0]) voice = { name: listed.voices[0].id }; }
         const lang = languageCode(this.settings.general.defaultLanguage || 'zh').split('-')[0] || 'zh';
         const text = ({ zh: '你好，这是一句试音。', ja: 'こんにちは、テストです。', en: 'Hello, this is a test.', ko: '안녕하세요, 테스트입니다.' })[lang] || '你好，这是一句试音。';
         const request = buildRequest('custom', c, { voice: voice ? String(voice.name).trim() : '', language: lang }, { text, emotion: '' });
@@ -2541,6 +2740,32 @@ export class TTSBackend {
         this.assertOpen();
         this.player.playBlob(blob, { speaker: voice ? String(voice.name).trim() : '自己的接口', engine: 'custom', line: { role: voice ? String(voice.name).trim() : '', text, translation: '', emotion: '' } });
         return { voice: voice ? String(voice.name).trim() : '', bytes: blob.size, type: blob.type };
+    }
+    /** Whether a service can be reached, and if not why, in plain words. */
+    async customReach(address) {
+        this.assertOpen();
+        const { base, notes, error } = cleanAddress(address);
+        if (error || !base) return { ok: false, message: error || '先填服务的地址', notes };
+        const reach = await reachService(base, this.providers.customTools());
+        return reach.via ? { ok: true, base, notes, via: reach.via } : { ok: false, base, notes, ...explainReach(reach, base) };
+    }
+    /** 自动识别: which service answers there, and the settings for it (nothing is saved here). */
+    async customDetect(address) {
+        const reach = await this.customReach(address);
+        if (!reach.ok) return reach;
+        const tools = this.providers.customTools();
+        const ask = async path => {
+            const target = /^https?:/i.test(path) ? path : reach.base + path;
+            try { const r = await (reach.via === 'proxy' ? tools.proxy(target) : tools.direct(target)); return { status: r.status, ok: r.ok, type: r.headers.get('content-type') || '', text: await r.text() }; } catch { return null; }
+        };
+        return { ...reach, found: await detectService(reach.base, ask) };
+    }
+    /** No address typed: the addresses where something answers, among those such services usually take. */
+    async customScan() {
+        this.assertOpen();
+        const { direct } = this.providers.customTools();
+        const answers = await Promise.all(scanTargets().map(async url => { try { await direct(url, { mode: 'no-cors', signal: AbortSignal.timeout(1500) }); return url; } catch { return ''; } }));
+        return answers.filter(Boolean);
     }
     async playFavorite(id) {
         this.assertOpen();
@@ -2634,15 +2859,19 @@ export class TTSBackend {
             validatePreset: preset => { try { validatePreset(preset); return ''; } catch (error) { return message(error); } },
             previewPrompt: preset => this.previewPrompt(preset), promptPlan: () => clone(promptPlan(this.settings, modelRules(this.settings))), parse: text => this.parse(text),
             voiceBalance: (engine, refresh) => this.voiceBalance(engine, refresh), keyStatus: engine => this.keyStatus(engine), keyHint: engine => this.keyHint(engine), keyPool: engine => this.keyPool(engine), keyList: engine => this.keyList(engine), addKeys: (engine, value) => this.addKeys(engine, value), removeKey: (engine, index) => this.removeKey(engine, index), useKey: (engine, index) => this.useKey(engine, index), setKey: (engine, key) => this.setKey(engine, key), clearKey: engine => this.clearKey(engine),
-            saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id),
+            setStyleCover: (id, blob) => this.setStyleCover(String(id), blob), clearStyleCover: id => this.clearStyleCover(String(id)),
+            arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
             imageConnectionList: engine => this.imageConnectionList(engine), saveImageConnection: (engine, patch) => this.saveImageConnection(engine, patch), selectImageConnection: (engine, id) => this.selectImageConnection(engine, id), deleteImageConnection: (engine, id) => this.deleteImageConnection(engine, id),
             drawReady: () => this.drawReady(), drawMissing: () => this.drawMissing(), paidPrompt: () => this.paidPrompt(), comfyCatalog: url => this.comfyCatalog(url), comfyClips: options => this.comfyClips(options), comfyWorkflows: () => this.comfyWorkflows(), comfyWorkflow: name => this.comfyWorkflow(name),
             saveComfyWorkflow: patch => this.saveComfyWorkflow(patch), selectComfyWorkflow: id => this.selectComfyWorkflow(id), deleteComfyWorkflow: id => this.deleteComfyWorkflow(id),
             comfyLoraInfo: () => this.comfyLoraInfo(), editComfyLoras: change => this.editComfyLoras(clone(change || {})), restoreComfyWorkflow: () => this.restoreComfyWorkflow(),
             comfyLoras: options => this.comfyLoras(options),
+            naiSuggestTags: (word, options) => this.naiSuggestTags(word, options),
+            comfyNodeSpecs: options => this.comfyNodeSpecs(options), comfyNodeList: () => this.comfyNodeList(), editComfyNodes: change => this.editComfyNodes(clone(change || {})), prepareComfyImport: source => this.prepareComfyImport(source),
+            comfySavedWorkflows: () => this.comfySavedWorkflows(), comfySavedWorkflow: name => this.comfySavedWorkflow(name), comfyRecentRuns: () => this.comfyRecentRuns(), comfyUploadPicture: file => this.comfyUploadPicture(file),
             saveDrawPreset: preset => this.saveDrawPreset(preset), deleteDrawPreset: id => this.deleteDrawPreset(id), previewDrawPrompt: preset => this.previewDrawPrompt(preset),
             naiSubscription: refresh => this.naiSubscription(refresh), naiProbe: () => this.naiProbe(), fishCatalog: () => this.providers.fishCatalog(), fishProbe: () => { this.assertOpen(); keyCheck('fish'); return this.providers.probeFish(clone(this.settings.connections.fish)); },
-            listVibes: () => this.listVibes(), compactVibes: () => this.compactVibes(), importVibes: (files, options) => this.importVibes(files, clone(options || {})), updateVibe: (id, patch) => this.updateVibe(id, clone(patch || {})), deleteVibe: id => this.deleteVibe(id), deleteVibes: ids => this.deleteVibes([...(ids || [])]), exportVibes: target => this.exportVibes(clone(target || {})), vibePlan: model => clone(this.vibePlan(model || this.settings.draw.params.model)), drawQuote: (params, extra) => this.drawQuote(params, extra), naiTool: input => this.naiTool(clone(input || {})),
+            listVibes: () => this.listVibes(), compactVibes: () => this.compactVibes(), importVibes: (files, options) => this.importVibes(files, clone(options || {})), updateVibe: (id, patch) => this.updateVibe(id, clone(patch || {})), deleteVibe: id => this.deleteVibe(id), deleteVibes: ids => this.deleteVibes([...(ids || [])]), exportVibes: target => this.exportVibes(clone(target || {})), embedVibes: (target, picture, name) => this.embedVibes(clone(target || {}), picture, name), importPictureVibes: (list, options) => this.importPictureVibes(clone(list || []), clone(options || {})), vibePlan: model => clone(this.vibePlan(model || this.settings.draw.params.model)), drawQuote: (params, extra) => this.drawQuote(params, extra), naiTool: input => this.naiTool(clone(input || {})),
             generateImage: input => this.generateImage(input).then(({ blob, ...result }) => result),
             drawQueue: () => this.drawQueue.list(), cancelDraw: key => this.drawQueue.cancel(key), cancelAllDraws: () => this.drawQueue.cancelAll(),
             cloudQueueError: () => this.drawQueue.remoteError, testCloudQueue: value => this.testCloudQueue(value), newRoomCode: () => newRoomCode(),
@@ -2653,7 +2882,7 @@ export class TTSBackend {
             previewRequest: (engine, connection, route, line) => { const request = buildRequest(engine, connection || this.settings.connections[engine], route, line, this.providers.references); if (request.body.provider?.options?.['fish-audio']?.references) for (const ref of request.body.provider.options['fish-audio'].references) ref.audio = '[本地参考音频]'; if (request.body.audio?.voice?.startsWith?.('data:')) request.body.audio.voice = '[本地克隆样本：' + route.voice + ']'; return request; },
             status: () => this.player.snapshot(), subscribe: listener => this.subscribe(listener), levels: () => this.player.sink.levels(),
             pendingRole: () => this.player.pending, stop: () => this.player.stop(), toggle: () => this.player.toggle(), resume: () => this.player.continuePending(),
-            audition: route => this.audition(route), customTest: connection => this.customTest(clone(connection || null)), lineState: line => this.player.lineState(line),
+            audition: route => this.audition(route), customTest: connection => this.customTest(clone(connection || null)), customReach: address => this.customReach(String(address ?? '')), customDetect: address => this.customDetect(String(address ?? '')), customScan: () => this.customScan(), lineState: line => this.player.lineState(line),
             setVolume: value => this.savePhone({ volume: value }), getVolume: () => this.player.getVolume(),
             cacheStats: () => this.cache.stats(), clearCache: () => this.clearCache(), listAudio: () => this.cache.list(),
             deleteAudio: async key => { if (this.player.requestKey === key) this.player.stop('音频已删除'); if (this.prepared?.key === key) this.prepared = null; await this.cache.remove(key); this.emit('library', { collection: 'cache' }); },
@@ -2695,7 +2924,7 @@ export class TTSBackend {
             saveText: patch => this.saveText(clone(patch)), setTextKey: (id, key) => this.setTextKey(id, key), clearTextKey: id => this.clearTextKey(id), textKeyHint: id => this.textKeyHint(id), textModels: draft => this.textModels(clone(draft || {})),
             syncStatus: () => this.syncStatus(), saveSync: patch => this.saveSync(clone(patch)), syncNow: () => this.syncNow().then(() => this.syncStatus()), clearSyncFiles: () => this.clearSyncFiles(),
             listMoments: async () => { const here = this.here(); return (await this.moments.list()).filter(p => inSpace(p, here)); }, getMoment: id => this.moments.get(id),
-            postMoment: ({ text, photoId } = {}) => this.momentsMutate(async () => (await this.moments.add([{ author: 'me', source: 'me', text, photoId, space: this.cardKey() }]))[0]),
+            postMoment: ({ text, photoId } = {}) => this.momentsMutate(async () => (await this.moments.add([{ author: 'me', source: 'me', text, photoId, ...this.spaceTag() }]))[0]),
             likeMoment: (id, on = true) => this.momentsMutate(() => this.moments.like(id, 'me', on)),
             // One of the pictures drawn for a post becomes the one shown.
             momentsPickImage: (id, photoId) => this.momentsMutate(async () => { const post = await this.moments.get(id); if (!post || ![post.photoId, ...(post.imageVersions || [])].includes(photoId)) throw Error('这张配图已经不在了'); return this.moments.setImage(id, { photoId }); }),
@@ -2723,7 +2952,7 @@ export class TTSBackend {
             sendPaid: (threadId, message) => this.sendPaid(threadId, message), takeSent: (threadId, messageId, accept) => this.takeSent(threadId, messageId, accept !== false),
             shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.settings) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
             listThreads: () => this.threads(), getThread: id => this.chats.get(id), chatUnread: async () => (await this.threads()).reduce((n, t) => n + (t.muted ? 0 : t.unread), 0),
-            createThread: value => this.chatMutate(null, () => this.chats.create({ ...clone(value), space: this.cardKey() })),
+            createThread: value => this.chatMutate(null, () => this.chats.create({ ...clone(value), ...this.spaceTag() })),
             updateThread: (id, patch) => this.chatMutate(id, () => this.chats.update(id, clone(patch))),
             deleteThread: id => this.chatMutate(id, async () => { const done = await this.chats.remove(id); this.noteGone('chats', [id]); await this.memoryForget(id).catch(() => {}); return done; }),
             // 记忆: what a chat remembers; a summary can be corrected or deleted (what it covered is used again).
