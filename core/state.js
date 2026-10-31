@@ -13,7 +13,7 @@ import { defaultEmbed,normalizeEmbed } from './embed.js';
 import { defaultSync,normalizeSync } from './sync.js';
 import { normalizePool } from './auto-voice.js';
 import { defaultSounds,normalizeSounds } from './sounds.js';
-import { normalizeLooks,normalizeCardNames } from './looks.js';
+import { normalizeLooks,normalizeCardNames } from './card-looks.js';
 import { defaultAssistant,normalizeAssistant } from './assistant.js';
 import { defaultMusic,normalizeMusic } from './music.js';
 import { defaultNarration,normalizeNarration } from './narration.js';

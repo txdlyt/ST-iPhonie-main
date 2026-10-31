@@ -6,7 +6,8 @@ import {connectBackend} from './backend-client.js';
 import {glyph, icon, spark, wave} from './icons.js';
 import {esc, avatar, plate, setAvatarPictures} from './common.js';
 import {APPS, HOME, SLOT} from './apps.js';
-import {wallpaperLook, motionLayer} from './wallpapers.js';
+import {wallpaperLook, customWallpaper, motionLayer, skins} from './wallpapers.js';
+import {deriveTheme, paintTheme, wheelHue, DEFAULT_THEME_SOURCE} from '../core/theme-colors.js';
 import {momentsNew, momentsSeen} from './moments-seen.js';
 import {callScreen} from './call.js';
 import {installMotion} from './motion.js';
@@ -28,7 +29,8 @@ const LOADERS = {
   sounds: () => import('./sounds.js').then(m => m.soundsApp), assistant: () => import('./assistant.js').then(m => m.assistantApp),
   music: () => import('./music.js').then(m => m.musicApp), games: () => import('./games.js').then(m => m.gamesApp),
   picbook: () => import('./book.js').then(m => m.bookApp), indie: () => import('./indie.js').then(m => m.indieApp),
-  paint: () => import('./paint.js').then(m => m.paintApp), vn: () => import('./vn.js').then(m => m.vnApp), logs: () => import('./logs.js').then(m => m.logsApp)
+  paint: () => import('./paint.js').then(m => m.paintApp), vn: () => import('./vn.js').then(m => m.vnApp), logs: () => import('./logs.js').then(m => m.logsApp),
+  ledger: () => import('./ledger.js').then(m => m.ledgerApp)
 };
 const FACTORIES = {}, loading = {};
 /** An app's module, once (a load that failed is tried again next time). */
@@ -65,7 +67,7 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   let today = null;
   const media = win.matchMedia('(prefers-color-scheme: dark)'), motion = win.matchMedia('(prefers-reduced-motion: reduce)');
   let panelVisible = true, active = null, locked = false, sheet = null, disposed = false, wanted = null;
-  let lastPhase = '', preferences = null, appearanceKey = '', appearanceEpoch = 0, toastTimer, animation, openTimer, unread = 0, unreadTimer, fresh = 0, freshTimer;
+  let clearIcons = new Set(), lastPhase = '', preferences = null, appearanceKey = '', appearanceEpoch = 0, toastTimer, animation, openTimer, unread = 0, unreadTimer, fresh = 0, freshTimer;
   let playback = api.status();
 
   mount.innerHTML = `
@@ -292,7 +294,7 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   };
   const routeFor = name => findRoute(roleList(), name);
   const engineOf = name => { const r = routeFor(name); return r?.voice ? r.engine : 'none'; };
-  const ctx = {api, doc, win, notify, dialog, confirm, help, lock, open, routeFor, engineOf, openPendingRole: name => openPendingRole(name), visible: name => active === name && !locked,
+  const ctx = {api, doc, win, notify, dialog, confirm, help, lock, open, routeFor, engineOf, previewSide: side => previewSide(side), openPendingRole: name => openPendingRole(name), visible: name => active === name && !locked,
     editEngine: id => withView('engines', v => v.edit?.(id)), showPresetKind: kind => withView('presets', v => v.showKind?.(kind)), openDraw: request => { open('draw'); withView('draw', v => v.load?.(request)); }, momentsSeen: () => { if (fresh) { fresh = 0; renderHome(); } }};
   installMotion(win, mount, signal);
   // On a computer the phone is a floating window: its top bar moves it.
@@ -341,6 +343,7 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
     }
     wanted = null;
     closeSheets();
+    if (sidePreview) previewSide(null);
     unlock();
     const source = from || (!active && !home.hidden ? iconOf(name) : null);
     const was = stopCarry();
@@ -372,6 +375,7 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   }
   function showHome(immediate = false) {
     closeSheets();
+    if (sidePreview) previewSide(null);
     if (locked) return;
     const leaving = active, was = stopCarry();
     if (leaving) views.get(leaving)?.leave?.();
@@ -484,10 +488,34 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
     if (time !== lastClock) { lastClock = time; today?.paint(['clock', 'calendar']); }
   }
   const isDark = () => doc.documentElement.dataset.theme === 'dark';
+  const customTheme = phone => phone?.customTheme || deriveTheme(DEFAULT_THEME_SOURCE);
+  // sidePreview: the side of a 自定义主题 being edited, shown whatever the 日夜 setting says, until the editing is over.
+  let sidePreview = null;
   function applyThemeMode() {
     const mode = preferences?.theme || api.getState().theme;
-    doc.documentElement.dataset.theme = mode === 'system' ? (media.matches ? 'dark' : 'light') : mode;
+    doc.documentElement.dataset.theme = sidePreview || (mode === 'system' ? (media.matches ? 'dark' : 'light') : mode);
     doc.documentElement.dataset.skin = preferences?.skin || 'sky';
+    paintTheme(doc, preferences?.skin === 'custom' ? customTheme(preferences) : null);
+  }
+  function previewSide(side) { sidePreview = side; applyThemeMode(); }
+  /** The hue of 单色 icons, or null for grey: 'theme' goes with the colours in use. */
+  function monoHue(phone) {
+    if (phone.monoHue === 'theme') return wheelHue(phone.skin === 'custom' ? customTheme(phone).day['accent-btn'] : (skins[phone.skin] || skins.sky).preview[2]);
+    return typeof phone.monoHue === 'number' ? phone.monoHue : null;
+  }
+  /** Whether a picture has see-through parts: such an icon shows whole, a photo fills its square. */
+  async function seeThrough(blob) {
+    try {
+      const bitmap = await win.createImageBitmap(blob), size = 32, canvas = doc.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const g = canvas.getContext('2d');
+      g.drawImage(bitmap, 0, 0, size, size);
+      bitmap.close?.();
+      const data = g.getImageData(0, 0, size, size).data;
+      let clear = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] < 200) clear++;
+      return clear >= size * size * .03;
+    } catch { return false; }
   }
   function theme() {
     applyThemeMode();
@@ -495,15 +523,16 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   }
 
   // ---------- Home screen ----------
+  const lookIcon = (look, app) => `look:${look}:${app}`;
   function appIcon(id) {
     if (id === SLOT) return `<button class="app-icon slot" data-slot aria-label="预留位置"><span class="icon-tile">${icon('add')}</span><span class="app-label">预留</span></button>`;
     const meta = APPS[id], custom = preferences?.icons?.[id], [t1, t2, tac] = meta.colors;
-    const image = custom?.kind === 'photo' ? assets.get(custom.photoId) : null;
-    const art = image ? `<img src="${esc(image)}" alt="">` : glyph(custom?.kind === 'glyph' && custom.key !== 'default' ? custom.key : id);
+    const picture = custom?.kind === 'photo' ? custom.photoId : custom?.kind === 'look' ? lookIcon(custom.id, id) : '', image = picture ? assets.get(picture) : null;
+    const art = image ? `<img src="${esc(image)}" alt=""${clearIcons.has(picture) ? ' class="see-through"' : ''}>` : glyph(custom?.kind === 'glyph' && custom.key !== 'default' ? custom.key : id);
     // The chat icon: unread messages as a number; new 动态 alone as a dot.
     const count = id === 'chat' ? unread : 0, dot = id === 'chat' && !unread && fresh;
     const badge = count ? `<span class="badge app-badge">${count > 99 ? '99+' : count}</span>` : dot ? '<span class="badge app-badge dot"></span>' : '';
-    return `<button class="app-icon" data-app="${id}" aria-label="${esc(meta.name)}${count ? `，${count} 条未读` : dot ? '，有新动态' : ''}"><span class="icon-tile" style="--t1:${t1};--t2:${t2};--tac:${tac}">${art}</span>${badge}<span class="app-label">${esc(meta.name)}</span></button>`;
+    return `<button class="app-icon" data-app="${id}" aria-label="${esc(meta.name)}${count ? `，${count} 条未读` : dot ? '，有新动态' : ''}"><span class="icon-tile${image ? ' photo-tile' : ''}" style="--t1:${t1};--t2:${t2};--tac:${tac}">${art}</span>${badge}<span class="app-label">${esc(meta.name)}</span></button>`;
   }
   function renderHome() {
     const shown = HOME.pages.map(ids => ids.filter(id => id !== SLOT)).filter((ids, index) => index === 0 || ids.length);
@@ -594,25 +623,42 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
     today?.setList(phone.widgets);
     applyThemeMode();
     const dark = isDark();
-    const key = JSON.stringify([phone.wallpaper, phone.icons, phone.iconStyle, dark]);
+    const key = JSON.stringify([phone.wallpaper, phone.icons, phone.iconStyle, phone.monoHue, phone.skin, phone.skin === 'custom' || phone.wallpaper.key === 'custom' ? phone.customTheme : null, dark, phone.look?.at]);
     if (key === appearanceKey) return;
     const ticket = ++appearanceEpoch;
     // The wallpaper is the photo itself; an icon, a few dozen pixels wide, the photo's small picture (ui/thumbs.js).
     const iconIds = [...new Set(Object.values(phone.icons).filter(x => x?.kind === 'photo').map(x => x.photoId))];
     const [wall, ...pictures] = await Promise.all([phone.wallpaper.kind === 'photo' ? api.getPhoto(phone.wallpaper.photoId).then(r => r?.blob) : null, ...iconIds.map(id => thumbBlob(api, {id}))]);
+    // A theme's pictures are small already, and come out of its file together.
+    const lookIds = [...new Set([phone.wallpaper, ...Object.values(phone.icons)].filter(x => x?.kind === 'look').map(x => x.id))];
+    const lookFiles = new Map(await Promise.all(lookIds.map(async id => [id, await api.lookFiles?.(id).catch(() => null)])));
     if (disposed || ticket !== appearanceEpoch) return;
     for (const url of [...assets.values(), wallURL]) if (url) win.URL.revokeObjectURL(url);
     assets.clear();
     iconIds.forEach((id, i) => { if (pictures[i]) assets.set(id, win.URL.createObjectURL(pictures[i])); });
-    wallURL = wall ? win.URL.createObjectURL(wall) : '';
+    clearIcons = new Set((await Promise.all(iconIds.map(async (id, i) => pictures[i] && await seeThrough(pictures[i]) ? id : null))).filter(Boolean));
+    for (const [app, one] of Object.entries(phone.icons)) {
+      const file = one?.kind === 'look' ? lookFiles.get(one.id)?.icons[app] : null;
+      if (!file?.blob) continue;
+      assets.set(lookIcon(one.id, app), win.URL.createObjectURL(file.blob));
+      if (file.clear) clearIcons.add(lookIcon(one.id, app));
+    }
+    if (disposed || ticket !== appearanceEpoch) return;
+    const wallBlob = phone.wallpaper.kind === 'look' ? lookFiles.get(phone.wallpaper.id)?.wallpaper : wall;
+    wallURL = wallBlob ? win.URL.createObjectURL(wallBlob) : '';
     const photo = wallURL || null;
-    const look = wallpaperLook(phone.wallpaper.key, dark);
+    // A picture that is not there (its theme was deleted on another device): the theme's own wallpaper.
+    const wallKey = phone.wallpaper.key || phone.skin;
+    const look = wallKey === 'custom' ? customWallpaper(customTheme(phone), dark) : wallpaperLook(wallKey, dark);
     const vars = photo
       ? {'--wall': `linear-gradient(#0000001f,#0000001f),url("${photo}")`, '--wall-size': 'cover', '--wall-pos': 'center', '--wall-ink': '#fff', '--label-halo': '#000'}
       : {'--wall': look.background, '--wall-size': look.size || 'auto', '--wall-pos': look.pos || 'center', '--wall-ink': look.ink, '--clock-stroke': look.stroke, '--clock-shadow': look.shadow || look.stroke, '--label-halo': look.halo};
     for (const [name, value] of Object.entries(vars)) screen.style.setProperty(name, value);
     screen.dataset.clockStyle = photo ? 'shade' : look.clock;
     screen.dataset.iconStyle = phone.iconStyle;
+    const hue = phone.iconStyle === 'mono' ? monoHue(phone) : null;
+    if (hue === null) { delete screen.dataset.monoHue; screen.style.removeProperty('--mono-hue'); }
+    else { screen.dataset.monoHue = ''; screen.style.setProperty('--mono-hue', String(hue)); }
     $('.wallpaper').innerHTML = (photo || look.clock === 'glow' ? '' : [['12%', '20%', 14], ['84%', '14%', 22], ['72%', '28%', 10], ['20%', '58%', 12]].map(([x, y, s]) => spark('spark').replace('<svg', `<svg style="left:${x};top:${y};width:${s}px;height:${s}px"`)).join('')) + (photo ? '' : motionLayer(look.motion));
     wallMotion();
     appearanceKey = key;
