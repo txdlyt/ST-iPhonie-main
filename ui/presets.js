@@ -88,7 +88,7 @@ export function presetsApp(ctx) {
   /** 柏宝绘: what the preset says about itself, and its two switches. */
   /** 当前服装: this chat keeps what each person wears, and the planner is told it. */
   function outfitFields(p) {
-    return toggle('outfits', '记住角色当前的服装（按聊天）', p.outfits === true, '打开后，出图规划时会告诉模型这个聊天里每个人此刻穿什么，换了衣服模型会报告，下次接着用。衣服仍然由模型写进每张图的 tag，所以剧情里换装不会冲突；世界书里写的固定服装当作起点，聊天里的变化优先。记录按聊天分开：新聊天从头开始，回到旧聊天旧的还在。可以在「角色」→「外貌库」里看、改、清空。');
+    return toggle('outfits', '记住角色当前的服装（按聊天）', p.outfits === true, '打开后，出图规划时会告诉模型这个聊天里每个人此刻穿什么，换了衣服模型会报告，下次接着用。衣服仍然由模型写进每张图的 tag，所以剧情里换装不会冲突；世界书里写的固定服装当作起点，聊天里的变化优先。记录按聊天分开：新聊天从头开始，回到旧聊天旧的还在。可以在角色编辑页的「外貌 tag」里，看、改、清空这个聊天里它穿的衣服。');
   }
   function baibaiFields(p) {
     return `<p class="hint">这是柏宝绘预设：规划图片用柏宝绘的提示词（破限、规范、思维链），模型按它的 JSON 回答，再换成手机自己的出图块来画。固定在「回复后单独配图」里工作；角色外貌用「角色」App 里的，新角色按柏宝绘的建档写进「角色」App。下面的条目可以改，按出图引擎自动选用对应的规范和思维链（没有哪条对应时用柏宝绘原文）。</p>

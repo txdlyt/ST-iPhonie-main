@@ -31,40 +31,50 @@ export function rolesApp(ctx) {
   // ---------- the list: rows that go the way Procreate's layers do ----------
   let listDrawn = '', query = '', filter = '', swipe = null, sort = null, seenCard = null;
   const space = () => api.phoneSpace?.() || {};
-  const inCard = (r, sp) => !!sp.key && ((sp.members || []).includes(r.name) || !!r.cards?.includes(sp.key));
+  // (Another card's role of the same name is not this card's, though the name is among its people.)
+  const inCard = (r, sp) => !!sp.key && !sp.others?.has(r.id) && ((sp.members || []).includes(r.name) || !!r.cards?.includes(sp.key));
+  /** The roles another card has by a name someone here has too, with what is left of the list seen from here. */
+  const othersHere = roles => { const here = new Set((api.rolesHere?.() || roles).map(r => r.id)); return new Set(roles.filter(r => !here.has(r.id)).map(r => r.id)); };
+  /** Which card a role is of: said on a row when another role has its name. */
+  const cardLabel = (r, state) => {
+    const key = (r.cards || []).find(k => !k.includes('#'));
+    if (!key) return '所有卡';
+    return state.roleGroups?.find(g => g.card === key)?.name || (key === space().key && space().name) || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '');
+  };
   /** What the 筛选 chips ask for. */
   const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim()]};
   const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
   const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
   /** Picked rows as roles: a group's row stands for its roles. */
   const rolesOf = ids => [...new Set(ids.flatMap(id => id.startsWith('g:') ? tree().find(e => e.group?.id === id.slice(2))?.styles || [] : [id]))];
-  function roleRow(r, pool) {
+  function roleRow(r, pool, twin = '') {
     const voiced = !!r.voice, engine = voiced ? r.engine : 'none';
     const actions = [...(voiced ? [{key: 'audition', label: '试听', icon: 'play'}] : []), {key: 'edit', label: '改', icon: 'edit'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}];
-    return swipeRow(r.id, `<button type="button" class="list-row role-row" data-action="edit-role" data-id="${esc(r.id)}" data-engine="${engine}">${avatar(r.name, engine, 44)}<span class="role-row-text"><strong>${esc(r.name)}</strong>${voiced
+    return swipeRow(r.id, `<button type="button" class="list-row role-row" data-action="edit-role" data-id="${esc(r.id)}" data-engine="${engine}">${avatar(r.name, engine, 44, r.ownKey || r.name)}<span class="role-row-text"><strong>${esc(r.name)}${twin ? ` <span class="auto-chip">${esc(twin)}</span>` : ''}</strong>${voiced
       ? `<small>${plate(engines[r.engine])}<span class="role-voice">${esc(voiceLabel(r.voice, pool))}</span>${r.autoVoice ? ' <span class="auto-chip">自动挑的</span>' : ''}</small>`
       : '<small class="unset">待配音</small>'}</span></button>`, actions, {label: r.name});
   }
   const GROUP_ACTIONS = [{key: 'rename', label: '改名', icon: 'edit'}, {key: 'ungroup', label: '解散', icon: 'layers'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}];
   function listRows() {
-    const state = api.getState(), pool = poolNames(), sp = space(), word = query.trim().toLowerCase();
+    const state = api.getState(), pool = poolNames(), sp = {...space(), others: othersHere(state.routes)}, word = query.trim().toLowerCase();
+    const twin = r => state.routes.some(x => x.id !== r.id && x.name === r.name) ? cardLabel(r, state) : '';
     if (word || filter) {
       const shown = state.routes.filter(r => (!filter || FILTERS[filter][1](r, sp)) && (!word || [r.name, ...(r.aliases || []), r.voice ? voiceLabel(r.voice, pool) : ''].join(' ').toLowerCase().includes(word)));
-      return shown.map(r => roleRow(r, pool)).join('') || '<p class="hint role-none">没有这样的角色</p>';
+      return shown.map(r => roleRow(r, pool, twin(r))).join('') || '<p class="hint role-none">没有这样的角色</p>';
     }
-    return layerTree(state.routes, state.roleGroups).map(e => e.style ? roleRow(e.style, pool) : swipeRow('g:' + e.group.id, `<div class="list-row style-group-row" aria-expanded="${e.group.open}"><span class="style-group-chevron">${icon('chevron')}</span><span class="style-group-art">${icon('layers')}</span><span><strong data-group-name>${esc(e.group.name)}</strong><small>${e.styles.length} 个角色${e.styles.some(r => !r.voice) ? ` · ${e.styles.filter(r => !r.voice).length} 个待配音` : ''}</small></span>${sp.key && e.group.card === sp.key ? '<span class="chip">在玩</span>' : ''}</div>`, GROUP_ACTIONS, {className: 'style-group', label: e.group.name})
-      + `<div class="style-group-body" data-group-body="${esc(e.group.id)}"${e.group.open ? '' : ' data-closed'}><div class="style-group-inner">${e.styles.map(r => roleRow(r, pool)).join('')}</div></div>`).join('');
+    return layerTree(state.routes, state.roleGroups).map(e => e.style ? roleRow(e.style, pool, twin(e.style)) : swipeRow('g:' + e.group.id, `<div class="list-row style-group-row" aria-expanded="${e.group.open}"><span class="style-group-chevron">${icon('chevron')}</span><span class="style-group-art">${icon('layers')}</span><span><strong data-group-name>${esc(e.group.name)}</strong><small>${e.styles.length} 个角色${e.styles.some(r => !r.voice) ? ` · ${e.styles.filter(r => !r.voice).length} 个待配音` : ''}</small></span>${sp.key && e.group.card === sp.key ? '<span class="chip">在玩</span>' : ''}</div>`, GROUP_ACTIONS, {className: 'style-group', label: e.group.name})
+      + `<div class="style-group-body" data-group-body="${esc(e.group.id)}"${e.group.open ? '' : ' data-closed'}><div class="style-group-inner">${e.styles.map(r => roleRow(r, pool, twin(r))).join('')}</div></div>`).join('');
   }
   // (Whatever was being looked for stays in sight when so many have been deleted that the box would otherwise go.)
   function listTools(roles) {
-    const sp = space(), chips = Object.entries(FILTERS).map(([key, [label, test]]) => [key, label, roles.filter(r => test(r, sp)).length]).filter(([key, , n]) => n > 0 || filter === key);
+    const sp = {...space(), others: othersHere(roles)}, chips = Object.entries(FILTERS).map(([key, [label, test]]) => [key, label, roles.filter(r => test(r, sp)).length]).filter(([key, , n]) => n > 0 || filter === key);
     return (roles.length > 8 || query ? `<div class="field role-search"><input class="search" type="search" data-role-search value="${esc(query)}" placeholder="搜索名字、别名、音色" aria-label="搜索角色" autocomplete="off"></div>` : '')
       + ((roles.length > 3 || filter) && chips.length ? `<div class="grid-choices role-filters" role="group" aria-label="筛选">${chips.map(([key, label, n]) => `<button type="button" data-action="role-filter" data-key="${key}" aria-pressed="${filter === key}">${label} · ${n}</button>`).join('')}</div>` : '');
   }
   function listHTML(rows = listRows()) {
     const roles = api.getState().routes;
     return heading('角色', help('给聊天里说话的角色配一个声音。也可以直接点聊天里的声波，遇到没配过的角色会带你来这里。') + btn('add-role', icon('add'), 'round-button', 'aria-label="新增角色"'), `Character · ${String(roles.length).padStart(2, '0')}`)
-      + autoGroup() + looksRow() + listTools(roles)
+      + autoGroup() + listTools(roles)
       + (roles.length ? `<div class="group style-list role-list" data-role-list>${rows}</div>` : `<div class="actions">${btn('add-role', icon('add') + '新增角色', 'secondary')}</div>`);
   }
   /** Only the rows: typing in the search box keeps the keyboard up, and a moved row glides. */
@@ -175,85 +185,6 @@ export function rolesApp(ctx) {
     listDrawn = ''; render();
     ctx.notify(failed ? `挑好了 ${done} 个，有的没挑成：${failed}` : `挑好了 ${done} 个`, failed ? {error: true} : undefined);
   }
-  // 外貌库 (looks by card): the card open now, and names cut short so a title never runs off the sheet.
-  function here() { return api.cardList().find(c => c.open)?.key || ''; }
-  function clip(text, n = 16) { const chars = [...String(text || '')]; return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : chars.join(''); }
-  // ---------- 外貌库 ----------
-  const preview = text => { const t = String(text || '').trim().replace(/\s+/g, ' '); return t.length > 60 ? t.slice(0, 59) + '…' : t; };
-  function looksRow() {
-    const open = here(), looks = api.listCardLooks(), mine = open ? looks.filter(l => l.card === open).length : 0, global = api.getState().routes.filter(r => r.appearance?.trim()).length;
-    return `<div class="group"><button class="list-row" data-action="looks"><span><strong>外貌库</strong><small>全局 ${global} 条${open ? ` · 本卡 ${mine} 条` : ''} · 本卡的外貌在这张卡里盖过全局的同名外貌</small></span>${icon('next')}</button></div>`;
-  }
-  function openLooks() {
-    const state = api.getState(), open = here(), cards = api.cardList(), names = new Map(cards.map(c => [c.key, c.name])), looks = api.listCardLooks();
-    const globals = state.routes.filter(r => r.appearance?.trim()), hasGlobal = name => globals.some(r => r.name === name);
-    const row = (title, text, badge, buttons) => `<div class="card-look-row"><div><strong>${esc(title)}</strong>${badge ? `<small class="auto-chip">${badge}</small>` : ''}<small>${esc(preview(text))}</small></div><div class="card-look-actions">${buttons}</div></div>`;
-    const mineRows = looks.filter(l => l.card === open).map(l => row(l.name, l.appearance, [hasGlobal(l.name) ? '盖过全局' : '', l.source === 'ai' ? '自动建的' : ''].filter(Boolean).join(' · '),
-      btn('look-edit', '改', 'chip-button', `data-id="${esc(l.id)}"`) + btn('look-promote', '升为全局', 'chip-button', `data-id="${esc(l.id)}"`) + btn('look-delete', '删', 'chip-button', `data-id="${esc(l.id)}"`))).join('');
-    const globalRows = globals.map(r => row(r.name, r.appearance, open && looks.some(l => l.card === open && l.name === r.name) ? '本卡有自己的' : '',
-      (open && !looks.some(l => l.card === open && l.name === r.name) ? btn('look-copy-role', '复制到本卡', 'chip-button', `data-id="${esc(r.id)}"`) : '') + btn('look-open-role', '去角色里改', 'chip-button', `data-id="${esc(r.id)}"`))).join('');
-    const byCard = new Map();
-    for (const l of looks) if (l.card !== open) { if (!byCard.has(l.card)) byCard.set(l.card, []); byCard.get(l.card).push(l); }
-    const outfits = (() => { try { return api.outfitsList?.() || []; } catch { return []; } })();
-    const outfitRows = outfits.map(o => row(o.name, o.outfit, o.by === 'me' ? '手填的' : '', btn('outfit-edit', '改', 'chip-button', `data-name="${esc(o.name)}"`) + btn('outfit-delete', '清', 'chip-button', `data-name="${esc(o.name)}"`))).join('');
-    const otherRows = [...byCard].map(([k, list]) => `<details class="role-other"><summary>${esc(clip(names.get(k) || '没有名字的卡', 20))}<small class="fold-note">${list.length} 条</small></summary>${list.map(l => row(l.name, l.appearance, '', (open ? btn('look-copy-look', '复制到本卡', 'chip-button', `data-id="${esc(l.id)}"`) : '') + btn('look-delete', '删', 'chip-button', `data-id="${esc(l.id)}"`))).join('')}</details>`).join('');
-    const d = ctx.dialog('外貌库', `<p class="help-copy">全局的外貌每张卡都用；本卡的外貌只在这张卡里用，并盖过全局里同名的。新角色第一次出场时，模型写的外貌会记成本卡的，全局的只有你自己改。</p>`
-      + (open ? groupTitle('本卡：' + clip(names.get(open) || '当前卡'), btn('look-add', '新增', 'chip-button')) + (mineRows || '<p class="help-copy">这张卡还没有自己的外貌。</p>') : '<p class="help-copy">在酒馆里打开一张角色卡，才能给它记本卡外貌。</p>')
-      + groupTitle('全局') + (globalRows || '<p class="help-copy">还没有角色写了外貌。</p>')
-      + groupTitle('当前服装（这个聊天）', btn('outfit-add', '新增', 'chip-button') + (outfits.length ? btn('outfit-clear', '全清', 'chip-button') : '')) + (outfitRows || '<p class="help-copy">还没有记录。出图预设里打开「记住角色当前的服装」后，出图时会记下；也可以在这里手填。世界书里写的固定服装是起点，聊天里的换装优先。</p>')
-      + (otherRows ? groupTitle('其他卡') + otherRows : ''));
-    const done = fn => async e => { try { await fn(); } catch (error) { ctx.notify(error.message, {error: true}); } };
-    d.body.addEventListener('click', e => {
-      const b = e.target.closest('[data-action]');
-      if (!b) return;
-      const id = b.dataset.id, reopen = () => { d.close(); openLooks(); };
-      switch (b.dataset.action) {
-        case 'look-add': d.close(); lookEditor(null); break;
-        case 'look-edit': d.close(); lookEditor(looks.find(l => l.id === id)); break;
-        case 'look-delete': done(async () => { if (!await ctx.confirm('删除这条外貌？', '只删这张卡里的这条，全局的不受影响。')) return; api.deleteCardLook(id); reopen(); })(); break;
-        case 'look-promote': done(async () => {
-          const look = looks.find(l => l.id === id);
-          if (hasGlobal(look.name) && !await ctx.confirm(`替换全局的「${look.name}」？`, '全局里已经有这个名字的外貌，升上去会把它换成这一条；这条会离开本卡，所有卡都用它。')) return;
-          api.promoteCardLook(id); ctx.notify('已升为全局'); reopen();
-        })(); break;
-        case 'look-copy-role': done(async () => { api.copyCardLook({role: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
-        case 'look-copy-look': done(async () => { api.copyCardLook({look: id}); ctx.notify('已复制到本卡'); reopen(); })(); break;
-        case 'look-open-role': d.close(); edit(id); break;
-        case 'outfit-add': d.close(); outfitEditor(null); break;
-        case 'outfit-edit': d.close(); outfitEditor(outfits.find(o => o.name === b.dataset.name)); break;
-        case 'outfit-delete': done(async () => { if (!await ctx.confirm('清掉这条服装记录？', `「${b.dataset.name}」下次出图按剧情和世界书重新定。`)) return; api.outfitDelete(b.dataset.name); reopen(); })(); break;
-        case 'outfit-clear': done(async () => { if (!await ctx.confirm('清空这个聊天的服装记录？', '每个人下次出图按剧情和世界书重新定。')) return; api.outfitsClear(); reopen(); })(); break;
-      }
-    });
-  }
-  /** 当前服装 by hand: a name and what they wear now (tags). */
-  function outfitEditor(row) {
-    const d = ctx.dialog(row ? '改当前服装' : '新增当前服装', `${field('名字', input('name', row?.name || '', 'text', 'maxlength="40" placeholder="角色的名字，要和正文里一样"'))}
-      ${field('现在穿的衣服', textArea('outfit', row?.outfit || '', 'class="code" rows="3" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '只写衣服和配饰的 tag，不写长相、姿势、动作。下次出图起生效，剧情里再换装模型会更新它。')}
-      <div class="actions">${btn('outfit-save', '保存', 'primary')}</div>`);
-    d.body.addEventListener('click', e => {
-      const b = e.target.closest('[data-action="outfit-save"]');
-      if (!b) return;
-      e.preventDefault();
-      const get = f => d.body.querySelector(`[data-field="${f}"]`).value;
-      try { api.outfitSave(get('name'), get('outfit')); d.close(); ctx.notify('已保存'); openLooks(); }
-      catch (error) { ctx.notify(error.message, {error: true}); }
-    });
-  }
-  /** A card's look: a name and the tags. */
-  function lookEditor(look) {
-    const d = ctx.dialog(look ? '改本卡外貌' : '新增本卡外貌', `${field('名字', input('name', look?.name || '', 'text', 'maxlength="40" placeholder="角色的名字，要和正文里一样"'))}
-      ${field('外貌 tag', textArea('appearance', look?.appearance || '', 'class="code" rows="4" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '只写长期不变的长相：性别、发色发型、瞳色、肤色、体型、标志特征。动作、姿势、临时的衣服不要写。')}
-      <div class="actions">${btn('look-save', '保存', 'primary')}</div>`);
-    d.body.addEventListener('click', e => {
-      const b = e.target.closest('[data-action="look-save"]');
-      if (!b) return;
-      e.preventDefault();
-      const get = f => d.body.querySelector(`[data-field="${f}"]`).value;
-      try { api.saveCardLook({id: look?.id, name: get('name'), appearance: get('appearance')}); d.close(); ctx.notify('已保存'); openLooks(); }
-      catch (error) { ctx.notify(error.message, {error: true}); }
-    });
-  }
   /** 自动挑音色: the switch, and the 音色收藏夹 it picks from first. */
   function autoGroup() {
     const state = api.getState(), on = state.general.autoVoice === true, pool = state.voicePool || [];
@@ -273,7 +204,7 @@ export function rolesApp(ctx) {
       + (r.autoVoice && voiced ? `<div class="banner auto-banner">${icon('wave')}<span>这个音色是自动挑的${r.autoReason ? `（${esc(r.autoReason)}）` : ''}。不满意可以从列表换一个，或者${api.autoPickVoice ? '' : '在酒馆里打开小手机后'}「重新挑」。</span>${api.autoPickVoice && r.id ? btn('repick-voice', '重新挑', 'chip-button') : ''}</div>` : '')
       + `<div class="id-card${voiced ? '' : ' none'}" data-engine="${r.engine}">
           <div class="id-top"><span>VOICE ID CARD</span>${plate(saved >= 0 ? number(saved) : 'NEW')}</div>
-          <div class="id-main"><span class="id-photo">${halo()}${avatar(r.name || '新', voiced ? r.engine : 'none', 76)}</span>
+          <div class="id-main"><span class="id-photo">${halo()}${avatar(r.name || '新', voiced ? r.engine : 'none', 76, r.ownKey || r.name || '新')}</span>
             <div style="min-width:0;flex:1"><div class="id-name" data-id-name>${esc(r.name || '新角色')}</div>
             <div class="id-fields"><span>ENGINE</span><span>${engines[r.engine]}</span><span>VOICE</span><span data-id-voice>${esc(voiced ? voiceLabel(r.voice) : '未选择')}</span><span>LANG</span><span>${esc(r.language ? languageName(r.language) : '跟随默认')}</span></div></div></div>
           <div class="barcode">${barcode((r.name || '') + r.engine + (r.voice || ''))}</div><span class="id-stamp">${voiced ? '已配音' : '待配音'}</span>
@@ -301,14 +232,15 @@ export function rolesApp(ctx) {
         <details data-group="role-persona"><summary>角色资料<small class="fold-note">${r.persona?.trim() ? r.persona.trim().length + ' 字' : '没写（读角色卡）'}</small></summary><div class="fold-body">${field('角色资料', textArea('persona', r.persona || '', 'rows="4" maxlength="4000" placeholder="例如：Hina，17 岁，学生会会长，嘴硬心软，和小春是青梅竹马"'), '聊天、论坛、朋友圈、查手机和电话写这个人时用的资料：身份、性格、说话方式、和谁是什么关系。\n\n酒馆里有这个人的角色卡时，不写也会读角色卡；写了就用这里的。没出场过、也没有角色卡的人（比如只在别的卡里出现的），在这里写几句，模型就不用凭空猜了。世界书照常按名字去找，最近的剧情也一直会带上。')}</div></details>
         <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
-          <div class="actions role-try">${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
+          ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
+          <div class="actions role-try">${btn('role-try', icon('paint') + '试画一张', 'secondary')}${r.appearance?.trim() ? btn('role-clear-look', icon('trash') + '清空外貌', 'text-button danger-text') : ''}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
           ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}</div></details>
         <div class="savebar" data-engine="${r.engine}"><span class="save-state" data-save-state>草稿</span>${btn('audition', icon('play', true) + '试听', 'secondary')}${btn('save-role', '保存', 'primary')}</div>
         ${pending ? `<div class="actions" data-engine="${r.engine}">${btn('continue-role', '保存并继续朗读', 'primary')}</div>` : ''}
         ${r.id ? `<div class="actions">${btn('delete-role', icon('trash') + '删除角色配音', 'text-button danger-text')}</div>` : ''}`);
   }
 
-  const render = () => current ? renderEditor() : renderList();
+  const render = () => { if (!current) outfitDraft = null; return current ? renderEditor() : renderList(); };
   /**
    * One voice of the 收藏夹, new or kept: a name and a note of the user's own, and (for 自动挑音色) gender and age.
    * entry: {engine, voice, model, name, ...}; index: its place when it is already kept. done(saved) after saving.
@@ -440,8 +372,19 @@ export function rolesApp(ctx) {
   const dispose = v.dispose;
   v.dispose = () => { swipe?.dispose(); swipe = null; if (tried) ctx.win.URL.revokeObjectURL(tried.url); dispose(); };
   v.on('change', '[data-field=autoVoice]', el => { api.updateGeneral({autoVoice: el.checked}); ctx.notify(el.checked ? '新角色第一次说话时会自动挑音色' : '已关闭自动挑音色'); });
+  // 当前服装 (this chat's): not a part of the role; it is kept in the chat when the role is saved.
+  let outfitDraft = null;
+  const outfitFor = name => { try { return api.outfitsList?.().find(o => o.name === String(name || '').trim())?.outfit || ''; } catch { return ''; } };
+  function keepOutfit(name) {
+    if (outfitDraft === null || !api.outfitSave) return;
+    const text = outfitDraft.trim(), was = outfitFor(name);
+    outfitDraft = null;
+    if (text === was) return;
+    try { if (text) api.outfitSave(name, text); else api.outfitDelete(name); } catch (error) { ctx.notify(error.message, {error: true}); }
+  }
   v.on('input', '[data-field]', el => {
     if (!current) return;
+    if (el.dataset.field === 'outfitNow') { outfitDraft = el.value; changed(); return; }
     current[el.dataset.field] = el.value;
     if (el.dataset.field === 'voice') current.autoVoice = false;
     changed();
@@ -453,7 +396,6 @@ export function rolesApp(ctx) {
   v.on('click', '[data-action]', async el => {
     switch (el.dataset.action) {
       case 'add-role': create(); break;
-      case 'looks': openLooks(); break;
       case 'role-filter': filter = filter === el.dataset.key ? '' : el.dataset.key; swipe?.done(); for (const b of v.root.querySelectorAll('[data-action=role-filter]')) b.setAttribute('aria-pressed', String(b.dataset.key === filter)); paintRows(); break;
       case 'role-try': await tryLook(el); break;
       case 'edit-role': edit(el.dataset.id); break;
@@ -473,17 +415,21 @@ export function rolesApp(ctx) {
           if (current.cards?.length) current.cards = twins.some(x => !x.cards?.length) ? [] : [...new Set([...current.cards, ...twins.flatMap(x => x.cards)])];
           for (const x of twins) { api.deleteRoute(x.id); drafts.delete(x.id); }
         }
-        const previous = current.id || 'new';
+        const previous = current.id || 'new', wasNew = !current.id;
         current = api.saveRoute(current);
+        keepOutfit(current.name);
         if (tried?.id === previous) tried.id = current.id;
         drafts.delete(previous);
         drafts.set(current.id, current);
         render();
         v.root.querySelector('[data-save-state]').textContent = '已保存';
-        ctx.notify('角色配音已保存');
+        // A name another card has too: said, because it is what the two cards will now do.
+        ctx.notify(wasNew && api.getState().routes.some(x => x.id !== current.id && x.name === current.name) ? `这张卡有自己的「${current.name}」了，别的卡不受影响` : '角色配音已保存');
         if (el.dataset.action === 'continue-role') api.resume();
         break;
       }
+      // 全局的外貌就是这个角色自己的外貌：清空后点保存才生效。
+      case 'role-clear-look': current.appearance = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
       case 'audition': api.audition(current); break;
       case 'delete-role':
         if (await ctx.confirm('删除角色配音？', '其他角色的音色和预设会保留。')) {

@@ -20,7 +20,6 @@ import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
-import { withLooks, LOOK_LIMITS } from './card-looks.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, ROW_PARTS, fieldsOf, writeBackup, readBackup, rowJSON, withBlobs, sealKeys, openKeys } from './backup.js';
 import { lookPictures, lookThumb } from './looks.js';
@@ -32,7 +31,7 @@ import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALI
 import {activeLoraWorkflow, normalizeDisabledLoras, inspectLoras, editLoras, pickLoraSource} from './comfy-loras.js';
 import {keepOneOutput, switchNodesOff} from './comfy-graph.js';
 import { normalizeSettings, validateSettings, modelRules, freshState } from './state.js';
-import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases } from './routes.js';
+import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases, rolesSeen, ownKeyFor, roleStore } from './routes.js';
 import { cleanAddress, reachService, explainReach, detectService, scanTargets } from './custom-detect.js';
 import { arrangeRows } from './layers.js';
 import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
@@ -47,7 +46,7 @@ import { DialoguePlayer } from './player.js';
 import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS } from './library.js';
 import { makeThumb, makePreview, packPicture } from './thumbnail.js';
 import { NovelAIClient, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, guardParams, isFree, isV5, normalizeDrawParams, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
-import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, PRESET_REV as DRAW_PRESET_REV, drawPromptPlan, planRequest, drawCast, validateDrawPreset, normalizeDraw, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection } from './draw.js';
+import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, PRESET_REV as DRAW_PRESET_REV, drawPromptPlan, planRequest, drawCast, validateDrawPreset, normalizeDraw, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
 import { ChatStore, money, currentDm, searchThreads } from './chats.js';
 import { DrawQueue } from './draw-queue.js';
@@ -205,7 +204,7 @@ export class TTSBackend {
         this.closed = false;
         this.prepared = null;
         this.player = new DialoguePlayer({
-            settings: () => this.settings, providers, cache: this.cache, ...(sink ? { sink } : {}), unknown, speech,
+            settings: () => this.seen, providers, cache: this.cache, ...(sink ? { sink } : {}), unknown, speech,
             change: state => { if (state.phase === 'error') this.reportDiagnostic('语音播放', {message: state.message}); change(state); this.emit('playback', state); },
             prepared: audio => { this.prepared = audio; this.emit('audio-ready', this.audioInfo(audio)); },
             voiced: (engine, text) => this.ledger.voice(engine, text),
@@ -343,7 +342,7 @@ export class TTSBackend {
             moved = {}; done.vnFiles = 0;
             for (const f of backup.vnFiles) {
                 if (await this.syncFiles.hasPath(f.path).catch(() => false)) continue;
-                moved[f.path] = await this.syncFiles.writePath(f.path, f.blob);
+                moved[tavernPicture(f.path)] = await this.syncFiles.writePath(f.path, f.blob);
                 done.vnFiles++;
             }
             if (settings) { settings.vn.cast = moveCastFiles(settings.vn.cast, moved); settings.vn.moves = moveCastFiles(settings.vn.moves, moved); if (settings.draw?.styles) settings.draw.styles = moveCastFiles(settings.draw.styles, moved); }
@@ -453,11 +452,11 @@ export class TTSBackend {
     }
     /** 视觉小说: the people of the open card (everyone when no card is open), with their looks and 立绘. */
     vnCast() {
-        const s = this.settings, names = drawCast(s, this.space, []) || s.routes.map(r => r.name);
+        const s = this.seen, names = drawCast(s, this.space, []) || s.routes.map(r => r.name);
         return [...new Set(names)].filter(n => n && !isPlaceholderRole(n) && n !== NARRATOR).map(name => {
-            const route = s.routes.find(r => r.name === name);
-            const entry = s.vn.cast[name];
-            return { name, appearance: route?.appearance || '', sprite: entry?.sprite || '', seed: entry?.seed ?? -1, alts: clone(entry?.alts || []), mix: !!entry?.mix, looks: clone(entry?.looks || {}), actions: clone(entry?.actions || []), outfits: clone(entry?.outfits || []), models: clone(entry?.models || []), useModel: entry?.useModel || '', model: clone(currentModel(entry)) };
+            const route = s.routes.find(r => r.name === name), key = route ? roleStore(route) : name;
+            const entry = s.vn.cast[key];
+            return { name, key, appearance: route?.appearance || '', sprite: entry?.sprite || '', seed: entry?.seed ?? -1, alts: clone(entry?.alts || []), mix: !!entry?.mix, looks: clone(entry?.looks || {}), actions: clone(entry?.actions || []), outfits: clone(entry?.outfits || []), models: clone(entry?.models || []), useModel: entry?.useModel || '', model: clone(currentModel(entry)) };
         });
     }
     updateGeneral(patch) {
@@ -494,10 +493,32 @@ export class TTSBackend {
             route.cards = [this.cardKey(), ...(this.saveKey() ? [this.saveKey()] : [])];
             if (value.group === undefined) this.#joinCard(next, route, this.cardKey(), this.space.name);
         }
+        this.#shareName(next, route, index < 0 || next.routes[index].name !== route.name);
         if (index >= 0) next.routes[index] = route; else next.routes.push(route);
         next.selected = id;
         this.save(next);
         return clone(this.settings.routes.find(row => row.id === id));
+    }
+    /**
+     * Two cards can each have a role of one name. One of that name already in the same place stops this one, unless it is only passing
+     * through (it is in other cards too, having met this card's story): it leaves this card to the new one and stays theirs.
+     * named: the role got this name just now, so what it keeps by name (立绘, avatar, 备注) has to be its own.
+     */
+    #shareName(next, route, named) {
+        const same = next.routes.filter(r => r.id !== route.id && r.name === route.name);
+        if (!same.length) return;
+        const mine = route.cards || [], cardOf = key => key.split('#')[0];
+        for (const other of same) {
+            const theirs = other.cards || [];
+            if (!mine.length && !theirs.length) throw Error(`已经有「${route.name}」了，不能重复。同名的角色要在不同的角色卡里建`);
+            const here = new Set(theirs.filter(k => mine.includes(k)).map(cardOf));
+            if (!here.size) continue;
+            const left = theirs.filter(k => !here.has(cardOf(k)));
+            if (!left.length) throw Error(`这张卡里已经有「${route.name}」了`);
+            other.cards = left;
+            if (here.has(next.roleGroups?.find(g => g.id === other.group)?.card)) { delete other.group; this.#joinCard(next, other, firstCard(other)); }
+        }
+        if (named && !route.ownKey) route.ownKey = ownKeyFor(route.name, route.id);
     }
     /**
      * A role first met in a card goes in that card's group. There is none until the card has two roles: one person in a
@@ -613,13 +634,13 @@ export class TTSBackend {
         return this.save(next);
     }
     previewPrompt(preset) {
-        const state = preset ? { ...this.settings, activePreset: preset.id, presets: [clone(preset)] } : this.settings;
+        const state = preset ? { ...this.seen, activePreset: preset.id, presets: [clone(preset)] } : this.seen;
         return promptPlan(state, modelRules(state)).map(entry => entry.text).join('\n\n');
     }
     parse(text) {
         // 心声 and 电话 written the story's own way (*…* and the like, as the 配音预设 says) play as such.
         const formats = knownFormats(this.settings), marks = this.settings.presets.find(p => p.id === this.settings.activePreset)?.marks;
-        for (const format of formats) { const lines = parseDialogue(text, format); if (lines.length) return { format, lines: withRoles(this.settings.routes, withMarks(text, lines, marks)) }; }
+        for (const format of formats) { const lines = parseDialogue(text, format); if (lines.length) return { format, lines: withRoles(this.seen.routes, withMarks(text, lines, marks)) }; }
         return { format: formats[0], lines: [] };
     }
     setKey(engine, key) {
@@ -1605,8 +1626,10 @@ export class TTSBackend {
         return this.save(next).chat;
     }
     saveContact(value) {
-        const next = this.getState(), contact = validateContact(normalizeContact(clone(value || {})), next.routes);
-        if (next.chat.contacts.some(c => c.name === contact.name && c.id !== contact.id)) throw Error('已经有同名的联系人');
+        // With 分区 on a card has its own people: a name taken in another card is free here.
+        const next = this.getState(), here = this.here(), nearby = here ? next.routes.filter(r => !r.cards?.length || roleInSpace(r, here) || (here.members || []).includes(r.name)) : next.routes;
+        const contact = validateContact(normalizeContact(clone(value || {})), nearby);
+        if (next.chat.contacts.some(c => c.name === contact.name && c.id !== contact.id && inSpace(c, here))) throw Error('已经有同名的联系人');
         const index = next.chat.contacts.findIndex(c => c.id === contact.id);
         if (index < 0 && this.cardKey()) Object.assign(contact, this.spaceTag());
         if (index >= 0 && next.chat.contacts[index].space) contact.space = next.chat.contacts[index].space;
@@ -1643,19 +1666,19 @@ export class TTSBackend {
         const next = this.getState(), gone = next.chat.contacts.find(c => c.id === id);
         next.chat.contacts = next.chat.contacts.filter(c => c.id !== id);
         // Its avatar goes with it, unless a role of the same name still uses it.
-        if (gone && !next.routes.some(r => r.name === gone.name) && next.chat.avatars?.[gone.name]) { const avatars = { ...next.chat.avatars }; delete avatars[gone.name]; next.chat.avatars = avatars; }
+        if (gone && !next.routes.some(r => r.name === gone.name) && !next.chat.contacts.some(c => c.name === gone.name) && next.chat.avatars?.[gone.name]) { const avatars = { ...next.chat.avatars }; delete avatars[gone.name]; next.chat.avatars = avatars; }
         return this.save(next).chat;
     }
     /** A role from the 角色 App joins this card's contacts (the card's story has not met them yet). */
     addRoleContact(name) {
-        const route = findRoute(this.settings.routes, name);
+        const route = findRoute(this.seen.routes, name);
         if (!route) throw Error('角色 App 里没有这个角色');
         if (this.spaceKey()) this.tagRoles([name], this.spaceKey());
         return clone(this.contacts());
     }
     previewChatPrompt(preset) {
         const p = validateChatPreset(normalizeChatPreset(clone(preset || activeChatPreset(this.settings.chat))));
-        const contact = chatContacts(this.settings)[0] || { name: '联系人', persona: '', voice: false };
+        const contact = chatContacts(this.seen)[0] || { name: '联系人', persona: '', voice: false };
         const thread = { type: 'dm', name: contact.name, members: [contact.name], messages: [{ from: 'me', kind: 'text', text: '（这里是手机里的聊天记录）' }] };
         const member = { ...contact, card: contact.persona ? '' : '（酒馆角色卡里的设定）' }, story = [{ name: '（最近的剧情）', text: '……' }], text = request => request.map(m => `【${m.role}】\n${m.content}`).join('\n\n');
         const other = { name: '另一位联系人', persona: '', card: '（酒馆角色卡里的设定）', voice: false };
@@ -2362,6 +2385,9 @@ export class TTSBackend {
         if (!this.here()) return;
         this.emit('chat', { threadId: '' }); this.emit('moments', {}); this.emit('forum', {}); this.emit('peek', {});
     }
+    /** The settings as the card open now sees them: of roles sharing a name, only its own (core/routes.js rolesSeen). Whoever finds a
+     *  role by its name reads this. The settings themselves when nobody shares a name. */
+    get seen() { const routes = rolesSeen(this.settings.routes, this.space.key); return routes === this.settings.routes ? this.settings : { ...this.settings, routes }; }
     /** The space lists are filtered by, or null when 分区 is off (or no card is open). */
     here() { return activeSpace(this.settings, this.space); }
     /** The key lists are filtered and 查手机 is stored by ('' = shared, also when 分区 is off). */
@@ -2374,7 +2400,7 @@ export class TTSBackend {
     /** What a new thing is marked with. */
     spaceTag() { return { space: this.cardKey(), ...(this.saveKey() ? { save: this.saveKey() } : {}) }; }
     /** Who the picture rules name: the open card's people and the given speakers (null: everyone). */
-    drawCast(speakers = []) { return drawCast(this.drawSettings(), this.space, speakers); }
+    drawCast(speakers = []) { return drawCast(this.seen, this.space, speakers); }
     /** The roles that speak in a card's story belong to that card's contacts. Saved only when something changed. */
     tagRoles(names, key = this.space.key) {
         // Met in a tavern chat: that goes for its card as well.
@@ -2382,7 +2408,7 @@ export class TTSBackend {
         if (!key || !names?.length) return false;
         const want = new Set(names.map(String)), next = this.getState();
         let changed = false;
-        for (const route of next.routes) {
+        for (const route of rolesSeen(next.routes, this.space.key)) {
             if (!want.has(route.name)) continue;
             const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
             if (add.length) { route.cards = [...cards, ...add].slice(-100); changed = true; }
@@ -2393,10 +2419,8 @@ export class TTSBackend {
         return changed;
     }
     /** Contacts of the card open now (all of them when 分区 is off). */
-    contacts() { return chatContacts(this.settings, this.here()); }
-    // ---------- 外貌库 by card (core/card-looks.js) ----------
-    /** The settings as the card open sees them (its own looks in place of the global ones): pictures are planned and drawn from it. */
-    drawSettings() { return withLooks(this.settings, this.cardKey()); }
+    contacts() { return chatContacts(this.seen, this.here()); }
+    // ---------- card names (to say which card a photo is from) ----------
     /** Remembers a card's name, to show where things came from. */
     noteCard(key, name) {
         if (!key || !name || this.settings.cardNames?.[key] === name) return;
@@ -2409,48 +2433,6 @@ export class TTSBackend {
         const names = { ...this.settings.cardNames }, here = this.space;
         if (here.key && here.name) names[here.key] = here.name;
         return Object.entries(names).map(([key, name]) => ({ key, name, open: key === here.key })).sort((a, b) => (b.key === here.key) - (a.key === here.key) || a.name.localeCompare(b.name));
-    }
-    listCardLooks() { return clone(this.settings.looks || []); }
-    /** Saves a look of a card (the open one unless card says another): {id?, name, appearance, card?, source?}. */
-    saveCardLook(value) {
-        const name = String(value?.name ?? '').trim().slice(0, LOOK_LIMITS.name), appearance = String(value?.appearance ?? '').trim().slice(0, LOOK_LIMITS.appearance);
-        const card = String(value?.card ?? this.cardKey()).slice(0, 300);
-        if (!name) throw Error('给角色起个名字');
-        if (!appearance) throw Error('外貌 tag 不能是空的');
-        if (!card) throw Error('先在酒馆里打开一张角色卡：本卡外貌记在那张卡下面');
-        const next = this.getState(), looks = next.looks ||= [], id = String(value?.id || crypto.randomUUID()), index = looks.findIndex(l => l.id === id);
-        if (looks.some(l => l.id !== id && l.card === card && l.name === name)) throw Error('这张卡里已经有这个名字的外貌了');
-        if (index < 0 && looks.length >= LOOK_LIMITS.entries) throw Error('外貌条目太多了，先删掉一些');
-        const row = { id, name, card, appearance, source: value?.source === 'ai' ? 'ai' : 'manual', at: index >= 0 ? looks[index].at : Date.now() };
-        if (index >= 0) looks[index] = row; else looks.push(row);
-        if (card === this.space.key && this.space.name) next.cardNames = { ...next.cardNames, [card]: this.space.name };
-        this.save(next);
-        return clone(row);
-    }
-    deleteCardLook(id) {
-        const next = this.getState(), before = next.looks?.length || 0;
-        next.looks = (next.looks || []).filter(l => l.id !== id);
-        if (next.looks.length === before) return false;
-        this.save(next);
-        return true;
-    }
-    /** 升为全局: the look becomes the appearance of the role of that name (a role without a voice is made when there is none), and leaves the card. */
-    promoteCardLook(id) {
-        const look = (this.settings.looks || []).find(l => l.id === id);
-        if (!look) throw Error('这条外貌已经不在了');
-        const route = this.settings.routes.find(r => r.name === look.name);
-        this.saveRoute(route ? { ...route, appearance: look.appearance } : { name: look.name, engine: 'fish', voice: '', model: '', language: '', appearance: look.appearance });
-        this.deleteCardLook(id);
-        return true;
-    }
-    /** 复制到本卡: the look of a role (its global one, or another card's) is copied under the card open now, to be changed there. */
-    copyCardLook(source) {
-        if (!this.cardKey()) throw Error('先在酒馆里打开一张角色卡');
-        const look = source?.look ? (this.settings.looks || []).find(l => l.id === source.look) : null;
-        const route = source?.role ? this.settings.routes.find(r => r.id === source.role) : null;
-        const name = look?.name ?? route?.name, appearance = look?.appearance ?? route?.appearance;
-        if (!name || !appearance?.trim()) throw Error('没有可以复制的外貌');
-        return this.saveCardLook({ name, appearance });
     }
     /** Moves album photos under a card (key '' = 未分类). */
     async movePhotos(ids, key, name = '') {
@@ -2531,7 +2513,7 @@ export class TTSBackend {
     async favoritePhotos(ids, on = true) {
         this.assertOpen();
         const list = [...new Set((ids || []).map(String))], now = Date.now();
-        const edit = row => { const inside = new Set(row.photos); row.photos = on ? [...list.filter(id => !inside.has(id)), ...row.photos] : row.photos.filter(id => !list.includes(id)); row.updatedAt = now; };
+        const out = new Set(list), edit = row => { const inside = new Set(row.photos); row.photos = on ? [...list.filter(id => !inside.has(id)), ...row.photos] : row.photos.filter(id => !out.has(id)); row.updatedAt = now; };
         await this.appsMutate('albums', () => this.apps.change(FAVORITES, edit).catch(async error => {
             if (error?.code !== 'MISSING') throw error;
             const row = { id: FAVORITES, kind: 'album', name: '收藏', at: now, updatedAt: now, photos: [] };
@@ -3067,12 +3049,12 @@ export class TTSBackend {
                 this.save(next);
             },
             getState: () => this.getState(), getSnapshot: () => this.getSnapshot(), save: (next, revision) => this.save(next, revision),
-            updateGeneral: patch => this.updateGeneral(patch), saveNarration: patch => this.saveNarration(patch), saveVn: patch => this.saveVn(patch), vnCast: () => this.vnCast(), vnSpriteRequest: (name, options) => clone(spriteRequest(this.settings, String(name || ''), clone(options || {}))), saveRoute: route => this.saveRoute(route), saveVoicePool: list => this.saveVoicePool(clone(list)), deleteRoute: id => this.deleteRoute(id),
+            updateGeneral: patch => this.updateGeneral(patch), saveNarration: patch => this.saveNarration(patch), saveVn: patch => this.saveVn(patch), vnCast: () => this.vnCast(), vnSpriteRequest: (name, options) => clone(spriteRequest(this.seen, String(name || ''), clone(options || {}))), saveRoute: route => this.saveRoute(route), saveVoicePool: list => this.saveVoicePool(clone(list)), deleteRoute: id => this.deleteRoute(id),
             switchRouteEngine, cleanAliases, validRoleName: name => typeof name === 'string' && !!name.trim() && !isPlaceholderRole(name),
             saveConnection: (engine, patch) => this.saveConnection(engine, patch),
             savePreset: preset => this.savePreset(preset), deletePreset: id => this.deletePreset(id), selectPreset: id => this.selectPreset(id),
             validatePreset: preset => { try { validatePreset(preset); return ''; } catch (error) { return message(error); } },
-            previewPrompt: preset => this.previewPrompt(preset), promptPlan: () => clone(promptPlan(this.settings, modelRules(this.settings))), parse: text => this.parse(text),
+            previewPrompt: preset => this.previewPrompt(preset), promptPlan: () => clone(promptPlan(this.seen, modelRules(this.seen))), rolesHere: () => clone(this.seen.routes), parse: text => this.parse(text),
             voiceBalance: (engine, refresh) => this.voiceBalance(engine, refresh), keyStatus: engine => this.keyStatus(engine), keyHint: engine => this.keyHint(engine), keyPool: engine => this.keyPool(engine), keyList: engine => this.keyList(engine), addKeys: (engine, value) => this.addKeys(engine, value), removeKey: (engine, index) => this.removeKey(engine, index), useKey: (engine, index) => this.useKey(engine, index), setKey: (engine, key) => this.setKey(engine, key), clearKey: engine => this.clearKey(engine),
             setStyleCover: (id, blob) => this.setStyleCover(String(id), blob), clearStyleCover: id => this.clearStyleCover(String(id)),
             arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
@@ -3107,8 +3089,8 @@ export class TTSBackend {
             getFavorite: id => this.library.getFavorite(id), playFavorite: id => this.playFavorite(id),
             deleteFavorite: id => this.mutateLibrary('favorites', 'deleteFavorite', id),
             listPhotos: () => this.library.listPhotos(), addPhoto: value => this.mutateLibrary('photos', 'addPhoto', value),
-            getPhoto: id => this.library.getPhoto(id), photoThumb: id => this.photoThumb(id), photoPreview: id => this.photoPreview(id), packablePhotos: days => this.packablePhotos(days), packPhotos: ids => this.packPhotos([...(ids || [])].map(String)), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
-            listCardLooks: () => this.listCardLooks(), saveCardLook: value => this.saveCardLook(clone(value)), deleteCardLook: id => this.deleteCardLook(String(id)), promoteCardLook: id => this.promoteCardLook(String(id)), copyCardLook: source => this.copyCardLook(clone(source || {})), cardList: () => this.cardList(),
+            getPhoto: id => this.library.getPhoto(id), photoThumb: id => this.photoThumb(id), photoThumbs: ids => this.library.getThumbs([...(ids || [])].map(String)), photoPreview: id => this.photoPreview(id), packablePhotos: days => this.packablePhotos(days), packPhotos: ids => this.packPhotos([...(ids || [])].map(String)), deletePhoto: id => this.deletePhotos([id]).then(n => n > 0), deletePhotos: ids => this.deletePhotos(ids), movePhotos: (ids, key, name) => this.movePhotos(ids, key, name),
+            cardList: () => this.cardList(),
             listNotes: () => this.library.listNotes(), saveNote: value => this.mutateLibrary('notes', 'saveNote', value), deleteNote: id => this.mutateLibrary('notes', 'deleteNote', id),
             listBooks: () => this.library.listBooks(), getBook: id => this.library.getBook(id), saveBook: value => this.mutateLibrary('books', 'saveBook', clone(value)), deleteBook: id => this.mutateLibrary('books', 'deleteBook', id),
             getPhone: () => this.getPhone(), savePhone: patch => this.savePhone(patch), libraryStats: () => this.library.stats(), storageBudget: () => this.budget.read(),
@@ -3167,7 +3149,7 @@ export class TTSBackend {
             saveChatOptions: patch => this.saveChatOptions(clone(patch)),
             wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
             sendPaid: (threadId, message) => this.sendPaid(threadId, message), takeSent: (threadId, messageId, accept) => this.takeSent(threadId, messageId, accept !== false),
-            shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.settings) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
+            shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.seen) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
             searchChatMessages: (query, options) => this.searchChatMessages(String(query ?? ''), clone(options || {})),
             listThreads: () => this.threads(), getThread: id => this.chats.get(id), chatUnread: async () => (await this.threads()).reduce((n, t) => n + (t.muted ? 0 : t.unread), 0),
             createThread: value => this.chatMutate(null, () => this.chats.create({ ...clone(value), ...this.spaceTag() })),

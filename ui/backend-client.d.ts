@@ -85,6 +85,10 @@ export interface Route {
     autoVoice?: boolean; autoName?: string; autoReason?: string;
     /** 别名: other names the story calls this role by; their lines use this voice. */
     aliases?: string[];
+    /** The cards this role is of. None: it is everyone's. */
+    cards?: string[];
+    /** What its 立绘, avatar and 备注 are kept under when it was made where its name was taken (another card has someone of that name). */
+    ownKey?: string;
 }
 export type RouteInput = Pick<Route, 'name'> & Partial<Omit<Route, 'name'>>;
 export type RequestRoute = Pick<Route, 'voice'> & Partial<Omit<Route, 'voice'>>;
@@ -363,7 +367,6 @@ export interface CallsSettings { auto: boolean; every: number; dailyMax: number;
 export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
 export interface OutfitRow { name: string; outfit: string; at: number; by: 'ai' | 'me'; }
-export interface CardLook { id: string; name: string; card: string; appearance: string; source: 'manual' | 'ai'; at: number; }
 export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** link sound: its sound is kept here */ cached?: boolean; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
 /** A name the story asked for that the library has none of. */
 export interface MissingSound { type: 'sfx' | 'ambience'; name: string; describe: string; count: number; at: number; }
@@ -558,8 +561,6 @@ export interface MediaMetadata extends LocalTimestamps {
     name: string;
     type: string;
     size: number;
-    /** listPhotos only: the photo's small picture for grids, once one was made (photoThumb). */
-    thumb?: Blob;
     /** Photos made smaller by 压缩旧图: when, and how big the original was. */
     packed?: {at: number; size: number};
 }
@@ -842,6 +843,8 @@ export interface BackendFacade {
     getPhoto(id: string): Promise<Photo | null>;
     /** The photo's small picture for grids, made and kept the first time it is asked for; null when the photo is gone or unreadable. */
     photoThumb(id: string): Promise<Blob | null>;
+    /** The small pictures of these photos, those made so far, read in one go. */
+    photoThumbs(ids: string[]): Promise<{id: string; blob: Blob}[]>;
     /** The photo's middle-sized picture for chat bubbles, posts and the 今天 widget, or null: then the photo itself shows (and
      *  one is made in the background for next time, where one is worth having). */
     photoPreview(id: string): Promise<Blob | null>;
@@ -952,14 +955,6 @@ export interface BackendFacade {
     /** Link sounds kept here after they played (so they need no network again). */
     linkCacheInfo(): Promise<{ count: number; bytes: number }>;
     clearLinkCache(): Promise<number>;
-    /** 外貌库 by card: a 本卡 look is used, in its card, in place of the global one (the role's appearance) with the same name. */
-    listCardLooks(): CardLook[];
-    saveCardLook(value: { id?: string; name: string; appearance: string; card?: string; source?: 'manual' | 'ai' }): CardLook;
-    deleteCardLook(id: string): boolean;
-    /** 升为全局: the look becomes the role's own appearance and leaves the card. */
-    promoteCardLook(id: string): boolean;
-    /** 复制到本卡: a look (a card's: look, or a role's global one: role) is copied under the card open now. */
-    copyCardLook(source: { look?: string; role?: string }): CardLook;
     /** The cards known by name, the open one first. */
     cardList(): Array<{ key: string; name: string; open: boolean }>;
     /** Moves album photos under a card (key '' = 未分类). */
@@ -1014,6 +1009,8 @@ export interface BackendFacade {
     clearForum(): Promise<number>;
     /** 分区: the character card open in the tavern ({key, name, members}) and whether 分区 is on. */
     phoneSpace(): { key: string; name: string; members: string[]; on: boolean };
+    /** The roles as the card open now sees them: of those sharing a name, only its own. */
+    rolesHere(): Route[];
     /** 查手机 snapshots, newest first; one per character. */
     listPeeks(): Promise<PeekSnapshot[]>;
     getPeek(name: string): Promise<PeekSnapshot | null>;
