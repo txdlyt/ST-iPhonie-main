@@ -360,6 +360,9 @@ export function settingsApp(ctx) {
       + groupTitle('手机')
       + `<div class="group">${toggle('floatingEnabled', '悬浮入口', s.general.floatingEnabled, '在酒馆里显示可以拖动的入口：电脑上是小球，手机上是贴在屏幕边的小方条。点一下展开，再点一次进入手机。')}
           <div class="setting-row"><span class="row-text"><strong>手机分开${help('按角色卡：每张角色卡（群聊是每个群）一部手机：聊天记录、朋友圈、论坛、查手机各管各的，换卡就换手机；联系人只有这张卡的角色、在这张卡剧情里说过话的角色，和在这张卡里手动加的联系人。「我」跟着酒馆给这张卡锁定的人设走。打开之前就有的聊天和动态没有归属，每张卡都看得到。\n\n按聊天：每个酒馆聊天一部手机。同一张卡开新聊天（重开一个轮回）就是一部新手机：聊天记录、拉黑、朋友圈、论坛、查手机和剧情里出场过的人都从头来，正文也不会再提上一个聊天里的拉黑；回到旧聊天，旧的都还在。以前的内容归第一个打开的聊天，所以先进你想留着它们的那个聊天，再选「按聊天」。\n\n改回不分开，所有东西又会一起显示。')}</strong><small>${space.key ? '现在是' + esc(space.name || '这张角色卡') + (s.chat.partition === 'card' ? ' 的手机' : s.chat.partition === 'chat' ? ' 这个聊天的手机' : '') : '没有打开角色卡'}</small></span><span class="select partition-select">${`<select data-field="partition" aria-label="手机分开">${[['none', '不分开'], ['card', '按角色卡'], ['chat', '按聊天']].map(([k, l]) => `<option value="${k}"${s.chat.partition === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`}</span></div></div>`
+      + groupTitle('图片反推') + `<div class="group pad">${field('tagger 地址', input('taggerUrl', s.tagger?.url || '', 'url', 'placeholder="https://tag.example.com" autocomplete="off" autocapitalize="off" spellcheck="false"'), '你自己的 WD14 tagger 服务（POST /api/tag）。酒馆和它不在同一个域名，tagger 那边要放行酒馆的地址（Access-Control-Allow-Origin），否则浏览器会拦住。在角色编辑页的外貌栏和相册的单张照片里用。')}
+      ${field('识别阈值', input('taggerThreshold', s.tagger?.threshold ?? 0.35, 'number', 'min="0.05" max="0.95" step="0.05" inputmode="decimal"'), '越低识别出的 tag 越多，越高越准但越少。默认 0.35。')}
+      <div class="actions">${btn('tagger-test', '测试连接', 'secondary')}</div></div>`
       + groupTitle('资料')
       + `<div class="group">${syncRows()}
           <button class="list-row" data-action="backup"><span><strong>备份到文件</strong><small>换设备或误删时能找回</small></span>${icon('next')}</button>
@@ -401,6 +404,10 @@ export function settingsApp(ctx) {
     if (['voiceEnabled', 'hideStoryWaves', 'storyTools', 'voiceIsland', 'floatingEnabled', 'waveformEnabled', 'cacheEnabled', 'wallpaperMotion', 'stripVoice', 'voiceExample', 'pregenerate', 'autoplay'].includes(key)) { api.updateGeneral({[key]: el.checked}); if (key === 'stripVoice') await render(); }
     else if (key === 'drawEnabled') { api.saveDraw({enabled: el.checked}); await render(); }
     else if (key === 'defaultLanguage') api.updateGeneral({defaultLanguage: el.value});
+    else if (key === 'taggerUrl' || key === 'taggerThreshold') {
+      try { api.saveTagger(key === 'taggerUrl' ? {url: el.value} : {threshold: Number(el.value)}); ctx.notify('已保存'); await render(); }
+      catch (error) { ctx.notify(error.message, {error: true}); }
+    }
     else if (key === 'volume') await api.setVolume(Number(el.value) / 100);
     else if (key === 'lockOnOpen') await api.savePhone({lockOnOpen: el.checked});
     else if (key === 'partition') { api.saveChatOptions({partition: el.value}); ctx.notify({card: '已按角色卡分开', chat: '已按聊天分开：开新聊天就是一部新手机'}[el.value] || '已关闭分区，所有内容一起显示'); }
@@ -499,6 +506,7 @@ export function settingsApp(ctx) {
       case 'self-check': case 'run-check': await runCheck(); break;
       case 'backup': backup = {parts: new Set(Object.keys(api.backupParts()).filter(part => part !== 'keys')), password: '', again: ''}; await render(); break;
       case 'sync-clear': if (await ctx.confirm('删除酒馆里的那份？', '酒馆里存的聊天、相册、音乐、画画的作品这些都会删掉，别的设备再同步时就读不到了。这台设备上的内容不受影响；同步开着的话，之后会重新存一份。')) await clearTavernCopy(); break;
+      case 'tagger-test': { try { const r = await api.taggerTest(); ctx.notify(`连上了${r.model ? '：' + r.model : ''}${r.tags ? '，' + r.tags + ' 个 tag' : ''}`); } catch (error) { ctx.notify(error.message, {error: true}); } break; }
       case 'sync-now': { const st = await api.syncNow(); const r = st.lastResult || {}; ctx.notify(r.pulled?.length || r.merged?.length ? '已读取别的设备的新内容' + (r.pushed?.length ? '，也保存了这里的改动' : '') : r.pushed?.length ? '已保存到酒馆' : '已经是最新的了'); await render(); break; }
       case 'make-backup':
         await v.busy(el, async () => {

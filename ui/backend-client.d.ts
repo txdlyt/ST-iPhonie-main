@@ -366,6 +366,8 @@ export interface CallsSettings { auto: boolean; every: number; dailyMax: number;
 /** 音效: volumes 0..1; vary: each playing a little different; generate: missing sounds made by ElevenLabs, at most `versions` of a name. */
 export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
+export interface TaggerSettings { url: string; threshold: number; }
+export interface TagResult { model?: string; threshold: number; english_tags: string; tags: Array<{ tag: string; category: 'general' | 'character' | 'rating' | 'other'; confidence: number; zh: string }>; }
 export interface OutfitRow { name: string; outfit: string; at: number; by: 'ai' | 'me'; }
 export interface SoundRow { id: string; name: string; type: 'sfx' | 'ambience'; layer: '' | 'bed' | 'dot'; strength: '' | '轻' | '重'; source: 'mine' | 'eleven' | 'pack' | 'link'; describe: string; seconds: number; /** a link sound: where it is on the web */ url?: string; /** link sound: its sound is kept here */ cached?: boolean; /** against the other sounds (1 = as recorded) */ volume?: number; mime: string; size: number; at: number; /** the shipped pack: original title and author */ credit?: string; }
 /** A name the story asked for that the library has none of. */
@@ -954,6 +956,10 @@ export interface BackendFacade {
     exportSounds(ids?: string[] | null, name?: string): Promise<Blob>;
     importSounds(file: Blob | string, options?: { source?: 'pack' | 'mine' | 'eleven' }): Promise<{ added: number; skipped: number; name: string }>;
     importSoundLinks(text: string): Promise<{ added: number; skipped: number; music: number; bad: number }>;
+    /** 图片反推: your own WD14 tagger (POST {url}/api/tag). */
+    saveTagger(patch: Partial<TaggerSettings>): unknown;
+    taggerTest(): Promise<{ model: string; tags: number }>;
+    tagImage(blob: Blob, options?: { threshold?: number }): Promise<TagResult>;
     /** Link sounds kept here after they played (so they need no network again). */
     linkCacheInfo(): Promise<{ count: number; bytes: number }>;
     clearLinkCache(): Promise<number>;

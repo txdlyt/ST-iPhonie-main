@@ -1,9 +1,10 @@
 // 相册, like a phone's own: 图库 (every photo, by the day) and 相簿 (收藏, the ones one makes, where photos came from). A
 // finger held and moved picks photos (ui/photo-select.js). A 相簿 only lists photos (core/albums.js): taking one out
 // leaves it in 图库, and a whole 相簿 goes to the phone in one go (导出).
-import {createView, esc, btn, heading, empty, size, field, input, groupTitle, menu, pictureCopies} from './common.js';
+import {createView, esc, btn, heading, empty, size, field, input, groupTitle, menu, pictureCopies, copyText} from './common.js';
 import {icon} from './icons.js';
 import {openAlbum} from './album-viewer.js';
+import {openTagSheet, chooseRole} from './tagger.js';
 import {eachThumb, thumbBlob} from './thumbs.js';
 import {photoWall} from './photo-wall.js';
 import {nudge} from './carry.js';
@@ -309,6 +310,22 @@ export function galleryApp(ctx) {
         {key: 'fav', icon: 'heart', label: '收藏', labelOn: '已收藏', on: x => hearts.has(x), run: async x => { await hearted([x], !hearts.has(x)); changed = true; }},
         {key: 'album', icon: 'layers', label: '放入相簿', run: async x => { putInto([x], () => { changed = true; }); }},
         {key: 'download', icon: 'download', label: '下载', run: async x => { const {source, name} = await photoFile(x); const [file] = await pictureCopies(ctx, [{blob: source, name}]) || []; if (file) ctx.notify('已下载 ' + await saveFile(ctx.doc, file.blob, file.name)); }},
+        // 反推 tag: the tags of this picture, to copy or to keep as a role's look (the tagger is the one set in the settings).
+        ...(api.tagImage ? [{key: 'tags', icon: 'image', label: '反推 tag', more: true, run: async x => {
+          const p = await api.getPhoto(x);
+          if (!p?.blob) throw Error('这张照片已经不在了');
+          openTagSheet(ctx, api, {blob: p.blob, title: '反推 tag', actions: [
+            {label: '复制已勾的', style: 'primary', run: async sel => { if (!sel.all) { ctx.notify('没有勾 tag', {error: true}); return false; } if (await copyText(win, sel.all)) ctx.notify('已复制'); else ctx.notify('复制不了，请手动选中复制', {error: true}); }},
+            {label: '存成角色的外貌…', run: async sel => {
+              if (!sel.looks) { ctx.notify('没有勾性别体型、头发、眼睛的 tag', {error: true}); return false; }
+              const role = await chooseRole(ctx, api);
+              if (!role) return false;
+              if (role.appearance?.trim() && !await ctx.confirm(`替换「${role.name}」的外貌？`, '它已经有外貌了，替换后原来的会没有。')) return false;
+              api.saveRoute({...role, appearance: sel.looks});
+              ctx.notify(`已存给「${role.name}」`);
+            }}
+          ]});
+        }}] : []),
         ...(album && album.id !== FAVORITES ? [{key: 'out', icon: 'minus', label: `移出「${album.name}」`, more: true, run: async x => { await api.removeFromAlbum(album.id, [x]); changed = true; ctx.notify('移出了，它还在图库里'); return 'removed'; }}] : []),
         ...(canShareFiles(win) ? [{key: 'share', icon: 'share', label: '分享', more: true, run: async x => { const {source, name} = await photoFile(x); try { await shareFile(ctx.doc, source, name); } catch (error) { ctx.notify(error.message, {error: !/已取消/.test(error.message)}); } }}] : []),
         ...(canCopyPicture(win) ? [{key: 'copy', icon: 'copy', label: '复制', more: true, run: async x => { try { await copyPicture(win, photoFile(x).then(f => f.source)); ctx.notify('已复制'); } catch { ctx.notify('这个浏览器不让复制图片', {error: true}); } }}] : []),

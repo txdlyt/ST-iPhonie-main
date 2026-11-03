@@ -20,6 +20,7 @@ import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
+import { normalizeTagger, reachableFromHttps } from './tagger.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, ROW_PARTS, fieldsOf, writeBackup, readBackup, rowJSON, withBlobs, sealKeys, openKeys } from './backup.js';
 import { lookPictures, lookThumb } from './looks.js';
@@ -2124,6 +2125,42 @@ export class TTSBackend {
         this.emit('sounds', {});
         return rows.length;
     }
+    // ---------- 图片反推 (your own tagger server) ----------
+    saveTagger(patch) {
+        if (!patch || typeof patch !== 'object') throw Error('设置格式无效');
+        const next = this.getState(), merged = normalizeTagger({ ...next.tagger, ...patch });
+        if ('url' in patch && String(patch.url).trim() && !merged.url) throw Error('地址要以 https:// 开头，例如 https://tag.example.com');
+        if (!reachableFromHttps(merged.url)) throw Error('要用 https 地址：酒馆是 https 页面，浏览器不让它连 http 的服务');
+        next.tagger = merged;
+        return this.save(next);
+    }
+    async taggerCall(path, init = {}) {
+        const tagger = this.settings.tagger;
+        if (!tagger?.url) throw Error('先在设置里填 tagger 的地址');
+        let response;
+        try { response = await this.assetFetch(tagger.url + path, { ...init, signal: AbortSignal.timeout(60000) }); }
+        catch (error) { throw Error(error?.name === 'TimeoutError' ? 'tagger 太久没有回应' : '连不上 tagger：地址不对，或者 tagger 那边没有放行酒馆的跨域（nginx 里要加 Access-Control-Allow-Origin）'); }
+        if (!response.ok) {
+            let detail = '';
+            try { detail = (await response.json())?.detail || ''; } catch { /* no reason given */ }
+            throw Error(detail ? String(detail) : `tagger 返回了 ${response.status}`);
+        }
+        return response.json();
+    }
+    /** 测试连接: {model, tags}. */
+    async taggerTest() {
+        const answer = await this.requestLog.run('图片反推', { url: this.settings.tagger?.url, check: 'health' }, () => this.taggerCall('/health'));
+        return { model: String(answer?.model ?? ''), tags: Number(answer?.tags) || 0 };
+    }
+    /** A picture's tags: {tags: [{tag, category, confidence, zh}], english_tags, threshold, model}. */
+    async tagImage(blob, options = {}) {
+        if (!(blob instanceof Blob) || !/^image\//.test(blob.type)) throw Error('这不是一张图片');
+        if (blob.size > 15 * 1024 * 1024) throw Error('图片不能超过 15 MB');
+        const threshold = normalizeTagger({ threshold: options.threshold ?? this.settings.tagger?.threshold }).threshold;
+        const form = new FormData();
+        form.append('file', blob, 'image.' + (blob.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, ''));
+        return this.requestLog.run('图片反推', { url: this.settings.tagger?.url, threshold, size: blob.size }, () => this.taggerCall('/api/tag?threshold=' + threshold, { method: 'POST', body: form }));
+    }
     async deleteSounds(ids) {
         const list = [...new Set((Array.isArray(ids) ? ids : [ids]).map(String).filter(Boolean))];
         // A shipped sound is only taken out of use (it can come back); the others are deleted.
@@ -3120,7 +3157,7 @@ export class TTSBackend {
             addSongsTo: (id, list) => this.addSongsTo(String(id), list), listPlaylists: () => this.listPlaylists(), savePlaylist: value => this.savePlaylist(clone(value || {})), deletePlaylist: (id, options) => this.deletePlaylist(String(id), clone(options || {})),
             addToPlaylist: (id, ids) => this.addToPlaylist(String(id), [...(ids || [])]), removeFromPlaylist: (id, ids) => this.removeFromPlaylist(String(id), [...(ids || [])]),
             saveSounds: patch => this.saveSounds(clone(patch)), listSounds: () => this.listSounds(), soundBlob: id => this.soundBlob(id), addSounds: list => this.addSounds(list), updateSound: (id, patch) => this.updateSound(id, clone(patch || {})), deleteSounds: ids => this.deleteSounds([...(ids || [])]),
-            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')), linkCacheInfo: () => this.linkCacheInfo(), clearLinkCache: () => this.clearLinkCache(),
+            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')), saveTagger: patch => this.saveTagger(clone(patch)), taggerTest: () => this.taggerTest(), tagImage: (blob, options) => this.tagImage(blob, clone(options || {})), linkCacheInfo: () => this.linkCacheInfo(), clearLinkCache: () => this.clearLinkCache(),
             saveText: patch => this.saveText(clone(patch)), setTextKey: (id, key) => this.setTextKey(id, key), clearTextKey: id => this.clearTextKey(id), textKeyHint: id => this.textKeyHint(id), textModels: draft => this.textModels(clone(draft || {})),
             syncStatus: () => this.syncStatus(), saveSync: patch => this.saveSync(clone(patch)), syncNow: () => this.syncNow().then(() => this.syncStatus()), clearSyncFiles: () => this.clearSyncFiles(),
             listMoments: async () => { const here = this.here(); return (await this.moments.list()).filter(p => inSpace(p, here)); }, getMoment: id => this.moments.get(id),

@@ -5,6 +5,7 @@ import {layerTree} from '../core/layers.js';
 import {lookTest} from '../core/draw.js';
 import {VOICE_GENDERS, VOICE_AGES, poolLine, readPoolFile, poolFile, guessVoice} from '../core/auto-voice.js';
 import {saveFile} from '../download.js';
+import {openTagSheet} from './tagger.js';
 import {icon, halo} from './icons.js';
 
 function barcode(seed) {
@@ -230,10 +231,10 @@ export function rolesApp(ctx) {
           ${languageField('language', r.language || '', true, typedLanguages(api.getState()))}
         </div></details>
         <details data-group="role-persona"><summary>角色资料<small class="fold-note">${r.persona?.trim() ? r.persona.trim().length + ' 字' : '没写（读角色卡）'}</small></summary><div class="fold-body">${field('角色资料', textArea('persona', r.persona || '', 'rows="4" maxlength="4000" placeholder="例如：Hina，17 岁，学生会会长，嘴硬心软，和小春是青梅竹马"'), '聊天、论坛、朋友圈、查手机和电话写这个人时用的资料：身份、性格、说话方式、和谁是什么关系。\n\n酒馆里有这个人的角色卡时，不写也会读角色卡；写了就用这里的。没出场过、也没有角色卡的人（比如只在别的卡里出现的），在这里写几句，模型就不用凭空猜了。世界书照常按名字去找，最近的剧情也一直会带上。')}</div></details>
-        <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
+        <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
           ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
-          <div class="actions role-try">${btn('role-try', icon('paint') + '试画一张', 'secondary')}${r.appearance?.trim() ? btn('role-clear-look', icon('trash') + '清空外貌', 'text-button danger-text') : ''}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
+          <div class="actions role-try">${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${r.appearance?.trim() ? btn('role-clear-look', icon('trash') + '清空外貌', 'text-button danger-text') : ''}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
           ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}</div></details>
         <div class="savebar" data-engine="${r.engine}"><span class="save-state" data-save-state>草稿</span>${btn('audition', icon('play', true) + '试听', 'secondary')}${btn('save-role', '保存', 'primary')}</div>
         ${pending ? `<div class="actions" data-engine="${r.engine}">${btn('continue-role', '保存并继续朗读', 'primary')}</div>` : ''}
@@ -372,6 +373,52 @@ export function rolesApp(ctx) {
   const dispose = v.dispose;
   v.dispose = () => { swipe?.dispose(); swipe = null; if (tried) ctx.win.URL.revokeObjectURL(tried.url); dispose(); };
   v.on('change', '[data-field=autoVoice]', el => { api.updateGeneral({autoVoice: el.checked}); ctx.notify(el.checked ? '新角色第一次说话时会自动挑音色' : '已关闭自动挑音色'); });
+  /**
+   * The name is already a role's, in a place the list may not show (another group, another chat of this card): say so and
+   * offer to open it, or to put what was typed into it. true when this was dealt with.
+   */
+  function nameTaken(error) {
+    const name = String(current?.name || '').trim();
+    const others = api.getState().routes.filter(x => x.id !== current.id && x.name === name);
+    if (!others.length || !/已经有|已有|重复/.test(error.message)) return Promise.resolve(false);
+    const same = others.find(x => (x.cards || []).some(k => (current.cards || []).includes(k))) || others.find(x => !x.cards?.length) || others[0];
+    const where = same.cards?.length ? '它属于别的角色卡或别的聊天的手机' : '它是全局角色';
+    return new Promise(resolve => {
+      const d = ctx.dialog(`「${name}」已经有了`, `<p class="help-copy">${esc(where)}，所以这里的列表可能没显示出来。${same.appearance?.trim() ? '它已有外貌：' + esc(same.appearance.trim().slice(0, 40)) : '它还没写外貌。'}</p>
+        <div class="actions">${btn('clash-open', '打开已有的', 'secondary')}${btn('clash-merge', '用我填的更新它', 'primary')}</div>`);
+      d.body.addEventListener('click', e => {
+        const b = e.target.closest('[data-action]');
+        if (!b) return;
+        e.preventDefault();
+        d.close();
+        const forgot = current.id || 'new';
+        if (b.dataset.action === 'clash-open') { drafts.delete(forgot); current = null; edit(same.id); resolve(true); return; }
+        if (b.dataset.action === 'clash-merge') {
+          const {id, name: _n, cards, autoVoice, ...fields} = current, patch = {};
+          for (const [k, v2] of Object.entries(fields)) if (v2 !== '' && v2 != null && !(Array.isArray(v2) && !v2.length) && !(typeof v2 === 'object' && !Array.isArray(v2) && !Object.keys(v2).length)) patch[k] = v2;
+          try { const saved = api.saveRoute({...same, ...patch}); drafts.delete(forgot); drafts.set(saved.id, saved); current = saved; keepOutfit(saved.name); render(); ctx.notify(`已更新已有的「${saved.name}」`); }
+          catch (err) { ctx.notify(err.message, {error: true}); }
+          resolve(true);
+        }
+      });
+    });
+  }
+  // 从图片提取: a picture goes to the tagger; the ticked tags are written into this form (saved with 保存).
+  const openLook = () => { const box = v.root.querySelector('details[data-group="role-look"]'); if (box) box.open = true; };
+  v.on('change', '[data-role-image]', el => {
+    const file = el.files?.[0];
+    el.value = '';
+    if (!file || !current) return;
+    const apply = (text, how, note) => {
+      if (!text) { ctx.notify('没有勾对应的 tag', {error: true}); return false; }
+      how(text); changed(); render(); openLook(); ctx.notify(note);
+    };
+    openTagSheet(ctx, api, {blob: file, title: '从图片提取', actions: [
+      {label: '替换外貌 tag', style: 'primary', run: sel => apply(sel.looks, text => { current.appearance = text; }, '已写进外貌 tag，点保存生效')},
+      {label: '追加到外貌 tag', run: sel => apply(sel.looks, text => { current.appearance = [String(current.appearance || '').trim().replace(/[,，]\s*$/, ''), text].filter(Boolean).join(', '); }, '已追加到外貌 tag，点保存生效')},
+      ...(api.outfitSave ? [{label: '服装写进当前服装', run: sel => apply(sel.outfit, text => { outfitDraft = text; }, '已写进「这个聊天里现在穿的」，点保存生效')}] : [])
+    ]});
+  });
   // 当前服装 (this chat's): not a part of the role; it is kept in the chat when the role is saved.
   let outfitDraft = null;
   const outfitFor = name => { try { return api.outfitsList?.().find(o => o.name === String(name || '').trim())?.outfit || ''; } catch { return ''; } };
@@ -416,7 +463,8 @@ export function rolesApp(ctx) {
           for (const x of twins) { api.deleteRoute(x.id); drafts.delete(x.id); }
         }
         const previous = current.id || 'new', wasNew = !current.id;
-        current = api.saveRoute(current);
+        try { current = api.saveRoute(current); }
+        catch (error) { if (await nameTaken(error)) return; throw error; }
         keepOutfit(current.name);
         if (tried?.id === previous) tried.id = current.id;
         drafts.delete(previous);
@@ -429,6 +477,7 @@ export function rolesApp(ctx) {
         break;
       }
       // 全局的外貌就是这个角色自己的外貌：清空后点保存才生效。
+      case 'role-from-image': v.root.querySelector('[data-role-image]')?.click(); break;
       case 'role-clear-look': current.appearance = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
       case 'audition': api.audition(current); break;
       case 'delete-role':
