@@ -6,9 +6,9 @@ import {PROMPT_BLOCKS, normalizePromptRules} from './prompt-rules.js';
 import { normalizeVn, spriteRequest, castFiles, moveCastFiles } from './vn.js';
 import { currentModel } from './model-files.js';
 import { MomentStore } from './moments-store.js';
-import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readGroups, paged, PAGE_WAYS, withPages, songKey, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, bestMatch, matchScore, pick as pickPath, GROUP_KINDS } from './music.js';
+import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readGroups, paged, PAGE_WAYS, withPages, songKey, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, sameFile, lyricOwner, bestMatch, matchScore, pick as pickPath, GROUP_KINDS } from './music.js';
 import { AppStore } from './app-store.js';
-import { ASSISTANT_LIMITS, normalizeAssistant, validateAssistantPatch, assistantId, assistantMessage, assertAssistantThread, assistantSummary } from './assistant.js';
+import { ASSISTANT_LIMITS, ASSISTANT_IMAGE_SLOT, normalizeAssistant, validateAssistantPatch, assistantId, assistantMessage, assistantMeta, assistantThoughts, assistantClip, assistantFirstTitle, assertAssistantThread, assistantSummary } from './assistant.js';
 import { FORUM_LIMITS, buildForumRequest, cleanPost as cleanForumPost, cleanReply as cleanForumReply, startingHeat } from './forum.js';
 import { buildPeekRequest, cleanPeek, peekId } from './peek.js';
 import { languageCode } from './languages.js';
@@ -35,7 +35,7 @@ import {activeLoraWorkflow} from './comfy-loras.js';
 import {keepOneOutput, switchNodesOff} from './comfy-graph.js';
 import { normalizeSettings, validateSettings, modelRules, freshState } from './state.js';
 import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases, rolesSeen, ownKeyFor, roleStore } from './routes.js';
-import { cleanAddress, reachService, explainReach, detectService, scanTargets } from './custom-detect.js';
+import { cleanAddress, reachService, explainReach, detectService, scanTargets, findVoiceList, voiceIsName, API_PROBES } from './custom-detect.js';
 import { CUSTOM_DEFAULT, CUSTOM_SETS_MAX } from './custom-voice.js';
 import { arrangeRows } from './layers.js';
 import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
@@ -109,7 +109,9 @@ const firstCard = route => (Array.isArray(route.cards) ? route.cards.find(k => !
 const clone = value => structuredClone(value);
 // a 歌单 the user made was deleted meanwhile (in another tab, say)
 // Which documents of the apps' stores make up a part of a backup and of 保存到酒馆 (画画的作品 has a store of its own).
-const PART_KINDS = Object.freeze({ forum: ['forum', 'forum-hot'], peek: ['peek'], ledger: ['ledger'], looks: ['look'], albums: ['album'], music: ['song', 'playlist', 'heard', 'draft'], sounds: ['sound'] });
+const PART_KINDS = Object.freeze({ forum: ['forum', 'forum-hot'], peek: ['peek'], ledger: ['ledger'], looks: ['look'], albums: ['album'], music: ['song', 'playlist', 'heard', 'draft'], sounds: ['sound'], games: ['gamesave'] });
+// the 大游戏 whose saves the phone keeps (方块世界's worlds are too big to carry; they stay in the browser)
+const GAME_SAVES = Object.freeze(['antarctic']);
 // The tavern takes 500 MB a request, and a file goes as base64.
 const tooBigToSync = work => (work?.bytes || 0) > 300 * 1024 * 1024;
 const listGone = error => { throw error?.code === 'MISSING' ? Error('这个歌单已经删掉了') : error; };
@@ -278,7 +280,7 @@ export class TTSBackend {
         const bytes = rows => rows.reduce((n, row) => n + (row.blob?.size || row.size || row.bytes || 0), 0);
         const [docs, music, sounds, works] = await Promise.all([this.apps.list(), this.music.list(), this.sounds.list('sound'), this.paintRows().catch(() => [])]);
         const songs = music.filter(row => row.kind === 'song' && row.origin !== 'source'), looks = docs.filter(row => row.kind === 'look');
-        return { looks: looks.length, lookBytes: bytes(looks), forum: docs.filter(row => row.kind === 'forum').length, peek: docs.filter(row => row.kind === 'peek').length, ledger: new Set(docs.filter(row => row.kind === 'ledger').map(row => row.day)).size, playlists: music.filter(row => row.kind === 'playlist').length, songs: songs.length, musicBytes: bytes(songs), sounds: sounds.length, soundBytes: bytes(sounds), works: works.length, workBytes: bytes(works) };
+        return { games: docs.filter(row => row.kind === 'gamesave').map(row => ({ game: row.game, day: Number(row.data?.day) || 0 })), looks: looks.length, lookBytes: bytes(looks), forum: docs.filter(row => row.kind === 'forum').length, peek: docs.filter(row => row.kind === 'peek').length, ledger: new Set(docs.filter(row => row.kind === 'ledger').map(row => row.day)).size, playlists: music.filter(row => row.kind === 'playlist').length, songs: songs.length, musicBytes: bytes(songs), sounds: sounds.length, soundBytes: bytes(sounds), works: works.length, workBytes: bytes(works) };
     }
     /** The works' list; one saved before it kept its size has its layers read for that. */
     async paintRows() {
@@ -288,6 +290,26 @@ export class TTSBackend {
     }
     /** A work of 画画 was saved or deleted in the phone. */
     paintChanged(gone = []) { this.noteGone('paint', gone); this.scheduleSync(); }
+    /** 大游戏's save as the phone keeps it ({data, savedAt}, or null): the game keeps its own in the browser too, and
+     *  goes on with the later of the two (index.js hands them over). */
+    async gameSave(game) {
+        this.assertOpen();
+        const row = await this.apps.get('gamesave:' + String(game)).catch(() => null);
+        return row?.data && typeof row.data === 'object' ? { data: row.data, savedAt: Number(row.updatedAt) || 0 } : null;
+    }
+    /** Keeps a game's save (one a game; 保存到酒馆 and backups take it along). An older one than kept is left (a copy
+     *  arriving late, or from a device behind): false. */
+    async putGameSave(game, data, savedAt) {
+        this.assertOpen();
+        if (!GAME_SAVES.includes(game)) throw Error('没有这个游戏');
+        if (!data || typeof data !== 'object' || !Number.isFinite(data.day)) throw Error('存档格式不对');
+        if (JSON.stringify(data).length > 4 * 1024 * 1024) throw Error('存档太大了');
+        const at = Number(savedAt) || Date.now(), id = 'gamesave:' + game, old = await this.apps.get(id).catch(() => null);
+        if (old && (Number(old.updatedAt) || 0) > at) return false;
+        await this.apps.put([{ id, kind: 'gamesave', game, at, updatedAt: at, data }]);
+        this.emit('games', { game });
+        return true;
+    }
     /** A backup file of the chosen parts (core/backup.js BACKUP_PARTS). Keys and the account scope are never written. */
     async exportBackup(parts = Object.keys(BACKUP_PARTS), version = '', { password = '' } = {}) {
         this.assertOpen();
@@ -395,7 +417,7 @@ export class TTSBackend {
     emit(type, data = {}) {
         if (this.closed) return;
         const event = { type, revision: this.revision, ...clone(data) };
-        if (!this.syncApplying && (type === 'chat' || type === 'moments' || ((type === 'forum' || type === 'peek') && !('busy' in data)) || (type === 'sounds' && !data.missing) || (type === 'music' && !data.settings) || type === 'looks' || type === 'albums' || (['memory', 'assistant'].includes(type) && data.persisted) || (type === 'library' && SYNC_PARTS[data.collection]))) this.scheduleSync();
+        if (!this.syncApplying && (type === 'chat' || type === 'moments' || ((type === 'forum' || type === 'peek') && !('busy' in data)) || (type === 'sounds' && !data.missing) || (type === 'music' && !data.settings) || type === 'looks' || type === 'albums' || type === 'games' || (['memory', 'assistant'].includes(type) && data.persisted) || (type === 'library' && SYNC_PARTS[data.collection]))) this.scheduleSync();
         for (const listener of this.listeners) { try { listener(clone(event)); } catch { /* One view cannot stop the other subscribers. */ } }
     }
     subscribe(listener) {
@@ -1994,14 +2016,43 @@ export class TTSBackend {
         const { kept } = await this.addToPlaylist(playlistId, ids);
         return { added, kept };
     }
-    /** Keeps songs in the 歌单: {added: the new ones, ids: each song's own (new, or the one the 歌单 had already)}. */
-    async storeSongs(list) {
+    /**
+     * Songs from files picked many at a time ({title, artist, lyric?, blob, file}): a file that cannot be kept is skipped
+     * and said why, one the 歌单 has already (the same file, core/music.js sameFile) is not kept twice — it only gets the
+     * lyrics that came with it. at: the time of the first; each after it a millisecond older, so what was picked stays in
+     * its order with the newest on top. {added, ids (each song's own, new or the one here already), same: the names
+     * here already, skipped: [{name, why}], lyrics: how many of those here already got lyrics}.
+     */
+    async addSongFiles(list, { at = Date.now() } = {}) { return this.storeSongs(list, { picked: true, at }); }
+    /** .lrc files picked without their songs ([{file, lyric}]): each given to the 本机的歌 of the same name (core/music.js
+     *  lyricOwner). {given: how many songs got lyrics, missed: the files no song is for}. */
+    async addLyrics(list) {
         this.assertOpen();
-        const now = Date.now(), have = await this.listSongs(), ids = [];
-        // a source's songs already here (or earlier in this list), by where they are
+        const songs = (await this.listSongs()).filter(s => s.origin === 'file'), missed = [];
+        let given = 0;
+        for (const { file, lyric } of list) {
+            const song = lyric && lyricOwner(String(file), songs);
+            if (!song) { missed.push(String(file)); continue; }
+            await this.music.change(song.id, row => { row.lyric = String(lyric).slice(0, 60000); row.updatedAt = Date.now(); });
+            given++;
+        }
+        if (given) this.emit('music', { library: true });
+        return { given, missed };
+    }
+    /** Keeps songs in the 歌单: {added: the new ones, ids: each song's own (new, or the one the 歌单 had already)}.
+     *  picked: files picked many at a time (addSongFiles): one that cannot be kept is skipped, not the end of it all. */
+    async storeSongs(list, { picked = false, at = 0 } = {}) {
+        this.assertOpen();
+        const now = Date.now(), have = await this.listSongs(), ids = [], same = [], skipped = [], lyrics = [];
+        // a source's songs already here (or earlier in this list), by where they are; the files, when picked
         const known = new Map(have.filter(h => h.origin === 'source').map(h => [h.source + '\n' + h.songId, h]));
+        const files = picked ? have.filter(h => h.origin === 'file') : [];
         const rows = list.map((value, i) => {
-            const row = songRow({ ...value, origin: value.blob ? 'file' : 'source' }, now + i);
+            const name = String(value?.file || value?.title || '').slice(0, 200);
+            let row;
+            const bad = why => { if (!picked) throw Error(`「${row.title}」${why}`); skipped.push({ name, why }); return null; };
+            try { row = songRow({ ...value, origin: value.blob ? 'file' : 'source' }, at ? at - i : now + i); }
+            catch (error) { if (!picked) throw error; skipped.push({ name, why: error.message }); return null; }
             if (row.origin === 'source') {
                 const k = row.source + '\n' + row.songId, dup = known.get(k);
                 ids.push((dup || row).id);
@@ -2010,18 +2061,25 @@ export class TTSBackend {
                 return row;
             }
             let blob;
-            try { blob = ownBlob(value.blob); } catch { throw Error(`「${row.title}」不是能用的音频文件`); }
-            if (!blob.size) throw Error(`「${row.title}」是空文件`);
-            if (blob.size > MUSIC_LIMITS.file) throw Error(`「${row.title}」太大了（一首最多 ${MUSIC_LIMITS.file / 1024 / 1024} MB）`);
+            try { blob = ownBlob(value.blob); } catch { return bad('不是能用的音频文件'); }
+            if (!blob.size) return bad('是空文件');
+            if (blob.size > MUSIC_LIMITS.file) return bad(`太大了（一首最多 ${MUSIC_LIMITS.file / 1024 / 1024} MB）`);
             const type = String(blob.type || '').toLowerCase();
-            if (type && !type.startsWith('audio/') && !['application/octet-stream', 'video/mp4', 'video/webm', 'video/ogg'].includes(type)) throw Error(`「${row.title}」不是音频文件`);
+            if (type && !type.startsWith('audio/') && !['application/octet-stream', 'video/mp4', 'video/webm', 'video/ogg'].includes(type)) return bad('不是音频文件');
+            const file = picked && value.file ? { file: String(value.file).slice(0, 200) } : {};
+            if (picked) {
+                const dup = files.find(h => sameFile({ ...row, ...file, size: blob.size }, h));
+                if (dup) { ids.push(dup.id); same.push(name); if (row.lyric && row.lyric !== dup.lyric) lyrics.push([dup.id, row.lyric]); return null; }
+                files.push({ ...row, ...file, size: blob.size });
+            }
             ids.push(row.id);
-            return { ...row, blob, size: blob.size, mime: type };
+            return { ...row, ...file, blob, size: blob.size, mime: type };
         }).filter(Boolean);
         if (have.length + rows.length > MUSIC_LIMITS.songs) throw Error(`歌单最多 ${MUSIC_LIMITS.songs} 首`);
         if (rows.length) await this.music.put(rows);
-        this.emit('music', { library: true });
-        return { added: rows.map(({ blob, ...row }) => row), ids };
+        for (const [id, lyric] of lyrics) await this.music.change(id, row => { row.lyric = lyric; row.updatedAt = Date.now(); }).catch(() => null);
+        if (rows.length || lyrics.length || !picked) this.emit('music', { library: true });
+        return { added: rows.map(({ blob, ...row }) => row), ids, same, skipped, lyrics: lyrics.length };
     }
     /** The 歌单 the user made: [{id, name, at, songs: [song ids, the newest on top]}], in the order they were made. */
     async listPlaylists() { this.assertOpen(); return (await this.music.list('playlist')).sort((a, b) => a.at - b.at); }
@@ -2347,8 +2405,26 @@ export class TTSBackend {
         this.emit('assistant', { settings: true });
         return result;
     }
-    /** Assistant conversations belong to this account, independently of the open story/card. */
-    async assistantThreads() { this.assertOpen(); return (await this.apps.list('assistant')).map(assistantSummary); }
+    /** Assistant conversations belong to this account, independently of the open story/card. With a query: only those
+     *  whose title or words have it (any case); one found in the words has match, the words around the first place. */
+    async assistantThreads(query = '') {
+        this.assertOpen();
+        const rows = await this.apps.list('assistant'), wanted = typeof query === 'string' ? query.trim().toLowerCase() : '';
+        if (!wanted) return rows.map(assistantSummary);
+        const found = [];
+        for (const thread of rows) {
+            if (String(thread.title || '').toLowerCase().includes(wanted)) { found.push(assistantSummary(thread)); continue; }
+            for (const m of thread.messages || []) {
+                const words = (m.role === 'assistant' ? assistantThoughts(m.text, m.meta?.reasoningFormat).text : String(m.text || '')).replaceAll(ASSISTANT_IMAGE_SLOT, ' ');
+                const at = words.toLowerCase().indexOf(wanted);
+                if (at < 0) continue;
+                const from = Math.max(0, at - 16);
+                found.push({...assistantSummary(thread), match: (from ? '…' : '') + words.slice(from, at + wanted.length + 40).replace(/\s+/g, ' ').trim()});
+                break;
+            }
+        }
+        return found;
+    }
     async assistantThread(id) {
         this.assertOpen();
         const thread = await this.apps.get(assistantId(id));
@@ -2425,7 +2501,7 @@ export class TTSBackend {
             if (thread.messages.length >= ASSISTANT_LIMITS.messages) throw Error('这条助手会话已达到 500 条消息，请新建对话后继续');
             const now = Math.max(Date.now(), Number(thread.updatedAt || thread.at) + 1);
             message.at = now;
-            if (message.role === 'user' && !thread.titleEdited && !thread.messages.some(item => item.role === 'user')) thread.title = (message.text || message.attachments?.[0]?.name || '新对话').replace(/\s+/g, ' ').slice(0, ASSISTANT_LIMITS.title);
+            if (message.role === 'user' && !thread.titleEdited && !thread.messages.some(item => item.role === 'user')) thread.title = assistantFirstTitle(message);
             thread.messages.push(message);
             thread.revision = (thread.revision || 0) + 1;
             thread.at = thread.updatedAt = now;
@@ -2451,15 +2527,63 @@ export class TTSBackend {
         if (typeof title !== 'string' || !title.trim() || title.trim().length > ASSISTANT_LIMITS.title) throw Error('会话名字请填写 1–80 个字符');
         return this.mutateAssistantThread(id, thread => { thread.title = title.trim(); thread.titleEdited = true; }, {history: false});
     }
+    /** A message's words changed. A reply's thinking is kept apart (in meta.reasoning) and expectedText is its words as
+     *  shown; a reply with a picture keeps its words. */
     async editAssistantMessage(id, messageId, text, expectedText) {
-        if (typeof text !== 'string' || text.length > ASSISTANT_LIMITS.text) throw Error('消息格式无效或超过 100000 字符');
+        if (typeof text !== 'string' || text.length > ASSISTANT_LIMITS.reply) throw Error('消息格式无效或太长');
         return this.mutateAssistantThread(id, thread => {
             const message = thread.messages.find(m => m.id === messageId);
-            if (message?.role !== 'user') throw Error('只能编辑自己发送的消息');
-            if (expectedText !== undefined && message.text !== expectedText) throw Error('这条消息已经被修改，请重新打开编辑');
-            if (!text.trim() && !message.attachments?.length) throw Error('消息不能为空');
-            message.text = text.trim(); message.editedAt = Date.now();
+            if (!message) throw Error('这条消息已经不在了');
+            if (message.role === 'user') {
+                if (text.length > ASSISTANT_LIMITS.text) throw Error('消息格式无效或超过 100000 字符');
+                if (expectedText !== undefined && message.text !== expectedText) throw Error('这条消息已经被修改，请重新打开编辑');
+                if (!text.trim() && !message.attachments?.length) throw Error('消息不能为空');
+                message.text = text.trim(); message.editedAt = Date.now();
+                return;
+            }
+            if (message.meta?.image) throw Error('带图片的回复不能编辑');
+            const parts = assistantThoughts(message.text, message.meta?.reasoningFormat);
+            if (expectedText !== undefined && parts.text.trim() !== expectedText.trim()) throw Error('这条回复已经变了，请重新打开编辑');
+            if (!text.trim()) throw Error('回复不能为空');
+            const reasoning = [message.meta?.reasoning?.trim(), parts.reasoning.trim()].filter(Boolean).filter((value, i, all) => all.indexOf(value) === i).join('\n\n');
+            const meta = assistantMeta({...message.meta, reasoning});
+            message.text = text.trim(); message.meta = meta; message.editedAt = Date.now();
+            const shown = message.selected || 0;
+            if (Array.isArray(message.variants) && message.variants[shown]) message.variants[shown] = {...message.variants[shown], text: message.text, meta};
         });
+    }
+    /** 从这里新开: a new conversation with this one's messages up to that one (words, files and pictures as they are). */
+    async forkAssistantThread(id, messageId) {
+        const source = await this.assistantThread(id);
+        if (!source) throw Error('这条助手会话已经不在了');
+        const index = source.messages.findIndex(m => m.id === messageId);
+        if (index < 0) throw Error('这条消息已经不在了');
+        const now = Date.now(), title = assistantClip(source.title || '新对话', ASSISTANT_LIMITS.title - 4) + '（分叉）';
+        const thread = { id: 'assistant:' + crypto.randomUUID(), kind: 'assistant', title, titleEdited: true, createdAt: now, updatedAt: now, at: now, messages: clone(source.messages.slice(0, index + 1)) };
+        const [saved] = await this.apps.put([thread]);
+        this.emit('assistant', { threadId: saved.id, persisted: true });
+        return saved;
+    }
+    /** 接着写: the last reply's words and details, now that more was written after it. */
+    async continueAssistantMessage(id, messageId, value, expectedRevision) {
+        const result = assistantMessage({ ...value, role: 'assistant' });
+        return this.mutateAssistantThread(id, thread => {
+            if (expectedRevision !== undefined && (thread.revision || 0) !== expectedRevision) throw Error('助手会话已变化，这次回复没有写入');
+            const message = thread.messages.at(-1);
+            if (message?.id !== messageId || message.role !== 'assistant') throw Error('这条回复已经不是最后一条了');
+            message.text = result.text;
+            if (result.meta) message.meta = result.meta; else delete message.meta;
+            const shown = message.selected || 0;
+            if (Array.isArray(message.variants) && message.variants[shown]) message.variants[shown] = { text: result.text, at: message.at, ...(result.meta ? { meta: result.meta } : {}) };
+        });
+    }
+    /** A title the model wrote: put on only while the conversation still has the one it started with (not renamed). */
+    async autoTitleAssistantThread(id, title, expectedTitle) {
+        const next = assistantClip(String(title || '').replace(/\s+/g, ' ').trim(), ASSISTANT_LIMITS.title);
+        if (!next) return null;
+        const thread = await this.assistantThread(id);
+        if (!thread || thread.titleEdited || thread.title !== expectedTitle || thread.title === next) return thread;
+        return this.mutateAssistantThread(id, row => { if (!row.titleEdited && row.title === expectedTitle) row.title = next; }, { history: false });
     }
     async deleteAssistantMessage(id, messageId) {
         return this.mutateAssistantThread(id, thread => {
@@ -3084,6 +3208,8 @@ export class TTSBackend {
         let voice = (c.params?.voices || []).find(v => String(v.name || '').trim());
         // None added: the first the service lists.
         if (!voice && c.params?.listUrl) { const listed = await this.providers.voices('custom', c).catch(() => null); if (listed?.voices?.[0]) voice = { name: listed.voices[0].id }; }
+        // Still none where one is needed: what to do, not 「请先选择角色音色」 (there is no role here).
+        if (!voice && /\{\{\s*voice\s*\}\}/.test([c.params?.url, c.params?.body].join('\n'))) throw Error(voiceIsName(c.params) ? '先在下面的「音色」里添加一个音色再试：名字随便起，音色 ID 填服务里的（粘贴音色页的网址也行）' : '先在下面的「音色」里添加一个音色再试：参考音频和它说的话');
         const lang = languageCode(this.settings.general.defaultLanguage || 'zh').split('-')[0] || 'zh';
         const text = ({ zh: '你好，这是一句试音。', ja: 'こんにちは、テストです。', en: 'Hello, this is a test.', ko: '안녕하세요, 테스트입니다.' })[lang] || '你好，这是一句试音。';
         const request = buildRequest('custom', c, { voice: voice ? String(voice.name).trim() : '', language: lang }, { text, emotion: '' });
@@ -3098,19 +3224,35 @@ export class TTSBackend {
         this.assertOpen();
         const { base, notes, error } = cleanAddress(address);
         if (error || !base) return { ok: false, message: error || '先填服务的地址', notes };
-        const reach = await reachService(base, this.providers.customTools(this.customActive()));
+        const reach = await reachService(base, { ...this.providers.customTools(this.customActive()), alsoTry: API_PROBES });
         return reach.via ? { ok: true, base, notes, via: reach.via } : { ok: false, base, notes, ...explainReach(reach, base) };
     }
     /** 自动识别: which service answers there, and the settings for it (nothing is saved here). */
     async customDetect(address) {
         const reach = await this.customReach(address);
         if (!reach.ok) return reach;
+        const found = await detectService(reach.base, this.customAsk(reach));
+        // The empty request went with an id (Idempotency-Key) and got there (the service lets pages send one, or the tavern
+        // asked): every line carries one, and a service that keeps ids does not make a line twice when asked again.
+        if (found?.id === 'openai' && found.ids && !/idempotency-key/i.test(found.params.headers || '')) found.params.headers = [found.params.headers, 'Idempotency-Key: {{id}}'].filter(Boolean).join('\n');
+        return { ...reach, found };
+    }
+    /** How a service that can be reached is asked while it is set up (through the tavern when only it reaches it). */
+    customAsk(reach) {
         const tools = this.providers.customTools(this.customActive());
-        const ask = async path => {
+        return async (path, init) => {
             const target = /^https?:/i.test(path) ? path : reach.base + path;
-            try { const r = await (reach.via === 'proxy' ? tools.proxy(target) : tools.direct(target)); return { status: r.status, ok: r.ok, type: r.headers.get('content-type') || '', text: await r.text() }; } catch { return null; }
+            try { const r = await (reach.via === 'proxy' ? tools.proxy(target, init) : tools.direct(target, init)); return { status: r.status, statusText: r.statusText, ok: r.ok, type: r.headers.get('content-type') || '', text: await r.text() }; } catch { return null; }
         };
-        return { ...reach, found: await detectService(reach.base, ask) };
+    }
+    /** The voices a service lists, for settings that name no list (picked by hand, read from a curl command): {listUrl, count} or null. */
+    async customFindVoices(params) {
+        this.assertOpen();
+        if (String(params?.listUrl || '').trim() || !voiceIsName(params)) return null;
+        let origin = '';
+        try { origin = new URL(String(params.url || '').replace(/^\/proxy\//, '')).origin; } catch { return null; }
+        const reach = await this.customReach(origin);
+        return reach.ok ? findVoiceList(reach.base, this.customAsk(reach)) : null;
     }
     /** No address typed: the addresses where something answers, among those such services usually take. */
     async customScan() {
@@ -3240,7 +3382,7 @@ export class TTSBackend {
             status: () => this.player.snapshot(), subscribe: listener => this.subscribe(listener), levels: () => this.player.sink.levels(),
             pendingRole: () => this.player.pending, stop: () => this.player.stop(), toggle: () => this.player.toggle(), resume: () => this.player.continuePending(),
             customSetList: () => this.customSetList(), saveCustomSet: patch => this.saveCustomSet(clone(patch || {})), selectCustomSet: id => this.selectCustomSet(String(id)), deleteCustomSet: id => this.deleteCustomSet(String(id)),
-            audition: route => this.audition(route), customTest: connection => this.customTest(clone(connection || null)), customReach: address => this.customReach(String(address ?? '')), customDetect: address => this.customDetect(String(address ?? '')), customScan: () => this.customScan(), lineState: line => this.player.lineState(line),
+            audition: route => this.audition(route), customTest: connection => this.customTest(clone(connection || null)), customReach: address => this.customReach(String(address ?? '')), customDetect: address => this.customDetect(String(address ?? '')), customScan: () => this.customScan(), customFindVoices: params => this.customFindVoices(clone(params || {})), lineState: line => this.player.lineState(line),
             setVolume: value => this.savePhone({ volume: value }), getVolume: () => this.player.getVolume(),
             cacheStats: () => this.cache.stats(), clearCache: () => this.clearCache(), listAudio: () => this.cache.list(),
             deleteAudio: async key => { if (this.player.requestKey === key) this.player.stop('音频已删除'); if (this.prepared?.key === key) this.prepared = null; await this.cache.remove(key); this.emit('library', { collection: 'cache' }); },
@@ -3259,7 +3401,8 @@ export class TTSBackend {
             listLooks: () => this.listLooks(), getLook: id => this.apps.get(String(id)), saveLook: look => this.saveLook(look), renameLook: (id, patch) => this.renameLook(String(id), clone(patch || {})), deleteLook: id => this.deleteLook(String(id)), lookFiles: id => this.lookFiles(String(id)),
             generatedPhotos: () => this.generatedPhotos().then(({ count, bytes, sources }) => ({ count, bytes, sources: Object.fromEntries(Object.entries(sources).map(([k, { ids, ...rest }]) => [k, rest])) })), deleteGeneratedPhotos: sources => this.deleteGeneratedPhotos(sources),
             saveMoments: patch => this.saveMoments(clone(patch)), saveCalls: patch => this.saveCalls(clone(patch)),
-            saveAssistant: patch => this.saveAssistant(patch), assistantThreads: () => this.assistantThreads(), assistantThread: id => this.assistantThread(id),
+            saveAssistant: patch => this.saveAssistant(patch), assistantThreads: query => this.assistantThreads(query), assistantThread: id => this.assistantThread(id),
+            forkAssistantThread: (id, mid) => this.forkAssistantThread(id, mid),
             newAssistantThread: () => this.newAssistantThread(), appendAssistantMessage: (id, value, expectedLastId, expectedRevision) => this.appendAssistantMessage(id, value, expectedLastId, expectedRevision),
             renameAssistantThread: (id, title) => this.renameAssistantThread(id, title),
             editAssistantMessage: (id, mid, text, expectedText) => this.editAssistantMessage(id, mid, text, expectedText),
@@ -3277,7 +3420,7 @@ export class TTSBackend {
             saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId, options) => this.searchMusic(query, clone(sourceId), clone(options || {})), groupSongs: (sourceId, kind, id, page, options) => this.groupSongs(sourceId, kind, String(id), Number(page) || 0, clone(options || {})),
             listHeard: () => this.listHeard(), forgetHeard: ids => this.forgetHeard([...(ids || [])]), clearHeard: () => this.clearHeard(), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
             listSongs: () => this.listSongs(), songBlob: id => this.songBlob(id), addSongs: list => this.addSongs(list), updateSong: (id, patch) => this.updateSong(id, clone(patch || {})), deleteSongs: ids => this.deleteSongs([...(ids || [])]),
-            addSongsTo: (id, list) => this.addSongsTo(String(id), list), listPlaylists: () => this.listPlaylists(), savePlaylist: value => this.savePlaylist(clone(value || {})), deletePlaylist: (id, options) => this.deletePlaylist(String(id), clone(options || {})),
+            addSongsTo: (id, list) => this.addSongsTo(String(id), list), addSongFiles: (list, options) => this.addSongFiles(list, clone(options || {})), addLyrics: list => this.addLyrics(clone(list || [])), listPlaylists: () => this.listPlaylists(), savePlaylist: value => this.savePlaylist(clone(value || {})), deletePlaylist: (id, options) => this.deletePlaylist(String(id), clone(options || {})),
             addToPlaylist: (id, ids) => this.addToPlaylist(String(id), [...(ids || [])]), removeFromPlaylist: (id, ids) => this.removeFromPlaylist(String(id), [...(ids || [])]),
             saveSounds: patch => this.saveSounds(clone(patch)), listSounds: () => this.listSounds(), soundBlob: id => this.soundBlob(id), addSounds: list => this.addSounds(list), updateSound: (id, patch) => this.updateSound(id, clone(patch || {})), deleteSounds: ids => this.deleteSounds([...(ids || [])]),
             packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')), saveTagger: patch => this.saveTagger(clone(patch)), taggerTest: () => this.taggerTest(), tagImage: (blob, options) => this.tagImage(blob, clone(options || {})), linkCacheInfo: () => this.linkCacheInfo(), clearLinkCache: () => this.clearLinkCache(),

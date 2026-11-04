@@ -237,6 +237,26 @@ button[aria-pressed=true] small,.primary small{color:inherit;opacity:.85}
 .assistant-html>details{background:transparent;border:0;border-radius:0;box-shadow:none;margin:4px 0 0;padding:0}
 .assistant-html summary{cursor:pointer;min-height:24px;font-size:11px;font-weight:400;color:var(--ink2);padding:2px 0}
 .assistant-preview{display:block;border:0;background:var(--card);width:100%;height:24px;min-height:24px;resize:none;border-radius:0;margin:0}
+/* 0.9.24: a widget's 全屏 (its corner) and 下载 (beside 查看源码); a reply not whole and 接着写; the conversation search; files dragged in */
+.assistant-html{position:relative}
+.assistant-html-full{position:absolute;top:4px;right:4px;z-index:2;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:color-mix(in srgb,var(--card) 82%,transparent);color:var(--ink2);box-shadow:0 1px 4px rgba(0,0,0,.12);cursor:pointer;opacity:.85}
+.assistant-html-full svg{width:15px;height:15px}
+.assistant-html-full:hover,.assistant-html-full:focus-visible{opacity:1;color:var(--accent-ink)}
+.assistant-html.is-full{position:fixed;inset:0;z-index:44;margin:0;padding-top:44px;display:flex;flex-direction:column;background:var(--card)}
+.assistant-html.is-full>[data-preview-mid]{flex:1;min-height:0}
+.assistant-html.is-full .assistant-preview{height:100%!important}
+.assistant-html.is-full>.assistant-html-full{top:6px;right:10px;width:32px;height:32px}
+.assistant-html.is-full>.assistant-html-source{display:none}
+.assistant-html-source{position:relative}
+.assistant-html-source>details{background:transparent;border:0;border-radius:0;box-shadow:none;margin:4px 0 0;padding:0}
+.assistant-html-source>details>summary:after{width:6px;height:6px;margin-left:6px}
+.assistant-html-source>[data-action=html-save]{position:absolute;top:4px;right:0;min-height:24px;padding:0 4px;gap:3px;font-size:11px;color:var(--ink2)}
+.assistant-html-source>[data-action=html-save] svg{width:13px;height:13px}
+.assistant-cut{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:7px;border-top:1px dashed var(--line);font-size:11px;color:var(--ink2)}
+.assistant-cut .secondary{min-height:28px;padding:3px 10px;font-size:11px;gap:4px}
+.assistant-cut svg{width:13px;height:13px}
+.assistant-thread-search{margin:0 0 10px}
+.assistant-composer.is-drop{outline:2px dashed var(--accent);outline-offset:-6px;background:var(--accent-soft)}
 .assistant-wave{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin:0 3px;padding:3px 5px;border:0;background:transparent;color:var(--accent-ink);border-radius:8px;min-width:32px;min-height:30px;cursor:pointer}
 .assistant-wave:hover,.assistant-wave:focus-visible{background:var(--accent-soft)}
 .assistant-wave>span{display:inline-flex;align-items:center;justify-content:center;gap:3px;width:22px;height:20px}
@@ -2398,6 +2418,7 @@ button.aui-card:active{transform:scale(.98)}
 .music-row.picked .music-check{background:var(--accent-btn);box-shadow:none}.music-check svg{width:14px;height:14px}
 .music-pickbar{flex-wrap:wrap;gap:8px}.music-picked{flex:1 0 100%;font-size:13px;font-weight:700;color:var(--ink2)}
 .music-tools>.icon-button{flex:none}.music-tools>.primary,.music-tools>.secondary{padding-left:12px;padding-right:12px;gap:4px}
+.music-adding{margin:-2px 0 10px}.file-button:has(input:disabled){opacity:.55;cursor:progress}
 .music-pick{width:100%;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .music-search input,.music-filter input{flex:1;min-width:0;min-height:44px;border:2px solid var(--line);border-radius:999px;padding:9px 16px;background:var(--card);color:var(--ink);font:inherit;font-size:16px;-webkit-appearance:none;appearance:none;box-shadow:none}
 .music-search input::-webkit-search-decoration,.music-filter input::-webkit-search-decoration{-webkit-appearance:none}
@@ -2450,6 +2471,8 @@ button.aui-card:active{transform:scale(.98)}
 @media (prefers-reduced-motion:reduce){.music-now .music-cover::before,.music-tile-disc::before{animation:none}}
 .music-lyrics{overflow-x:hidden}
 .music-selfhost{display:flex;gap:8px;align-items:center}.music-selfhost input{flex:1;min-width:0}.music-selfhost button{flex:none;white-space:nowrap}
+.music-selfhost textarea.custom-box{flex:1;min-width:0;resize:none;field-sizing:content;min-height:0;max-height:8.5em;overflow-y:auto}
+.custom-steps{margin:4px 0 0;padding:0 8px 0 2.2em;font-size:12px;line-height:1.6;color:var(--ink2)}
 /* 预设编辑：折起来的部分在标题右边写一句现在的样子；规则一行一条，点开在弹窗里改 */
 .fold-note{margin-left:auto;min-width:0;max-width:58%;font-size:12px;font-weight:600;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}

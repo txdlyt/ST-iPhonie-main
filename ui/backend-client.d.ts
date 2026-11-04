@@ -216,11 +216,11 @@ export interface AssistantSettings {
     memory: MemoryOptions;
 }
 export interface AssistantAttachment { kind: 'text' | 'image'; name: string; size: number; text?: string; data?: string; }
-export interface AssistantMeta { image?: {photoId: string; prompt: string}; elapsedMs: number; requestedModel: string; reportedModel: string; provider: string; reasoning: string; reasoningMs?: number; reasoningFormat?: {prefix: string; suffix: string}; }
+export interface AssistantMeta { image?: {photoId: string; prompt: string}; elapsedMs: number; requestedModel: string; reportedModel: string; provider: string; reasoning: string; reasoningMs?: number; reasoningFormat?: {prefix: string; suffix: string}; /** Not whole: cut by the model's length limit, 停止, an error, or kept only up to the limit. */ cut?: 'length' | 'stopped' | 'error' | 'limit'; }
 export interface AssistantVariant { text: string; at: number; meta?: AssistantMeta; }
 export interface AssistantMessage extends AssistantVariant { id: string; role: 'user' | 'assistant'; attachments?: AssistantAttachment[]; editedAt?: number; variants?: AssistantVariant[]; selected?: number; }
 export interface AssistantThread { id: string; kind: 'assistant'; title: string; titleEdited?: boolean; revision?: number; memoryRevision?: number; restoredAt?: number; createdAt: number; updatedAt: number; at: number; messages: AssistantMessage[]; }
-export interface AssistantThreadSummary extends Omit<AssistantThread, 'messages'> { messageCount: number; preview: string; }
+export interface AssistantThreadSummary extends Omit<AssistantThread, 'messages'> { messageCount: number; preview: string; /** With a search: the words around where it was found. */ match?: string; }
 /** 画风预设: artist and fixed tags sent to NovelAI. */
 export interface DrawStyle { id: string; name: string; artist: string; positive: string; negative: string; /** The 画风 group it is in. */ group?: string; }
 /** A group in the 角色 App; card: the tavern card whose new roles go in it. */
@@ -422,7 +422,7 @@ export interface SongForm { about?: string; who?: string; story?: boolean; instr
 export interface SongDraft { id: string; kind: 'draft'; at: number; updatedAt: number; title: string; style: string; lyrics: string; instrumental: boolean; language: string; who: string; about: string; seconds: number; songs: string[]; state?: 'singing'; note?: string; job?: {engine: string; model: string; task: string; at: number}; }
 export interface SongWorkflowInfo { lyrics: string; style: string; output: string; seconds: number; seeds: number; fields: {at: string; title: string; text: string}[]; }
 export interface SingOption { id: string; name: string; ready: boolean; model: string; price: {free: boolean; text: string}; /** Whether the length asked for (SongDraft.seconds) reaches the service. */ timed: boolean; }
-export interface MusicSong { id: string; kind: 'song'; at: number; title: string; artist: string; origin: 'file' | 'source'; source?: string; songId?: string; lyric?: string; size?: number; mime?: string; }
+export interface MusicSong { id: string; kind: 'song'; at: number; title: string; artist: string; origin: 'file' | 'source'; source?: string; songId?: string; lyric?: string; size?: number; mime?: string; file?: string; }
 export interface MusicFound { source: string; sourceName: string; id: string; title: string; artist: string; }
 /** An album or an artist a search found (an album's artist; how many songs, when the source says). */
 export interface MusicGroup { source: string; sourceName: string; kind: 'album' | 'artist' | 'playlist'; id: string; name: string; artist: string; count: number; }
@@ -821,6 +821,8 @@ export interface BackendFacade {
     customScan(): Promise<string[]>;
     /** 自己的接口 → 试一试: says one line with the first voice of these (unsaved) settings. */
     customTest(connection?: unknown): Promise<{ voice: string; bytes: number; type: string }>;
+    /** The voices a service lists, for settings that name no list (picked by hand, a curl command): where, and how many. */
+    customFindVoices(params: Record<string, unknown>): Promise<{ listUrl: string; count: number } | null>;
     /** 自己的接口's saved sets: never a key, only its last characters. */
     customSetList(): Array<{ id: string; name: string; current: boolean; url: string; service: string; voices: number; configured: boolean; tail: string }>;
     /** With an id: renames that set. Without: a new empty set, in use from now on. */
@@ -918,14 +920,17 @@ export interface BackendFacade {
     saveChatPreset(preset: Partial<ChatPreset> & { name: string }): ChatPreset;
     /** Independent assistant settings; no conversation or model context is saved here. */
     saveAssistant(patch: Partial<AssistantSettings>): AssistantSettings;
-    /** Most recently updated first, independent of the selected story/card. */
-    assistantThreads(): Promise<AssistantThreadSummary[]>;
+    /** Most recently updated first, independent of the selected story/card. With a query: those whose title or words have it. */
+    assistantThreads(query?: string): Promise<AssistantThreadSummary[]>;
     assistantThread(id: string): Promise<AssistantThread | null>;
     newAssistantThread(): Promise<AssistantThread>;
     /** Rejects empty/oversized messages and threads already holding 500 messages. */
     appendAssistantMessage(id: string, message: Pick<AssistantMessage, 'role' | 'text' | 'attachments' | 'meta'>, expectedLastId?: string | null, expectedRevision?: number): Promise<AssistantThread>;
     renameAssistantThread(id: string, title: string): Promise<AssistantThread>;
+    /** A reply's words too (its thinking kept apart); not one with a picture. */
     editAssistantMessage(id: string, messageId: string, text: string, expectedText?: string): Promise<AssistantThread>;
+    /** 从这里新开: a new conversation with the messages up to that one. */
+    forkAssistantThread(id: string, messageId: string): Promise<AssistantThread>;
     deleteAssistantMessage(id: string, messageId: string): Promise<AssistantThread>;
     selectAssistantVariant(id: string, messageId: string, selected: number): Promise<AssistantThread>;
     deleteAssistantThread(id: string): Promise<boolean>;
@@ -966,6 +971,11 @@ export interface BackendFacade {
     updateSong(id: string, patch: { title?: string; artist?: string; lyric?: string }): Promise<MusicSong>;
     /** Adds songs to 全部 and into a 歌单 the user made (kept: how many were not in it yet). */
     addSongsTo(playlistId: string, list: ({ title: string; artist?: string; blob: Blob } | { title: string; artist?: string; source: string; songId: string })[]): Promise<{ added: MusicSong[]; kept: number }>;
+    /** Songs from files picked many at a time: those that cannot be kept are skipped (with why), files here already are
+     *  not kept twice (ids: each song's own; at: the first one's time, the others a millisecond older each). */
+    addSongFiles(list: { title: string; artist?: string; lyric?: string; blob: Blob; file: string }[], options?: { at?: number }): Promise<{ added: MusicSong[]; ids: string[]; same: string[]; skipped: { name: string; why: string }[]; lyrics: number }>;
+    /** .lrc files picked without their songs, given to the 本机的歌 of the same name. */
+    addLyrics(list: { file: string; lyric: string }[]): Promise<{ given: number; missed: string[] }>;
     /** The 歌单 the user made, in the order they were made. */
     listPlaylists(): Promise<MusicPlaylist[]>;
     /** Makes a 歌单 (no id) or renames one. */
