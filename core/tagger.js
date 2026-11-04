@@ -49,7 +49,7 @@ export function groupTags(result) {
     const key = t?.category === 'character' ? 'character' : groupOf(raw);
     buckets.get(key).push({id: 't' + id++, tag: prettyTag(raw), raw, zh: String(t?.zh ?? '').trim(), confidence: Math.min(1, Math.max(0, Number(t?.confidence) || 0)), checked: CHECKED.has(key)});
   }
-  return ORDER.map(([key, label]) => ({key, label, checked: CHECKED.has(key), items: buckets.get(key)})).filter(g => g.items.length);
+  return ORDER.map(([key, label]) => ({key, label, checked: CHECKED.has(key), items: buckets.get(key).sort((a, b) => b.confidence - a.confidence)})).filter(g => g.items.length);
 }
 /** "a, b, c" from items. */
 export const joinTags = items => items.map(i => i.tag).join(', ');

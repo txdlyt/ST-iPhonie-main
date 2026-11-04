@@ -15,7 +15,7 @@
 // (the chat is put away; what the contact sends meanwhile waits as 好友申请 in requests); by 'them': the contact deleted
 // the user (the user's messages are refused until a 好友申请 is accepted).
 // streak (聊天火花): days in a row, up to today or yesterday, on which both the user and the other side wrote.
-import {connectionLost, lostError} from './idb.js';
+import {connectionLost, lostError, breath} from './idb.js';
 
 export const CHAT_STORE_LIMITS = Object.freeze({messages: 1000, text: 4000, members: 20, fileText: 30000});
 const KINDS = ['text', 'voice', 'photo', 'sticker', 'system', 'redpacket', 'transfer', 'location', 'pat', 'dice', 'notice', 'recall', 'call', 'gift', 'song', 'file'];
@@ -99,7 +99,7 @@ function cleanMessage(m, id, at) {
     if (!out.fileText.trim()) throw fail('文件里没有能读的文字');
   }
   // A song shared: what it is (played from the 歌单 or the user's music sources when tapped).
-  if (kind === 'song') { const s = m.song && typeof m.song === 'object' ? m.song : {}; out.song = {title: clip(s.title, 120).trim(), artist: clip(s.artist, 120).trim()}; if (!out.song.title) throw fail('歌曲缺少名字'); }
+  if (kind === 'song') { const s = m.song && typeof m.song === 'object' ? m.song : {}; out.song = {title: clip(s.title, 120).trim(), artist: clip(s.artist, 120).trim(), ...(s.draft ? {draft: clip(s.draft, 200)} : {})}; if (!out.song.title) throw fail('歌曲缺少名字'); }
   // A sticker keeps its address, so it still shows after it leaves the collection.
   if (kind === 'sticker') { out.text = clip(m.text, 20); out.url = /^https?:\/\//i.test(String(m.url || '')) ? clip(m.url, 2000) : ''; }
   if (kind === 'pat' || kind === 'notice') out.target = clip(m.target, 40).trim() || 'me';
@@ -187,7 +187,7 @@ export class ChatStore {
     } catch (error) {
       if (error?.code !== 'STORAGE_LOST' || this.#closed) throw error;
       if (this.#db === db) { try { db.close(); } catch {} this.#db = null; }
-      if (again) return this.#run(mode, work, false);
+      if (again) { await breath(); return this.#run(mode, work, false); }
       throw error;
     }
   }

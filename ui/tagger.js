@@ -3,19 +3,27 @@
 import {esc, btn} from './common.js';
 import {groupTags, joinTags} from '../core/tagger.js';
 
-/** A big picture sent smaller (the tagger looks at 448 pixels anyway): quicker to upload, and under what a server takes at once. */
+/**
+ * What is sent to the tagger: a big picture smaller (it looks at 448 pixels anyway, and a server takes only so much at once),
+ * and a format the server may not read (HEIC from an iPhone, GIF, no type at all) turned into a jpeg.
+ */
 export async function shrinkForTagger(blob, {side = 1280, over = 1.5 * 1024 * 1024} = {}) {
-  if (!(blob instanceof Blob) || !/^image\/(?:png|jpe?g|webp|bmp)$/i.test(blob.type) || blob.size <= over) return blob;
+  if (!blob || typeof blob.size !== 'number') return blob;
+  const plain = /^image\/(?:jpe?g|png|webp)$/i.test(blob.type);
+  if (plain && blob.size <= over) return blob;
   try {
     const bitmap = await createImageBitmap(blob);
     const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const draw = canvas.getContext('2d');
+    draw.fillStyle = '#fff';
+    draw.fillRect(0, 0, canvas.width, canvas.height);
+    draw.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close?.();
     const small = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
-    return small && small.size < blob.size ? small : blob;
+    return small && (!plain || small.size < blob.size) ? small : blob;
   } catch { return blob; }
 }
 
@@ -23,7 +31,7 @@ export async function shrinkForTagger(blob, {side = 1280, over = 1.5 * 1024 * 10
 function picked(groups, root) {
   const out = {groups: {}};
   for (const g of groups) {
-    const items = g.items.filter(i => root.querySelector(`[data-tag="${i.id}"]`)?.checked);
+    const items = g.items.filter(i => root.querySelector(`[data-tag="${i.id}"]`)?.getAttribute('aria-pressed') === 'true');
     out.groups[g.key] = joinTags(items);
   }
   const part = keys => keys.map(k => out.groups[k]).filter(Boolean).join(', ');
@@ -41,13 +49,24 @@ export function openTagSheet(ctx, api, {blob, title = '图片反推 tag', action
   const d = ctx.dialog(title, '<p class="help-copy">正在识别……</p>');
   let groups = [];
   const failed = message => { d.body.innerHTML = `<p class="help-copy">${esc(message)}</p><div class="actions">${btn('tag-retry', '再试一次', 'secondary')}</div>`; };
+  const pills = g => g.items.map(i => `<button type="button" class="tag-pill${i.checked ? ' on' : ''}" data-tag="${i.id}" aria-pressed="${i.checked}">${esc(i.tag)}${i.zh ? `<small>${esc(i.zh)}</small>` : ''}</button>`).join('');
+  const count = g => { const on = g.items.filter(i => d.body.querySelector(`[data-tag="${i.id}"]`)?.getAttribute('aria-pressed') === 'true').length; return {on, all: on === g.items.length}; };
+  const refresh = () => {
+    for (const g of groups) {
+      const {on, all} = count(g), head = d.body.querySelector(`[data-tag-head="${g.key}"]`);
+      if (!head) continue;
+      head.querySelector('small').textContent = `已选 ${on}/${g.items.length}`;
+      const link = head.querySelector('[data-tag-group]');
+      link.textContent = all ? '全不选' : '全选';
+      link.dataset.on = all ? '0' : '1';
+    }
+  };
   const show = result => {
     groups = groupTags(result);
     if (!groups.length) { d.body.innerHTML = `<p class="help-copy">没有识别出 tag。图里可能没有人物，或者识别阈值太高（设置里的「图片反推」可以调低）。</p><div class="actions">${btn('tag-retry', '再试一次', 'secondary')}</div>`; return; }
-    d.body.innerHTML = `<p class="help-copy">勾上要的 tag。性别体型、头发、眼睛默认勾上，服装和其他默认不勾；每个 tag 下面是中文和把握。</p>
-      ${groups.map(g => `<div class="tag-group"><div class="tag-group-head"><strong>${esc(g.label)}</strong><span><button type="button" class="chip-button" data-tag-group="${g.key}" data-on="1">全选</button><button type="button" class="chip-button" data-tag-group="${g.key}" data-on="0">全不选</button></span></div>
-        <div class="tag-grid">${g.items.map(i => `<label class="tag-chip"><input type="checkbox" data-tag="${i.id}"${i.checked ? ' checked' : ''}><span>${esc(i.tag)}<small>${esc([i.zh, Math.round(i.confidence * 100) + '%'].filter(Boolean).join(' · '))}</small></span></label>`).join('')}</div></div>`).join('')}
+    d.body.innerHTML = `${groups.map(g => `<div class="tag-group"><div class="tag-group-head" data-tag-head="${g.key}"><strong>${esc(g.label)}<small></small></strong><button type="button" class="tag-link" data-tag-group="${g.key}" data-on="1">全选</button></div><div class="tag-flow">${pills(g)}</div></div>`).join('')}
       <div class="actions tag-actions">${actions.map((a, n) => btn('tag-act', esc(a.label), a.style || 'secondary', `data-n="${n}"`)).join('')}</div>`;
+    refresh();
   };
   const run = async () => {
     d.body.innerHTML = '<p class="help-copy">正在识别，大概要几秒……</p>';
@@ -55,10 +74,22 @@ export function openTagSheet(ctx, api, {blob, title = '图片反推 tag', action
     catch (error) { failed(error.message); }
   };
   d.body.addEventListener('click', async e => {
+    const pill = e.target.closest('.tag-pill');
+    if (pill) {
+      e.preventDefault();
+      pill.setAttribute('aria-pressed', String(pill.getAttribute('aria-pressed') !== 'true'));
+      pill.classList.toggle('on');
+      refresh();
+      return;
+    }
     const group = e.target.closest('[data-tag-group]');
     if (group) {
       e.preventDefault();
-      for (const i of groups.find(g => g.key === group.dataset.tagGroup)?.items || []) { const box = d.body.querySelector(`[data-tag="${i.id}"]`); if (box) box.checked = group.dataset.on === '1'; }
+      for (const i of groups.find(g => g.key === group.dataset.tagGroup)?.items || []) {
+        const box = d.body.querySelector(`[data-tag="${i.id}"]`);
+        if (box) { box.setAttribute('aria-pressed', group.dataset.on === '1' ? 'true' : 'false'); box.classList.toggle('on', group.dataset.on === '1'); }
+      }
+      refresh();
       return;
     }
     const b = e.target.closest('[data-action]');

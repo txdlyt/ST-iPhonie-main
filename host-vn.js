@@ -3,6 +3,7 @@
 // (settings.vn.cast), so every device sees them. A character can have a VRM or Live2D model instead (vn-model.js), kept
 // as a file in the tavern's user/files the same way.
 import {storySteps, userSteps, pickLook, inlinePictures, editLook} from './core/vn.js';
+import {ownBlob} from './core/compat.js';
 import {parsePictures, tavernPicture} from './core/draw.js';
 import {storyMessage, storyReply} from './core/outgoing.js';
 import {parseSounds} from './core/sounds.js';
@@ -158,7 +159,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
       doc, title: title(), subtitle: start > 0 ? `从第 ${start} 楼开始` : '从头开始', backdrop: backdrop(start), scene: chatBackground(),
       look: vn,
       source: {next: () => { while (cursor < chat().length) { const id = cursor++, steps = stepsOf(id); if (steps?.length) return {id, steps}; } return null; }},
-      voice: {play: s => play(s.id, s.line), narrate: s => narrate(s.text), stop, on: voiceOn, mouth},
+      voice: {play: s => play(s.id, s.line), narrate: s => narrate(s.text), stop, on: voiceOn, enable: () => backend.updateGeneral({voiceEnabled: true}), mouth},
       models: {
         has: name => !!currentModel(vn().cast?.[castKey(name)]),
         load: async name => {
@@ -241,7 +242,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
   async function ownFile(file) {
     const name = String(file?.name || ''), type = String(file?.type || '');
     let local = null;
-    try { local = Blob.prototype.slice.call(file, 0, undefined, type); } catch {}
+    try { local = ownBlob(file, type); } catch {}
     if (!local && typeof file?.arrayBuffer === 'function') local = new Blob([await file.arrayBuffer()], {type});
     if (!local?.size) throw Error('模型文件无效（读不出内容）');
     return new File([local], name, {type});

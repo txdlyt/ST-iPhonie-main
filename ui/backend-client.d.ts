@@ -77,6 +77,8 @@ export interface Route {
     appearance?: string;
     /** 固定负面: tags kept away from this character in every picture. */
     negative?: string;
+    /** 参考图: what GPT draws this character from, two tavern files; changed only by setRoleRef / clearRoleRef. */
+    ref?: { thumb: string; full: string };
     /** The group it is in, in the 角色 App (Settings.roleGroups). */
     group?: string;
     /** Taken out of a group by hand: it does not go in its card's group by itself. */
@@ -99,6 +101,8 @@ export interface Connection {
     relay?: string;
     /** Fish relay only: Fish's own paths ('fish') or OpenAI's /v1/audio/speech ('openai'). */
     relayApi?: 'fish' | 'openai';
+    /** 自己的接口 only: its saved sets; the one in use is also `params` (changed by the custom set methods only). */
+    configs?: { active: string; presets: Array<{ id: string; name: string; params: Record<string, unknown> }> };
     /** Keys are the engine schema field keys, including dotted names. */
     params: Record<string, unknown>;
     parametersVersion?: number;
@@ -310,6 +314,8 @@ export interface DrawQuote { params: DrawParams; clamped: boolean; /** null when
     engine?: DrawEngine; paid?: boolean; }
 export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on a 5x5 grid, -1 lets the model decide. */ position: number; /** V5: anywhere in the picture, 0-1 (other models take the nearest grid cell). */ center?: { x: number; y: number }; /** false: left out of this picture. */ enabled?: boolean; }
 export interface DrawInput { prompt: string; negative?: string; characters?: DrawCharacter[]; params?: Partial<DrawParams>; allowPaid?: boolean; name?: string; /** Queue key; the same key joins the waiting job. */ key?: string; label?: string;
+    /** GPT: the 角色参考图 of the people in it (pictureInputs), by the characters' order; null for one with none. */
+    roleRefs?: Array<{ name: string; path: string } | null>;
     /** NovelAI: 图生图 (no mask) or 局部重绘 (mask: white where it is drawn again); the picture is drawn at the base's size. */
     base?: { image: string; width: number; height: number; strength: number; noise?: number; mask?: string; /** 局部重绘: put the untouched parts back as they were. */ overlay?: boolean; /** 增强. */ enhance?: boolean; /** 增强 at 最大 (V5): the picture as it is, doubled by NovelAI. */ upscaled?: boolean } | null;
     /** 边画边看 when it is switched on: the steps and the picture on its way come as 'draw' events. */
@@ -410,8 +416,12 @@ export interface ChatMessage { id: string; from: 'me' | string; kind: ChatKind; 
 /** A music source the user added: search and link addresses ({{query}}, {{id}}) and where the answers keep each field. */
 export interface MusicSource { id: string; name: string; enabled: boolean; search: string; url: string; lyric: string; listPath: string; idPath: string; titlePath: string; artistPath: string; urlPath: string; lyricPath: string; direct: boolean; albumSearch: string; albumListPath: string; albumSongs: string; albumSongsPath: string; artistSearch: string; artistListPath: string; artistSongs: string; artistSongsPath: string; playlistSearch: string; playlistListPath: string; playlistSongs: string; playlistSongsPath: string; }
 /** 音乐: bgm 'off' | 'tap' | 'auto' (the story picks songs with <bgm>), its rule, the volume, turning down for voice lines, songs shared in chats, how lists go on, whether some of the 歌单 goes with the rule as a taste. */
-export interface MusicSettings { bgm: 'off' | 'tap' | 'auto'; rule: string; volume: number; duck: boolean; share: boolean; mode: 'order' | 'shuffle' | 'one'; taste: boolean; sources: MusicSource[]; }
+export interface MusicSettings { writing: Omit<SongForm, 'about' | 'who' | 'instrumental'>; sing: {engine: string; lyriaModel: string; lyriaUrl: string; replicateModel: string; comfyOn: boolean; comfyOwn: boolean; comfyWorkflow: string; comfyName: string; comfyMap: {lyrics: string; style: string}}; bgm: 'off' | 'tap' | 'auto'; rule: string; volume: number; duck: boolean; share: boolean; mode: 'order' | 'shuffle' | 'one'; taste: boolean; sources: MusicSource[]; }
 /** A 歌单 song: a file on this device, or a song of a source (its link is fetched when it plays). */
+export interface SongForm { about?: string; who?: string; story?: boolean; instrumental?: boolean; language?: string; genre?: string; wording?: string; voice?: string; length?: 'short' | 'mid' | 'long'; }
+export interface SongDraft { id: string; kind: 'draft'; at: number; updatedAt: number; title: string; style: string; lyrics: string; instrumental: boolean; language: string; who: string; about: string; seconds: number; songs: string[]; state?: 'singing'; note?: string; job?: {engine: string; model: string; task: string; at: number}; }
+export interface SongWorkflowInfo { lyrics: string; style: string; output: string; seconds: number; seeds: number; fields: {at: string; title: string; text: string}[]; }
+export interface SingOption { id: string; name: string; ready: boolean; model: string; price: {free: boolean; text: string}; /** Whether the length asked for (SongDraft.seconds) reaches the service. */ timed: boolean; }
 export interface MusicSong { id: string; kind: 'song'; at: number; title: string; artist: string; origin: 'file' | 'source'; source?: string; songId?: string; lyric?: string; size?: number; mime?: string; }
 export interface MusicFound { source: string; sourceName: string; id: string; title: string; artist: string; }
 /** An album or an artist a search found (an album's artist; how many songs, when the source says). */
@@ -742,6 +752,9 @@ export interface BackendFacade {
     /** 效果图 of a 画风, from any picture: kept as files in the tavern. */
     setStyleCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
     clearStyleCover(id: string): void;
+    /** 角色参考图: kept at once, as tavern files; the role must be saved first. */
+    setRoleRef(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
+    clearRoleRef(id: string): void;
     /** The 提示词片段 list in a new order with its 分类, in the same shape (a 片段's id under `style`). */
     arrangeChunks(tree: Array<{style: string} | {group: Partial<DrawStyleGroup>; styles: string[]}>): DrawSettings;
     saveDrawPreset(preset: Omit<DrawPreset, 'id'> & { id?: string }): DrawPreset;
@@ -769,7 +782,7 @@ export interface BackendFacade {
     /** Makes the pictures of saved vibes small (encodings stay): how many changed, and the bytes before and after. */
     compactVibes(): Promise<{ count: number; before: number; after: number }>;
     /** Imports .naiv4vibe, .naiv4vibebundle, 智绘姬 exports and pictures; groups in the files become groups. */
-    importVibes(files: ArrayLike<File>, options?: { names?: boolean }): Promise<{ added: number; updated: number; renamed: number; groups: number; errors: Array<{ name: string; message: string }> }>;
+    importVibes(files: ArrayLike<File>): Promise<{ added: number; updated: number; groups: number; errors: Array<{ name: string; message: string }> }>;
     updateVibe(id: string, patch: { name?: string; strength?: number; /** 提取信息量; a vibe without its picture cannot change it. */ ie?: number }): Promise<VibeSummary>;
     /** Vibes read from a picture's parameters: a new group in use, or added to the group in use. How many, or null when none. */
     importPictureVibes(list: Array<{ encoding: string; strength: number; ie: number }>, options?: { model?: string; name?: string; append?: boolean }): Promise<number | null>;
@@ -808,6 +821,13 @@ export interface BackendFacade {
     customScan(): Promise<string[]>;
     /** 自己的接口 → 试一试: says one line with the first voice of these (unsaved) settings. */
     customTest(connection?: unknown): Promise<{ voice: string; bytes: number; type: string }>;
+    /** 自己的接口's saved sets: never a key, only its last characters. */
+    customSetList(): Array<{ id: string; name: string; current: boolean; url: string; service: string; voices: number; configured: boolean; tail: string }>;
+    /** With an id: renames that set. Without: a new empty set, in use from now on. */
+    saveCustomSet(patch?: { id?: string; name?: string }): { id: string; name: string; current: boolean; url: string; service: string; voices: number; configured: boolean; tail: string };
+    selectCustomSet(id: string): void;
+    /** Its key goes too; roles that used it follow the set in use. At least one set stays. */
+    deleteCustomSet(id: string): void;
     lineState(line: DialogueLine): Promise<LineState>;
     /** Persists the volume; valid values are 0 through 1. */
     setVolume(value: number): Promise<PhonePreferences>;
@@ -926,6 +946,21 @@ export interface BackendFacade {
     musicLink(sourceId: string | Partial<MusicSource>, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     musicLyric(sourceId: string, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     listSongs(): Promise<MusicSong[]>;
+    /** 写歌: the songs written, newest first. */
+    listSongDrafts(): Promise<SongDraft[]>;
+    getSongDraft(id: string): Promise<SongDraft | null>;
+    saveSongDraft(value: Partial<SongDraft>): Promise<SongDraft>;
+    deleteSongDrafts(ids: string[]): Promise<boolean>;
+    /** Who can sing this song, and about what it costs each. */
+    singOptions(draft?: Partial<SongDraft>): SingOption[];
+    /** Sings a draft; resolves when it is done, with the song's id (null when it did not come). Needs allowPaid when it costs money. */
+    singDraft(id: string, options: {engine: string; allowPaid?: boolean}): Promise<string | null>;
+    cancelSing(id: string): boolean;
+    /** A song made elsewhere, back to its draft and into the 歌单. */
+    importSongFile(id: string, file: Blob): Promise<string>;
+    songComfyCheck(): Promise<{way: string; models?: {kind: string; names?: string[]; unsure?: boolean}; problem?: string; own?: SongWorkflowInfo; problems?: string[]}>;
+    prepareSongWorkflow(source: {text: string}): Promise<SongWorkflowInfo & {workflow: string}>;
+    songRecentRuns(): Promise<{id: string; label: string; graph: string}[]>;
     songBlob(id: string): Promise<Blob | null>;
     addSongs(list: ({ title: string; artist?: string; blob: Blob } | { title: string; artist?: string; source: string; songId: string })[]): Promise<MusicSong[]>;
     updateSong(id: string, patch: { title?: string; artist?: string; lyric?: string }): Promise<MusicSong>;
@@ -990,7 +1025,8 @@ export interface BackendFacade {
     /** Checks the Fish relay (or Fish itself): the speech path and the voice list; status 0 = no answer (address, CORS, HTTPS). */
     fishCatalog(): Promise<boolean>;
     fishProbe(): Promise<{ relay: boolean; base: string; openaiUrl: string; api: 'fish' | 'openai'; detected: '' | 'fish' | 'openai'; speech: { status: number; ok: boolean }; compat: { status: number; ok: boolean }; openai: { status: number; ok: boolean }; voices: { status: number; ok: boolean } }>;
-    naiProbe(): Promise<{ relay: boolean; draw: { ok: boolean; status: number }; subscription: { ok: true; tier: number } | { ok: false; status: number; message: string } }>;
+    /** draw.reason: why a relay gave no answer at all; draw.via 'proxy': only the tavern's /proxy/ reaches it, and drawing goes that way. */
+    naiProbe(): Promise<{ relay: boolean; draw: { ok: boolean; status: number; reason?: string; via?: 'proxy' }; subscription: { ok: true; tier: number } | { ok: false; status: number; message: string } }>;
     saveMoments(patch: Partial<Pick<MomentsSettings, 'auto' | 'every' | 'dailyMax' | 'images' | 'replyToMe'>>): MomentsSettings;
     /** Newest first. */
     listMoments(): Promise<MomentPost[]>;
@@ -1198,7 +1234,6 @@ export interface BackendAPI extends BackendFacade {
     callRetry(): Promise<void>;
     /** The tavern's own avatar pictures: the current persona's, and each character card's by name (URLs). */
     tavernAvatars(): { me: string; characters: Record<string, string> };
-    /** How many single vibes and groups 智绘姬 (st-chatu8) has in this tavern; 0 when it is not installed. */
     /** 论坛: new posts and the 热搜; replies to the user's post; answers to the user's reply. */
     forumRefresh(): Promise<ForumPost[]>;
     forumReact(id: string): Promise<ForumPost>;
@@ -1207,6 +1242,11 @@ export interface BackendAPI extends BackendFacade {
     /** 查手机: looks into a character's phone (a new snapshot). */
     /** keep: 接着上次看 — only what is new since last time, put onto the phone as last seen. */
     peekLook(name: string, keep?: boolean): Promise<PeekSnapshot>;
+    /** 写歌: the text model writes the words and the style. */
+    songWrite(form: SongForm): Promise<SongDraft>;
+    songRewrite(id: string, wish: string): Promise<SongDraft>;
+    songWriteFor(threadId: string, form: SongForm): Promise<SongDraft>;
+    songBusy(): boolean;
     /** 立即整理: writes up what is due in the chat's memory; resolves with how many summaries were written. */
     memoryTidy(threadId: string): Promise<number>;
     memoryStatus(threadId: string): MemoryStatus;
@@ -1218,12 +1258,9 @@ export interface BackendAPI extends BackendFacade {
     /** Draws one album photo of a character's phone with NovelAI; allowPaid when it would cost Anlas. */
     /** index 'wallpaper' draws the wallpaper. */
     peekDraw(name: string, index: number | 'wallpaper', allowPaid?: boolean): Promise<string>;
-    chatu8Vibes(): number;
     /** The World Info books turned on now (global, character, chat, persona) with their entries that are on, for picking
      *  what the phone leaves out. Entry ids are "book#uid". */
     loreBooks(): Promise<Array<{ name: string; from: string[]; entries: Array<{ id: string; title: string; keys: string[]; constant: boolean; preview: string }> }>>;
-    /** Imports every vibe and group 智绘姬 keeps (read only: nothing of 智绘姬's changes). */
-    importChatu8(): Promise<{ added: number; updated: number; renamed: number; groups: number; errors: Array<{ name: string; message: string }> }>;
     /** On a computer the phone is a floating window beside the story (false when it is full screen). */
     panelFloating(): boolean;
     /** Moves the floating phone by its top bar, in screen coordinates; 'reset' puts it back at the right edge. */
