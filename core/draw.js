@@ -21,6 +21,7 @@ import {strength as vibeStrength} from './vibes.js';
 import {normalizeGrid} from './nai-grid.js';
 import {tidyGroups, layerTree} from './layers.js';
 import {DRAW_ENGINES, DRAW_ENGINE_NAMES, defaultGpt, normalizeGpt, defaultComfy, normalizeComfy} from './image-engines.js';
+import {defaultPixai, normalizePixai} from './pixai.js';
 import {escapeHTML, isPlaceholderRole} from './protocol.js';
 import {baibaiDrawPreset, baibaiMessages, baibaiBodies, baibaiOutfits, isBaibai} from './draw-baibai.js';
 import {OUTFIT_RULE, outfitBlock, outfitLines} from './outfits.js';
@@ -40,7 +41,7 @@ export const DEFAULT_DRAW_ENTRIES = Object.freeze([
     "{{出图格式}}",
     "只有「名字」那一段保持剧情里的原文写法，其余都用英文。不要写画师、质量词和通用负面词，插件会自己加。"
   ].join('\n')},
-  {id: 'lang', title: '用 tag 写', engines: ['nai', 'comfy'], text: "一律用英文 danbooru tag，逗号分隔，越具体越好——画图模型认得的是 tag，不认得句子，也不认得剧情里的人名。不写英文句子。"},
+  {id: 'lang', title: '用 tag 写', engines: ['nai', 'comfy', 'pixai'], text: "一律用英文 danbooru tag，逗号分隔，越具体越好——画图模型认得的是 tag，不认得句子，也不认得剧情里的人名。不写英文句子。"},
   {id: 'lang-gpt', title: 'GPT：tag 和短语', engines: ['gpt'], text: [
     "这次用 GPT 画图，它读得懂英文：场景和角色行用英文写，逗号分隔，danbooru tag 和简短的英文短语都可以，比如 sitting on the edge of the bed、rain streaking down the window、holding a letter with trembling hands。动作和人物关系用短语说得更清楚，但每一项都要短，不写成长段落。",
     "GPT 不画露骨内容：正文里露骨的场景，挑一个不露骨的瞬间来画（拥抱、亲吻、事后依偎的氛围），衣着和身体写到不露骨为止，分级一律写 sfw。不写真实存在的名人。"
@@ -353,7 +354,7 @@ export function normalizeMaskLook(value) {
     border: !!value?.border, pattern: MASK_PATTERNS.some(([k]) => k === value?.pattern) ? value.pattern : 'solid'};
 }
 export function defaultDraw() {
-  return {enabled: false, auto: true, guard: true, fold: false, mode: 'separate', strip: true, engine: 'nai', gpt: defaultGpt(), comfy: defaultComfy(),
+  return {enabled: false, auto: true, guard: true, fold: false, mode: 'separate', strip: true, engine: 'nai', gpt: defaultGpt(), comfy: defaultComfy(), pixai: defaultPixai(),
     connections: {nai: normalizeImageConnections('nai'), gpt: normalizeImageConnections('gpt')},
     queue: {gap: 3, retries: 4, cloud: {enabled: false, kind: 'room', url: '', room: ''}}, relay: {url: '', assumeOpus: false}, vibe: defaultVibe(), params: defaultDrawParams(),
     chunks: [], chunkGroups: [], stream: false, autoDownload: false, locks: [], grid: normalizeGrid(), positionGrid: normalizePositionGrid(), maskLook: normalizeMaskLook(), styles: [structuredClone(DEFAULT_STYLE)], styleGroups: [], activeStyle: 'default', presets: [structuredClone(DEFAULT_PRESET)], activePreset: 'default'};
@@ -428,6 +429,7 @@ export function normalizeDraw(value) {
   d.engine = DRAW_ENGINES.includes(d.engine) ? d.engine : 'nai';
   d.gpt = normalizeGpt(d.gpt);
   d.comfy = normalizeComfy(d.comfy);
+  d.pixai = normalizePixai(d.pixai);
   const n = (v, min, max, fallback) => { const x = Math.round(Number(v)); return Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : fallback; };
   const cloud = d.queue?.cloud || {};
   d.queue = {gap: n(d.queue?.gap, 0, 60, 3), retries: n(d.queue?.retries, 0, 10, 4),
@@ -459,7 +461,7 @@ export function normalizeDraw(value) {
   // From before 画风 kept parameters: the one in use keeps the parameters in use now.
   const using = d.styles.find(s => s.id === d.activeStyle);
   if (!using.params) using.params = styleParams(d.params);
-  for (const key of ['gpt', 'comfy']) if (!d.styles.some(s => s.id === d[key].style)) d[key].style = '';
+  for (const key of ['gpt', 'comfy', 'pixai']) if (!d.styles.some(s => s.id === d[key].style)) d[key].style = '';
   d.presets = (Array.isArray(d.presets) && d.presets.length ? d.presets : base.presets).map(p => {
     let entries = Array.isArray(p.entries) ? p.entries : [];
     // A preset that is just an old default rule gets the current default rules; untouched 0.5 entries get their new text.

@@ -15,7 +15,7 @@ const roles = [['system', '系统'], ['user', '用户'], ['assistant', '助手']
 const KINDS = [['tts', '配音', 'listen'], ['chat', '聊天', 'chat'], ['draw', '绘图', 'draw']];
 const USES = [['dm', '私聊'], ['group', '群聊'], ['moments', '朋友圈'], ['call', '电话'], ['forum', '论坛'], ['peek', '查手机'], ['story', '正文']];
 // Drawing rules: which engines an entry is sent with (none ticked or all ticked: every engine).
-const ENGINE_USES = [['nai', 'NovelAI'], ['gpt', 'GPT 生图'], ['comfy', 'ComfyUI']];
+const ENGINE_USES = [['nai', 'NovelAI'], ['gpt', 'GPT 生图'], ['comfy', 'ComfyUI'], ['pixai', 'PixAI 反代']];
 // One preset as a file (导出 / 导入): to keep, to share, or to hand to an AI to rewrite and bring back.
 export const PRESET_FILE = 'st-iphonie-preset';
 /**

@@ -1,0 +1,355 @@
+PixAI Bridge 逻辑与实现原理说明
+
+项目名称： PixAI Bridge 运行环境： Debian VPS + Docker + Node.js + Playwright 主要用途： 将酒馆（ST-iPhonie）的生图请求转交给 PixAI 网页端，实现一次生成四张、分四次返回。
+
+一、项目实现目标
+
+酒馆和 PixAI 的生图接口并不相同。
+
+酒馆通过 NovelAI 兼容接口发送生图请求，而 PixAI 主要通过网页操作完成生成。
+
+PixAI Bridge 就是两者之间的中间服务，负责：
+
+* 接收酒馆发送的生图请求。
+* 从请求中提取提示词。
+* 控制已登录 PixAI 的浏览器。
+* 在 PixAI 网页端生成四张图片。
+* 下载四张图片并暂存。
+* 将四张图片分别返回给酒馆。
+
+最终实现：
+
+* 酒馆仍然设置生成四张图片。
+* 四次请求使用相同提示词。
+* PixAI 只执行一次四图生成任务。
+* 每次酒馆请求只收到一张图片。
+* 四张图片按顺序分发。
+* 第四张分发完成后，下一轮请求才会启动新的 PixAI 生成任务。
+
+二、整体架构
+
+┌──────────────────────────┐
+│      酒馆 ST-iPhonie      │
+│                          │
+│       四张图片请求        │
+└────────────┬─────────────┘
+             │
+             │ POST /ai/generate-image
+             ▼
+┌──────────────────────────┐
+│       PixAI Bridge       │
+│                          │
+│       Express API        │
+│                          │
+│     提取提示词、排队       │
+│     批次管理、图片分发     │
+└────────────┬─────────────┘
+             │
+             │ Playwright + CDP
+             ▼
+┌──────────────────────────┐
+│     Chromium 浏览器       │
+│                          │
+│     已登录 PixAI 网页     │
+└────────────┬─────────────┘
+             │
+             │ 网页生成四张
+             ▼
+┌──────────────────────────┐
+│       PixAI 图片任务      │
+│                          │
+│       图片 1              │
+│       图片 2              │
+│       图片 3              │
+│       图片 4              │
+└────────────┬─────────────┘
+             │
+             │ 全部下载
+             ▼
+┌──────────────────────────┐
+│       Bridge 图片缓存     │
+│                          │
+│       imageBatch         │
+│       index = 0 ~ 3      │
+└────────────┬─────────────┘
+             │
+             │ 每次返回一张
+             ▼
+┌──────────────────────────┐
+│       酒馆接收图片        │
+│                          │
+│       第一次：图片 1      │
+│       第二次：图片 2      │
+│       第三次：图片 3      │
+│       第四次：图片 4      │
+└──────────────────────────┘
+
+三、核心工作流程
+
+1. 接收酒馆请求
+
+酒馆通过 HTTP POST 请求访问：
+
+/ai/generate-image
+
+请求体主要包含：
+
+* input：生图提示词。
+* parameters：其他生成参数。
+
+服务优先读取 input，如果没有，则尝试读取 parameters.prompt。
+
+当前版本主要支持文生图，不支持图生图、局部重绘和参考图参数。
+
+2. 请求排队
+
+使用 JavaScript Promise 队列：
+
+let requestQueue = Promise.resolve();
+
+所有请求依次执行。
+
+这样可以避免多个请求同时操作 PixAI 网页，导致提示词覆盖、任务识别错误或下载混乱。
+
+旧版本在生成过程中收到新请求会返回 HTTP 409。
+
+新版本改为排队处理，不再因为正在生成而拒绝请求。
+
+3. 判断是否需要生成新批次
+
+使用两个主要变量：
+
+let imageBatch = null;
+let requestQueue = Promise.resolve();
+
+imageBatch 保存当前批次的信息：
+
+字段	作用
+prompt	当前批次提示词
+taskId	PixAI 任务 ID
+files	已下载的四张图片
+index	下一张待分发图片的索引
+
+判断逻辑：
+
+* 没有当前批次：生成新批次。
+* 当前批次提示词不同：生成新批次。
+* 当前批次四张已经发完：生成新批次。
+* 提示词相同且还有图片：直接分发缓存图片。
+
+4. 控制 PixAI 网页生成
+
+通过 Playwright 连接已经运行的 Chromium 浏览器。
+
+连接地址：
+
+http://127.0.0.1:9222
+
+找到已登录的 PixAI 生图页面：
+
+https://pixai.art/zh/generator/image
+
+然后执行：
+
+* 获取当前已有任务 ID。
+* 找到提示词编辑框。
+* 填入酒馆传来的提示词。
+* 定位生成按钮。
+* 点击生成。
+* 等待新的任务卡片出现。
+
+任务卡片使用的页面选择器：
+
+section[data-testid="mobile-task-card"][data-task-id]
+
+等待任务卡片至少出现四个图片缩略图，确认四张图片已经生成。
+
+5. 下载四张图片
+
+PixAI 任务完成后，Bridge 定位任务卡片中的全部下载按钮：
+
+button[aria-label="全部下載"],
+button[aria-label="全部下载"]
+
+使用 Playwright 的 download 事件监听下载结果。
+
+下载完成后：
+
+* 检查是否收到四个文件。
+* 检查下载是否失败。
+* 保存到临时目录。
+* 读取图片二进制数据。
+* 将四张图片放入 imageBatch.files。
+
+这里不是直接抓取 PixAI 图片 URL，而是通过网页下载功能获取图片，避免原始图片 URL 的访问限制。
+
+6. 四张图片分别返回
+
+这是整个项目最重要的部分。
+
+每次请求取出当前索引对应的图片：
+
+const imageNumber = current.index;
+const file = current.files[imageNumber];
+current.index++;
+
+对应关系：
+
+请求次数	图片索引	返回图片
+第一次	0	第一张
+第二次	1	第二张
+第三次	2	第三张
+第四次	3	第四张
+
+每次响应只包含一张图片。
+
+第四张发送完成后：
+
+imageBatch = null;
+
+清空当前批次。
+
+下一轮请求到达时，重新启动 PixAI 生成任务。
+
+四、为什么使用 ZIP 返回图片
+
+ST-iPhonie 的 NovelAI 兼容接口会处理 ZIP 响应，并从中提取第一张图片。
+
+因此 Bridge 使用 ZIP 格式返回图片。
+
+但与原先不同：
+
+* 原先：一个 ZIP 包含四张图片。
+* 现在：一个 ZIP 只包含当前要返回的一张图片。
+
+这样无需修改酒馆现有的图片解压逻辑。
+
+ZIP 由 JavaScript 自行构造，涉及：
+
+* CRC32 校验。
+* ZIP 本地文件头。
+* ZIP 中央目录。
+* ZIP 结束记录。
+
+不需要额外安装 ZIP 软件。
+
+五、项目文件与部署信息
+
+当前 VPS 部署参数：
+
+项目	配置
+VPS 系统	Debian
+项目目录	/opt/pixai-bridge
+服务脚本	/opt/pixai-bridge/server.js
+Docker 容器	pixai-browser
+容器内脚本	/app/server.js
+API 端口	3188
+浏览器 CDP	9222
+PixAI 页面	pixai.art/zh/generator/image
+Tavo 来源	https://tavo.thh.kdns.fr
+
+主要组件：
+
+组件	用途
+Node.js	运行服务端脚本
+Express	提供 HTTP API
+Playwright	自动化控制浏览器
+Chromium	运行 PixAI 网页
+CDP	连接已经运行的浏览器
+Docker	容器化运行服务
+
+六、常用维护命令
+
+查看容器状态
+
+docker ps --filter name=pixai-browser
+
+检查 API 是否正常
+
+curl -i http://127.0.0.1:3188/health
+
+正常情况下返回：
+
+{
+  "status": "ok",
+  "page": "https://pixai.art/zh/generator/image",
+  "generating": false
+}
+
+查看服务日志
+
+docker logs --tail 100 pixai-browser
+
+检查 JavaScript 语法
+
+docker exec pixai-browser node --check /app/server.js
+
+编辑服务脚本
+
+nano /opt/pixai-bridge/server.js
+
+更新容器内脚本
+
+docker cp /opt/pixai-bridge/server.js pixai-browser:/app/server.js
+
+重启服务
+
+docker restart pixai-browser
+
+查看启动日志
+
+docker logs --tail 50 pixai-browser
+
+七、重要注意事项
+
+1. 浏览器登录数据
+
+PixAI 登录状态保存在：
+
+/opt/pixai-bridge/browser-data
+
+这是持久化数据目录。
+
+更新 server.js 时绝对不要删除这个目录。
+
+否则可能丢失 PixAI 登录状态。
+
+2. 批次缓存
+
+目前 imageBatch 保存在 Node.js 进程内存中。
+
+因此：
+
+* 正常运行期间可以继续分发图片。
+* 容器重启后，尚未分发的图片缓存会丢失。
+* 已完成的 PixAI 历史任务不会因此被删除。
+
+3. 提示词一致性
+
+当前批次复用依赖提示词完全一致。
+
+如果后续酒馆请求的提示词不同，Bridge 会启动新的 PixAI 批次，而不是继续使用原批次剩余图片。
+
+4. PixAI 网页变化
+
+如果 PixAI 修改了网页按钮名称、任务卡片结构或页面元素选择器，Playwright 自动化可能失效，需要调整 server.js。
+
+5. API 安全
+
+当前配置了 Tavo 的 CORS 来源限制，但这不等于 API Key 身份认证。不要将 CORS 当作完整的访问控制。
+
+八、当前部署验收情况
+
+根据本次实际检查结果：
+
+检查项目	状态
+Docker 容器运行	正常
+Node.js 服务启动	正常
+Express API	HTTP 200
+PixAI 页面连接	正常
+PixAI Bridge 监听 3188	正常
+新版 server.js 已同步	已完成
+容器已重启	已完成
+新版四次分发流程实测	尚未测试
+
+最后说明： 当前已经确认服务启动和 PixAI 页面连接正常，但尚未实际测试新版四张图片的完整分发流程。因此，不能把四张分发功能标记为已经实测通过。

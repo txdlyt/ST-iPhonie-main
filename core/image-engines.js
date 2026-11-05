@@ -10,8 +10,8 @@ import {proxyAddress, noTavernProxy} from './proxy-url.js';
 
 import {normalizeDisabledLoras} from './comfy-loras.js';
 
-export const DRAW_ENGINES = ['nai', 'gpt', 'comfy'];
-export const DRAW_ENGINE_NAMES = {nai: 'NovelAI', gpt: 'GPT 生图', comfy: 'ComfyUI'};
+export const DRAW_ENGINES = ['nai', 'gpt', 'comfy', 'pixai'];
+export const DRAW_ENGINE_NAMES = {nai: 'NovelAI', gpt: 'GPT 生图', comfy: 'ComfyUI', pixai: 'PixAI 反代'};
 
 // ---------- GPT ----------
 export const OPENAI_BASE = 'https://api.openai.com/v1';

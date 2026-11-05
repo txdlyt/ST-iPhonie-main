@@ -2,9 +2,9 @@
 export type Engine = 'fish' | 'mini' | 'eleven' | 'mimo' | 'doubao' | 'custom';
 /** Keys cover the voice engines and NovelAI. */
 /** llm: the key of the phone's own text model (an OpenAI-compatible API). */
-export type KeyEngine = Engine | 'nai' | 'llm' | 'embed' | 'gpt';
+export type KeyEngine = Engine | 'nai' | 'llm' | 'embed' | 'gpt' | 'pixai';
 /** What the drawing App and every picture use: NovelAI, a GPT image model, or the user's ComfyUI. */
-export type DrawEngine = 'nai' | 'gpt' | 'comfy';
+export type DrawEngine = 'nai' | 'gpt' | 'comfy' | 'pixai';
 export type Theme = 'system' | 'light' | 'dark';
 export type InjectionPosition = 'in_chat' | 'in_prompt' | 'before_prompt';
 export type MessageRole = 'system' | 'user' | 'assistant';
@@ -272,12 +272,15 @@ export interface DrawSettings {
     /** The engine pictures are drawn with. */
     engine: DrawEngine;
     gpt: GptImageSettings;
+    pixai: PixaiSettings;
     comfy: ComfySettings;
 }
 /** Saved drawing endpoint; its secret is kept in the key store, outside settings. */
 export interface ImageConnection { id: string; name: string; url: string; model?: string; assumeOpus?: boolean; }
 export interface ImageConnectionInfo extends ImageConnection { current: boolean; configured: boolean; tail: string; }
 /** url: '' for OpenAI, else a relay ending at /v1. ask: confirm every (paid) picture; off also lets new replies draw. style: its own 画风 ('' = NovelAI's). */
+/** PixAI 反代: a bridge that speaks NovelAI's interface (POST {url}/ai/generate-image, ZIP back). The token is optional (keyStatus('pixai')). */
+export interface PixaiSettings { url: string; style: string; }
 export interface GptImageSettings { url: string; model: string; quality: 'auto' | 'low' | 'medium' | 'high'; orientation: 'portrait' | 'landscape' | 'square'; ask: boolean; style: string; }
 /** Reached through the tavern's ComfyUI proxy. workflow: API-format JSON with "%prompt%" and the other placeholders ('' = the default one). */
 export interface ComfyWorkflow { id: string; name: string; workflow: string; sourceWorkflow?: string; disabledLoras: string[]; model: string; vae: string; sampler: string; scheduler: string; steps: number; scale: number; width: number; height: number; clipSkip: number; }
@@ -294,7 +297,7 @@ export interface VibeSettings { enabled: boolean; use: { kind: '' | 'group' | 'v
 export interface VibeSummary { id: string; name: string; thumb: string; strength: number; ie: number; image: boolean; keys: string[]; ready?: string[]; ies?: Record<string, number[]>; }
 /** The vibes a picture would use: encode = how many need encoding first (2 Anlas each), over = left out by the free-tier guard. */
 export interface VibePlan { on: boolean; model: boolean; used: Array<{ id: string; name: string; strength: number; encode: boolean }>; skipped: Array<{ name: string; why: 'missing' | 'model' | 'no-encoding' }>; over: number; encode: number; extra: number; }
-export interface DrawSettingsPatch { chunks?: PromptChunk[]; stream?: boolean; autoDownload?: boolean; locks?: string[]; grid?: DrawGrid; positionGrid?: Partial<DrawPositionGrid>; maskLook?: Partial<DrawMaskLook>; enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; }
+export interface DrawSettingsPatch { chunks?: PromptChunk[]; stream?: boolean; autoDownload?: boolean; locks?: string[]; grid?: DrawGrid; positionGrid?: Partial<DrawPositionGrid>; maskLook?: Partial<DrawMaskLook>; enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; pixai?: Partial<PixaiSettings>; }
 /** gap: seconds between two NovelAI requests (0-60). retries: how often an "account busy" (429) is retried (0-10). */
 export interface DrawQueueSettings { gap: number; retries: number; cloud: CloudQueueSettings; }
 /** Shared queue service (cloud-queue/worker.js) that everyone using one NovelAI account joins with the same room code. */
@@ -320,6 +323,8 @@ export interface DrawInput { prompt: string; negative?: string; characters?: Dra
     base?: { image: string; width: number; height: number; strength: number; noise?: number; mask?: string; /** 局部重绘: put the untouched parts back as they were. */ overlay?: boolean; /** 增强. */ enhance?: boolean; /** 增强 at 最大 (V5): the picture as it is, doubled by NovelAI. */ upscaled?: boolean } | null;
     /** 边画边看 when it is switched on: the steps and the picture on its way come as 'draw' events. */
     preview?: boolean;
+    /** PixAI 反代: this picture is number `index` (from 0) of `size` pictures of one request (the same `run`); the bridge draws them all at once and hands them out one by one. Left out, the picture is a request of one. */
+    batch?: { run: string; index: number; size: number };
     /** NovelAI V4.5: 角色参考 (fitted pictures). */
     refs?: Array<{ image: string; kind: 'character' | 'style' | 'both'; strength: number; fidelity: number }>; }
 /** seed is -1 for GPT (it takes none); params are what the engine used (GPT has no steps). */
@@ -713,6 +718,8 @@ export interface BackendFacade {
     paidPrompt(): { title: string; text: string; note: string };
     /** Models offered by the saved GPT image connection. Reads /models without generating an image. */
     gptModels(): Promise<string[]>;
+    /** PixAI 反代: the bridge's /health for the saved address. Rejects with why when it cannot be reached. */
+    pixaiHealth(): Promise<{ status?: string; page?: string; generating?: boolean }>;
     /** ComfyUI through the tavern: connection check and what it offers. url: an address not saved yet. */
     comfyCatalog(url?: string): Promise<{ models: Array<{ value: string; text: string; loader: 'checkpoint' | 'unet' | 'gguf' }>; samplers: string[]; schedulers: string[]; vaes: string[] }>;
     /** CLIPLoader's files and types (for a model loaded on its own), read like the LoRA list. */

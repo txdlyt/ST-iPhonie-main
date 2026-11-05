@@ -4,6 +4,7 @@
 import { DRAW_ENGINES, GPT_MAX_REFS, gptTakesRefs, normalizeGpt, gptBase, normalizeComfy, comfyUrl, checkWorkflow, workflowPlaceholders, COMFY_LIMITS, defaultWorkflow, COMFY_PARAM_KEYS, applyComfyWorkflow, comfyParams, comfySpecs, comfySavedList, comfySavedRead, comfyRecent, comfyUpload } from './image-engines.js';
 import { readPictureWorkflow, parseWorkflow, uiToApi, uiNodeTypes, mapWorkflow, promptCandidates, promptWords, describeNodes, setNodeValues, switchNodesOff, findProblems, nodeTypes, modelKindOf } from './comfy-graph.js';
 import { activeLoraWorkflow, normalizeDisabledLoras, inspectLoras, editLoras, pickLoraSource } from './comfy-loras.js';
+import { normalizePixai } from './pixai.js';
 import { relayUrl, guardParams, isFree, isV5, normalizeDrawParams, takesReference, REFERENCE_ANLAS } from './novelai.js';
 import { PRESET_REV as DRAW_PRESET_REV, drawPromptPlan, planRequest, validateDrawPreset, normalizeDraw, normalizeVibeSettings, normalizeChunks, tidyChunkGroups, normalizeLocks, normalizePositionGrid, normalizeMaskLook, styleParams } from './draw.js';
 import { activeChatPreset } from './chat.js';
@@ -247,6 +248,11 @@ class DrawSettings {
             if ('url' in g) g.url = gptBase(g.url);
             if ('model' in g && !/^[\w.:/-]{1,80}$/.test(String(g.model).trim())) throw Error('模型名称无效');
             draw.gpt = normalizeGpt({ ...draw.gpt, ...g });
+        }
+        if ('pixai' in patch) {
+            const x = patch.pixai && typeof patch.pixai === 'object' ? clone(patch.pixai) : {};
+            if ('url' in x) x.url = relayUrl(x.url);
+            draw.pixai = normalizePixai({ ...draw.pixai, ...x });
         }
         if ('comfy' in patch) {
             const c = patch.comfy && typeof patch.comfy === 'object' ? clone(patch.comfy) : {};

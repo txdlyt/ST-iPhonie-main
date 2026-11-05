@@ -18,6 +18,7 @@
   --embed:#a9825c;--embed-ink:#6a4a2c;--embed-soft:#f4ebe1;--embed-btn:#7f5a3a;--embed-on:#fff;
   --gpt:#4f6d8a;--gpt-ink:#26415c;--gpt-soft:#e3ebf3;--gpt-btn:#3a5a7a;--gpt-on:#fff;
   --comfy:#b061d8;--comfy-ink:#6a2c8c;--comfy-soft:#f4e6fb;--comfy-btn:#9244bd;--comfy-on:#fff;
+  --pixai:#2bb5a5;--pixai-ink:#0f6a60;--pixai-soft:#dff5f2;--pixai-btn:#1f9c8d;--pixai-on:#fff;
   --stepfun:#3b4cb0;--stepfun-ink:#27357f;--stepfun-soft:#e4e7f8;--stepfun-btn:#1f2c74;--stepfun-on:#fff;
   --lyria:#35c4e3;--lyria-ink:#0b6f88;--lyria-soft:#d9f5fb;--lyria-btn:#12a5c9;--lyria-on:#03272f;
   --replicate:#b9385a;--replicate-ink:#8e1f3c;--replicate-soft:#fbe4ea;--replicate-btn:#8e1f3c;--replicate-on:#fff;
@@ -40,6 +41,7 @@
   --embed:#c9a27c;--embed-ink:#ecd3ba;--embed-soft:#3a2d22;--embed-btn:#8a6440;--embed-on:#fff;
   --gpt:#8fa8c4;--gpt-ink:#c0d6ec;--gpt-soft:#1f3047;--gpt-btn:#4d6785;--gpt-on:#fff;
   --comfy:#cf95ef;--comfy-ink:#e6c4f8;--comfy-soft:#3a2348;--comfy-btn:#cf95ef;--comfy-on:#22082e;
+  --pixai:#6fd9cc;--pixai-ink:#b4efe8;--pixai-soft:#17403c;--pixai-btn:#6fd9cc;--pixai-on:#06231f;
   --stepfun:#6f83e8;--stepfun-ink:#b8c4ff;--stepfun-soft:#1f2650;--stepfun-btn:#2f3fa6;--stepfun-on:#fff;
   --lyria:#4fd2ee;--lyria-ink:#a5ebfa;--lyria-soft:#123a47;--lyria-btn:#4fd2ee;--lyria-on:#03272f;
   --replicate:#e8688a;--replicate-ink:#ffb3c6;--replicate-soft:#46202e;--replicate-btn:#b03358;--replicate-on:#fff;
@@ -54,6 +56,7 @@
 [data-engine=embed]{--e:var(--embed);--e-ink:var(--embed-ink);--e-soft:var(--embed-soft);--e-btn:var(--embed-btn);--e-on:var(--embed-on)}
 [data-engine=gpt]{--e:var(--gpt);--e-ink:var(--gpt-ink);--e-soft:var(--gpt-soft);--e-btn:var(--gpt-btn);--e-on:var(--gpt-on)}
 [data-engine=comfy]{--e:var(--comfy);--e-ink:var(--comfy-ink);--e-soft:var(--comfy-soft);--e-btn:var(--comfy-btn);--e-on:var(--comfy-on)}
+[data-engine=pixai]{--e:var(--pixai);--e-ink:var(--pixai-ink);--e-soft:var(--pixai-soft);--e-btn:var(--pixai-btn);--e-on:var(--pixai-on)}
 [data-engine=stepfun]{--e:var(--stepfun);--e-ink:var(--stepfun-ink);--e-soft:var(--stepfun-soft);--e-btn:var(--stepfun-btn);--e-on:var(--stepfun-on)}
 [data-engine=lyria]{--e:var(--lyria);--e-ink:var(--lyria-ink);--e-soft:var(--lyria-soft);--e-btn:var(--lyria-btn);--e-on:var(--lyria-on)}
 [data-engine=replicate]{--e:var(--replicate);--e-ink:var(--replicate-ink);--e-soft:var(--replicate-soft);--e-btn:var(--replicate-btn);--e-on:var(--replicate-on)}

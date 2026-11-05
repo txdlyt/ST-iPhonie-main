@@ -104,9 +104,10 @@ export function drawApp(ctx) {
   }
   function costChip(q) {
     const e = eng();
-    if (!api.drawReady()) return `<span class="chip" data-engine="none">${e === 'comfy' ? '未填地址' : '未填密钥'}</span>`;
+    if (!api.drawReady()) return `<span class="chip" data-engine="none">${e === 'comfy' || e === 'pixai' ? '未填地址' : '未填密钥'}</span>`;
     if (e === 'gpt') return `<span class="chip${q.free === false ? ' warn' : ''}">${icon('alert')}每张都要花钱${q.free === false ? '' : ' · 不先问'}</span>`;
     if (e === 'comfy') return `<span class="chip">ComfyUI</span>`;
+    if (e === 'pixai') return `<span class="chip">PixAI 反代 · 用你自己的 PixAI 额度</span>`;
     if (q.free === true) return q.v5 ? `<button type="button" class="chip as-button" data-action="usage-info">${icon(q.guard ? 'lock' : 'unlock')}V5 免费额度 ${q.usage.percent}%</button>` : `<span class="chip">${icon(q.guard ? 'lock' : 'unlock')}免费档 · 0 Anlas</span>`;
     if (q.free === false) return q.v5 && q.usage && q.params.steps <= 28 && q.params.width * q.params.height <= 1048576 ? `<button type="button" class="chip warn as-button" data-action="usage-info">${icon('alert')}V5 免费额度用完 · 会扣 Anlas</button>` : `<span class="chip warn">${icon('alert')}会扣 Anlas</span>`;
     return `<span class="chip" data-engine="none">${icon(q.guard ? 'lock' : 'unlock')}免费档内 · 订阅未确认</span>`;
@@ -125,7 +126,7 @@ export function drawApp(ctx) {
     const thumbs = await Promise.all(results.map(r => urlFor(r.photoId)));
     if (v.disposed || ticket !== epoch) return;
     const size = ALL_SIZES.find(([, , w, h]) => w === d.params.width && h === d.params.height)?.[0] || 'custom';
-    const tabs = [['prompt', '提示词'], ['chars', '角色'], ...(e !== 'comfy' ? [['refs', '参考图' + (refs.badge() ? ` · ${refs.badge()}` : '')]] : []), ['params', '参数'], ...(e === 'nai' ? [['vibe', 'Vibe']] : e === 'comfy' ? [['lora', '工作流']] : [])];
+    const tabs = [['prompt', '提示词'], ['chars', '角色'], ...(e !== 'comfy' && e !== 'pixai' ? [['refs', '参考图' + (refs.badge() ? ` · ${refs.badge()}` : '')]] : []), ['params', '参数'], ...(e === 'nai' ? [['vibe', 'Vibe']] : e === 'comfy' ? [['lora', '工作流']] : [])];
     v.root.dataset.engine = e;
     let body = '';
     /** NovelAI's prompt boxes show what is special in the words. */
@@ -144,10 +145,11 @@ export function drawApp(ctx) {
       return `<div class="group pad draw-char${c.enabled === false ? ' off' : ''}" data-engine="${ctx.engineOf(c.name)}"><div class="row-heading">${avatar(c.name, ctx.engineOf(c.name), 30)}<strong style="flex:1">${esc(c.name)}</strong>${i ? btn('char-move', icon('up'), 'text-button', `data-index="${i}" data-to="${i - 1}" aria-label="往前"`) : ''}${charsOn ? `<input class="switch" type="checkbox" data-char-on data-index="${i}" aria-label="这张图画 ${esc(c.name)}" ${c.enabled === false ? '' : 'checked'}>` : ''}${btn('remove-char', icon('trash'), 'text-button', `data-index="${i}" aria-label="移除 ${esc(c.name)}"`)}</div>
         <div class="char-body">${box(textArea('char', c.prompt, `data-index="${i}" rows="3" aria-label="${esc(c.name)} 的提示词"`))}</div>
         ${charsOn ? `<details class="tool-fold" data-group="char-neg-${i}"${c.negative?.trim() ? ' open' : ''}><summary>这个人的负面</summary><div>${box(textArea('char-neg', c.negative || '', `data-index="${i}" rows="2" aria-label="${esc(c.name)} 的负面" placeholder="别的角色的特征串到这个人身上时，写在这里"`))}</div></details>` : ''}
-        ${e === 'comfy' ? '' : `<details class="tool-fold char-pos" data-group="char-pos-${i}"><summary>位置<span class="chip">${placed}</span></summary><div class="char-pos-body">${free ? `<div class="pos-free" data-pos-pad data-index="${i}" style="aspect-ratio:${p.width}/${p.height}" role="group" aria-label="在画面里点一下放这个人">${guideHTML(d.positionGrid)}${others}</div>` : `<div class="pos-grid" aria-label="画面位置">${Array.from({length: 25}, (_, k) => `<button data-action="position" data-index="${i}" data-position="${k}" aria-pressed="${cell === k}" aria-label="位置 ${POSITION(k)}"></button>`).join('')}</div>`}<div class="pos-tools">${btn('position', '让模型自己决定位置', 'text-button', `data-index="${i}" data-position="-1" aria-pressed="${!at}"`)}</div></div></details>`}</div>`;
-    }).join('') : empty('还没有加入角色', e === 'gpt' ? '每个角色的外貌和在画面里的位置，会写进给 GPT 的描述里。' : e === 'comfy' ? 'ComfyUI 没有分角色的提示词：每个人的外貌接在提示词后面，位置不起作用。' : 'V4 / 4.5 可以给每个角色单独写外貌，并指定在画面里的大致位置。', 'person'))
+        ${e === 'comfy' || e === 'pixai' ? '' : `<details class="tool-fold char-pos" data-group="char-pos-${i}"><summary>位置<span class="chip">${placed}</span></summary><div class="char-pos-body">${free ? `<div class="pos-free" data-pos-pad data-index="${i}" style="aspect-ratio:${p.width}/${p.height}" role="group" aria-label="在画面里点一下放这个人">${guideHTML(d.positionGrid)}${others}</div>` : `<div class="pos-grid" aria-label="画面位置">${Array.from({length: 25}, (_, k) => `<button data-action="position" data-index="${i}" data-position="${k}" aria-pressed="${cell === k}" aria-label="位置 ${POSITION(k)}"></button>`).join('')}</div>`}<div class="pos-tools">${btn('position', '让模型自己决定位置', 'text-button', `data-index="${i}" data-position="-1" aria-pressed="${!at}"`)}</div></div></details>`}</div>`;
+    }).join('') : empty('还没有加入角色', e === 'gpt' ? '每个角色的外貌和在画面里的位置，会写进给 GPT 的描述里。' : e === 'comfy' ? 'ComfyUI 没有分角色的提示词：每个人的外貌接在提示词后面，位置不起作用。' : e === 'pixai' ? 'PixAI 只有一个提示词框：每个人的外貌接在提示词后面，位置不起作用。' : 'V4 / 4.5 可以给每个角色单独写外貌，并指定在画面里的大致位置。', 'person'))
       + `<div class="token-meter" data-token-meter="positive" hidden></div><div class="actions">${btn('add-char', icon('add') + '从角色里添加', 'secondary')}${btn('add-custom', icon('add') + '手动添加', 'secondary')}</div>${free && characters.length ? `<div class="pos-tools pos-tools-all">${guideControl(d.positionGrid)}</div>` : ''}`;
     if (tab === 'params' && e === 'gpt') body = gptParams(d.gpt);
+    if (tab === 'params' && e === 'pixai') body = pixaiParams(size);
     // The lists are read as soon as the page is looked at; they can be typed in when ComfyUI does not answer.
     if (tab === 'params' && e === 'comfy') { body = comfyParams(d.comfy, comfy); if (!comfyInfo && !comfyReading) { comfyReading = true; readComfy().finally(() => { comfyReading = false; }); } }
     if (tab === 'params' && e === 'nai') body = naiParams(d, size) + grid.html() + locksHTML(d) + `
@@ -174,7 +176,7 @@ export function drawApp(ctx) {
       <div class="group">${toggle('strip', '发给模型时去掉旧出图块', d.strip, '出图块留在聊天记录里（图片靠它显示），但之后每次请求模型时会把它们去掉，省下上下文。')}</div>
       <div class="group pad"><p class="hint" style="padding:6px 0">出图块长这样（一张图一块）：${help('场景和每个人分开写：人数、镜头、光线放场景；表情、视线、动作放各自的角色行。插件把画风固定串接在场景前面，把角色 App 里的固定外貌补进对应的角色行，再交给选中的绘图引擎（GPT 会整理成英文描述，ComfyUI 会合成一条提示词）。新角色第一次出现时，模型写的「新外貌」会自动存进角色 App。图片会上传到酒馆，并存进相册。')}</p><pre class="code-preview">${esc(api.picTagFormat)}</pre></div>
       <p class="hint">每条回复固定出 ${(d.presets.find(p => p.id === d.activePreset) || d.presets[0]).count} 张图，在出图规则里改张数。</p><div class="actions">${btn('open-presets', icon('edit') + '编辑出图规则', 'secondary')}</div>`;
-    const sub = e === 'gpt' ? d.gpt.model : e === 'comfy' ? '' : subscription ? `${TIERS[subscription.tier] || '订阅'} · ${subscription.anlas} Anlas` : keyed ? '读取中' : '';
+    const sub = e === 'gpt' ? d.gpt.model : e === 'comfy' || e === 'pixai' ? '' : subscription ? `${TIERS[subscription.tier] || '订阅'} · ${subscription.anlas} Anlas` : keyed ? '读取中' : '';
     // 正文出图 (how story replies get pictures) is set now and then: a chip by the title, not one more tab.
     v.draw(heading('绘图', (keyed && sub ? `<span class="chip">${esc(sub)}</span>` : '') + btn('tab', icon('image') + '正文出图', 'chip-button', `data-tab="chat" aria-pressed="${tab === 'chat'}"`), engineName(e))
       + `<div class="segmented draw-engines" role="group" aria-label="用哪个画">${api.drawCatalog.engines.map(k => `<button data-action="draw-engine" data-pick="${k}" aria-pressed="${k === e}">${esc(engineName(k))}</button>`).join('')}</div>`
@@ -205,6 +207,12 @@ export function drawApp(ctx) {
   /** A row of choices: action, value in use, [[value, words], …]. */
   const seg = (action, value, list) => `<div class="segmented" style="margin:0">${list.map(([k, l]) => `<button type="button" data-action="${action}" data-value="${k}" aria-pressed="${value === k}">${l}</button>`).join('')}</div>`;
   /** NovelAI's settings, each only for the models that have it. Explanations are behind the little i. */
+  /** PixAI 反代: only the size is asked of the plugin; the model, LoRAs and sampler are set on the PixAI page the bridge drives. */
+  function pixaiParams(size) {
+    const sizeChip = ([k, label, w, h]) => `<button data-action="size" data-size="${k}" aria-pressed="${size === k}"><i style="width:${w / 100}px;height:${h / 100}px"></i>${label}</button>`;
+    return `<div class="group pad"><div class="field"><span>尺寸${help('尺寸写进请求里（width / height），反代决定用不用：PixAI 网页版的画幅如果在网页里选，这里就不起作用。自己写的脚本可以读到它。')}</span><div class="size-chips">${SIZES.map(sizeChip).join('')}</div></div>
+      <p class="hint" style="padding:0">模型、LoRA、采样器和张数档位，在反代驱动的 PixAI 页面里选好。一次画 ${count} 张时，反代只在 PixAI 上画一次。</p></div>`;
+  }
   function naiParams(d, size) {
     const p = d.params, f = naiFeatures(p.model), medium = p.effort === 'medium', guard = d.guard, schedules = schedulesFor(p.model, p.sampler);
     const sizeChip = ([k, label, w, h]) => `<button data-action="size" data-size="${k}" aria-pressed="${size === k}" ${guard && w * h > 1048576 ? 'disabled' : ''}><i style="width:${w / 100}px;height:${h / 100}px"></i>${label}<small>${w}×${h}</small></button>`;
@@ -606,7 +614,9 @@ export function drawApp(ctx) {
     render();
     const fixed = Number.isInteger(request.params?.seed) && request.params.seed >= 0;
     const {focus, source, comesBack, ...asked} = request;
-    const jobs = Array.from({length: n}, (_, i) => api.generateImage({...asked, preview: true, params: {...request.params, seed: fixed ? (request.params.seed + i) % 4294967295 : -1}, allowPaid,
+    // PixAI 反代 draws all n at once: each request says which of the n it is, and the bridge hands the pictures out one by one.
+    const run = crypto.randomUUID(), together = eng() === 'pixai' && n > 1;
+    const jobs = Array.from({length: n}, (_, i) => api.generateImage({...asked, preview: true, params: {...request.params, seed: fixed ? (request.params.seed + i) % 4294967295 : -1}, allowPaid, ...(together ? {batch: {run, index: i, size: n}} : {}),
       label: request.label + (n > 1 ? ` · ${i + 1}/${n}` : '')}).then(async made => {
       await keepPicture(comesBack ? {...made, params: {...made.params, ...comesBack}} : made, {focus, source, request});
       if (n > 1 && i < n - 1) render();
@@ -619,7 +629,7 @@ export function drawApp(ctx) {
   }
   const joinWords = list => list.map(x => (x || '').trim()).filter(Boolean).join(', ');
   async function generate() {
-    const s = style(), q = quote(), extra = eng() !== 'comfy' ? await refs.payload() : {base: null, refs: []};
+    const s = style(), q = quote(), extra = eng() !== 'comfy' && eng() !== 'pixai' ? await refs.payload() : {base: null, refs: []};
     const paid = await askPaid(q, count);
     if (paid === false) return;
     // 随机提示词 only exists for NovelAI; it is drawn in place of what is written.
