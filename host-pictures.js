@@ -115,13 +115,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const why = (who ? `「${who}」想用小手机画一张图。\n` : '') + (engine === 'gpt' ? 'GPT 生图每张都要花钱（按 OpenAI 或中转的价格）。' : quote.free === null ? '暂时读不到 NovelAI 订阅信息，无法确认是否免费。' : '按当前参数和订阅，这张图会扣 Anlas。');
     return globalThis.confirm(why + '\n确定要生成吗？') ? 'paid' : false;
   }
-
-  /**
-   * A picture another plugin asks for (host-public.js), drawn like one in the story: the engine, the 画风, the looks of the people
-   * named. One that costs is asked about first; with ask: false it is refused. It goes in the album, and in the tavern's files for
-   * its address. signal: an AbortSignal, to take it back.
-   */
-  async function drawFor({prompt, negative, characters = [], size, seed, ask = true, signal, from}) {
+    async function drawFor({prompt, negative, characters = [], size, seed, ask = true, signal, from}) {
     const words = String(prompt ?? '').trim().slice(0, 4000), who = String(from ?? '').trim().slice(0, 40);
     if (!words) throw Object.assign(Error('请先写提示词'), {code: 'NO_PROMPT'});
     if (!backend.drawReady()) throw Object.assign(Error(backend.drawMissing()), {code: 'NOT_READY'});
@@ -142,7 +136,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   }
 
   /** Queues one picture. Redrawing adds a version; the earlier versions stay. */
-  async function generate(id, tag, {interactive = false, permission = null} = {}) {
+  async function generate(id, tag, {interactive = false, permission = null, batch = null} = {}) {
     const ctx = context(), message = ctx.chat[id], key = jobKey(id, tag);
     if (!message || jobs.get(key)?.state === 'generating') return;
     permission ??= await allowed(interactive);
@@ -151,7 +145,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     scheduleRender();
     try {
       const inputs = pictureInputs(settings(), tag, message.mes);
-      const result = await backend.generateImage({...inputs, allowPaid: permission === 'paid', name: 'chat', key, label: '正文图片 · ' + tag.prompt.slice(0, 24)});
+      const result = await backend.generateImage({...inputs, ...(batch ? {batch} : {}), allowPaid: permission === 'paid', name: 'chat', key, label: '正文图片 · ' + tag.prompt.slice(0, 24)});
       const url = await upload(result.blob, 'st-iphonie-' + Date.now());
       // Only store the picture when the same message is still there with this tag.
       const now = context().chat[id];
@@ -248,7 +242,8 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     if (!force && parsePictures(message.mes).length) return false;
     planning.add(id);
     notice('正在给这条回复挑画面……');
-    try {
+    
+      try {
       const source = force ? withoutPictures(message.mes) : message.mes;
       const {text, count} = await planOnce(id, source, {manual: force});
       if (context().chat[id] !== message) return false;
@@ -370,7 +365,11 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (backend.drawQuote?.().free === null) notice('自动出图没有执行：暂时读不到订阅信息，确认不了免不免费。可以点楼层菜单里的「给这层楼生图」手动画');
       scheduleRender(); return;
     }
-    await Promise.all(tags.map(tag => generate(id, tag, {permission})));
+    const run = crypto.randomUUID();
+    await Promise.all(tags.map((tag, index) => generate(id, tag, {
+      permission,
+            batch: {run, index, size: tags.length}
+    })));
   }
 
   /** What the queue says about a job, for the placeholder. */
@@ -474,7 +473,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     act('zoom', t.id, t.message, t.tag);
     return true;
   }
-  function act(action, id, message, tag, source = null) {
+    function act(action, id, message, tag, source = null) {
     const pic = shown(message, tag.hash);
     if (action === 'draw' || action === 'redo') generate(id, tag, {interactive: true});
     if (action === 'cancel') backend.drawQueue?.cancel?.(jobKey(id, tag));
@@ -715,7 +714,14 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const tags = parsePictures(message.mes).filter(tag => !shown(message, tag.hash));
     if (!tags.length) { notice('这层楼的图片已经生成'); return; }
     const permission = await allowed(true); if (!permission) return;
-    for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
+    const run = crypto.randomUUID();
+    for (let index = 0; index < tags.length; index++) {
+      if (context().chat[id] !== message) break;
+      await generate(id, tags[index], {
+        permission,
+        batch: {run, index, size: tags.length}
+      });
+    }
   }
   return {drawFor, tagText, drawMessage, voiceMessage, outfitsList, outfitSave, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }
