@@ -31,6 +31,9 @@ export class PixaiClient extends NovelAIClient {
   }
 }
 
+/** The first of these that is a usable pixel size, as it is: the page's own resolution (720×1280) is not rounded to NovelAI's multiples of 64. */
+export const exactSize = (...values) => values.find(v => Number.isInteger(v) && v >= 64 && v <= 8192);
+
 /** {run, index, size} of one picture in a request for several, or null: what the bridge reads as one drawing of `size` pictures. */
 export function normalizeBatch(value) {
   if (!value || typeof value !== 'object') return null;
@@ -50,8 +53,9 @@ export function pixaiRequest({prompt, negative = '', characters = [], params, ba
   const seed = p.seed >= 0 ? p.seed : Math.floor(Math.random() * 4294967295);
   const input = [expand(prompt), ...people.map(c => c.prompt)].filter(Boolean).join(', ');
   const unwanted = [expand(negative), ...people.map(c => c.negative)].filter(Boolean).join(', ');
-  const parameters = {width: p.width, height: p.height, seed, n_samples: 1, negative_prompt: unwanted, characters: people,
+  const width = exactSize(params?.width, p.width), height = exactSize(params?.height, p.height);
+  const parameters = {width, height, seed, n_samples: 1, negative_prompt: unwanted, characters: people,
     // A picture that is alone in its request still says so: the bridge then draws one, not four.
     bridge_batch: normalizeBatch(batch) || {run: crypto.randomUUID(), index: 0, size: 1}};
-  return {body: {input, model: p.model, action: 'generate', parameters}, seed, params: {width: p.width, height: p.height}};
+  return {body: {input, model: p.model, action: 'generate', parameters}, seed, params: {width, height}};
 }

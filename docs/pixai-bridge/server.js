@@ -343,20 +343,66 @@ async function collectDownloads(page, card, expected) {
   }
 }
 
-/** 把网页上的「一次出几张」切到 count。没配置选择器就不动，返回 false。 */
-async function setQuantity(page, count) {
-  const steps = [].concat(CONFIG.qty[String(count)] || []);
-  if (!steps.length) return false;
-  for (const selector of steps) {
-    const target = page.locator(selector).first();
-    await target.waitFor({ state: 'visible', timeout: 10000 });
-    await target.click();
-    await sleep(300);
-  }
-  return true;
+// 网页上「一次出几张」是一组 role=radio 的按钮：「單張」「多張 (x4)」。判断哪个被选中，和 /ai/status 用同一套办法。
+const COUNT_LABEL = n => (n === 1 ? /單張|单张/ : new RegExp(`x\\s*${n}(?!\\d)`, 'i'));
+
+async function readPageCount(page) {
+  return page.evaluate(() => {
+    const visible = el => !!(el.offsetWidth || el.offsetHeight);
+    const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const radios = Array.from(document.querySelectorAll('[role="radio"]')).filter(visible);
+    const isOn = el => {
+      const a = n => el.getAttribute(n);
+      return a('aria-checked') === 'true' || a('aria-pressed') === 'true' || a('aria-selected') === 'true' ||
+        a('data-selected') === 'true' || a('data-pressed') === 'true' || ['on', 'checked', 'active', 'selected'].includes(a('data-state')) ||
+        /(^|\s)ring-neutral-700(\s|$)/.test(String(el.className || ''));
+    };
+    let hit = radios.find(isOn);
+    if (!hit && radios.length > 1) {
+      const sig = el => { const st = getComputedStyle(el); return [st.backgroundColor, st.borderTopColor, st.boxShadow, st.color, st.fontWeight].join('|'); };
+      const seen = new Map();
+      radios.forEach(el => seen.set(sig(el), (seen.get(sig(el)) || 0) + 1));
+      const odd = radios.filter(el => seen.get(sig(el)) === 1);
+      hit = odd.length === 1 ? odd[0] : null;
+    }
+    const label = hit ? text(hit) : null;
+    if (!label) return null;
+    const m = /x\s*(\d+)/i.exec(label);
+    return m ? Number(m[1]) : /單張|单张/.test(label) ? 1 : null;
+  });
 }
 
+/** 把网页上的「一次出几张」切到 count，并确认真的切过去了。配了 PIXAI_QTY 就按选择器点，否则直接点网页的单选按钮。 */
+async function setQuantity(page, count) {
+  const steps = [].concat(CONFIG.qty[String(count)] || []);
+  if (steps.length) {
+    for (const selector of steps) {
+      const target = page.locator(selector).first();
+      await target.waitFor({ state: 'visible', timeout: 10000 });
+      await target.click();
+      await sleep(300);
+    }
+    return true;
+  }
+  if ((await readPageCount(page)) === count) return true;
+  const target = page.locator('[role="radio"]').filter({ hasText: COUNT_LABEL(count) }).first();
+  if (!(await target.count())) {
+    console.warn(`网页上没找到「一次出 ${count} 张」的按钮，没有切换`);
+    return false;
+  }
+  await target.click();
+  for (let i = 0; i < 20; i++) {
+    await sleep(150);
+    if ((await readPageCount(page)) === count) return true;
+  }
+  console.warn(`点了「一次出 ${count} 张」，但网页上没有变过去`);
+  return false;
+}
+
+let settingLock = Promise.resolve();
+
 async function generateBatch(prompt, count) {
+  await settingLock;
   generating = true;
   try {
     const page = await getPixAIPage();
@@ -415,7 +461,7 @@ const batcher = new Batcher({
 app.get('/health', async (_req, res) => {
   try {
     const page = await getPixAIPage();
-    res.json({ status: 'ok', page: page.url(), generating, runs: batcher.runs.size, counts: CONFIG.counts, quantitySwitch: Object.keys(CONFIG.qty) });
+    res.json({ status: 'ok', page: page.url(), generating, runs: batcher.runs.size, counts: CONFIG.counts, quantitySwitch: Object.keys(CONFIG.qty).length ? Object.keys(CONFIG.qty) : 'auto' });
   } catch (error) {
     res.status(503).json({ status: 'error', message: error.message });
   }
@@ -596,6 +642,34 @@ app.get('/ai/status', async (req, res) => {
 });
 
 // 调试：导出顶栏（积分）、提示词框（生成按钮）、设置区（张数/比例/尺寸）的 HTML，用来校准选择器：curl http://127.0.0.1:3188/debug/dom
+// 给酒馆插件切网页参数：POST /ai/settings  {"count": 1 | 4}，把网页「一次出几张」切过去，回的内容和 /ai/status 一样
+app.post('/ai/settings', async (req, res) => {
+  const count = Number(req.body?.count);
+  if (!CONFIG.counts.includes(count)) {
+    return res.status(400).json({ ok: false, message: `张数只能是 ${CONFIG.counts.join(' 或 ')}` });
+  }
+  if (generating) {
+    return res.status(409).json({ ok: false, generating: true, message: '反代正在出图，画完再切张数' });
+  }
+  const run = async () => {
+    const page = await getPixAIPage();
+    const switched = await setQuantity(page, count);
+    const status = await readPageStatus(page);
+    return { switched, status };
+  };
+  const job = settingLock.then(run);
+  settingLock = job.catch(() => {});
+  try {
+    const { switched, status } = await job;
+    if (!switched || status.count !== count) {
+      return res.status(502).json({ ok: false, generating, ...status, message: '没能在 PixAI 网页上切换张数' });
+    }
+    res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    res.status(503).json({ ok: false, message: error.message });
+  }
+});
+
 app.get('/debug/dom', async (_req, res) => {
   try {
     const page = await getPixAIPage();

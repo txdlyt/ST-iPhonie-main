@@ -51,7 +51,7 @@ import { createStorageBudget } from './storage-budget.js';
 import { DialoguePlayer } from './player.js';
 import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS } from './library.js';
 import { makeThumb, makePreview, packPicture } from './thumbnail.js';
-import { PixaiClient, pixaiRequest, normalizeBatch } from './pixai.js';
+import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js';
 import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
@@ -163,6 +163,8 @@ export class TTSBackend {
         // PixAI 反代: a NovelAI-format client of its own (address from the settings, the bridge's token optional).
         this.pixai = new PixaiClient();
         this.pixaiKey = '';
+        /** The resolution the bridge last read off the PixAI page ({width, height}), so a picture is labelled with the page's size. */
+        this.pixaiWeb = null;
         this.requestLog = new RequestLog({change: () => this.emit('logs', {}), secrets: () => [
             ...this.keyStore.load().values(), ...(this.textKeys?.values() || []), this.gptKey, this.embedKey, this.pixaiKey, this.novelai.key,
             ...(this.imageKeys?.nai?.values() || []), ...(this.imageKeys?.gpt?.values() || []),
@@ -1554,7 +1556,7 @@ export class TTSBackend {
             return { engine, params: { model: draw.gpt.model, width, height, seed: -1 }, clamped: false, free: draw.gpt.ask ? false : true, paid: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 };
         }
         // PixAI 反代: the size and seed ask NovelAI's parameters; the bridge draws on the user's own PixAI account (nothing to ask first).
-        if (engine === 'pixai') { const p = normalizeDrawParams({ ...draw.params, ...(params || {}) }); return { engine, params: { model: 'PixAI', width: p.width, height: p.height, seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 }; }
+        if (engine === 'pixai') { const p = normalizeDrawParams({ ...draw.params, ...(params || {}) }); return { engine, params: { model: 'PixAI', width: exactSize(params?.width, this.pixaiWeb?.width, p.width), height: exactSize(params?.height, this.pixaiWeb?.height, p.height), seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 }; }
         const c = draw.comfy, size = comfySize(c, orientation || orientationOf(c.width, c.height));
         return { engine, params: { model: c.model, ...size, steps: c.steps, scale: c.scale, sampler: c.sampler, seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 };
     }
@@ -1580,7 +1582,31 @@ export class TTSBackend {
         if (!url) throw Error('还没有填写 PixAI 反代地址');
         this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
         const response = await this.pixai.call('/ai/status', { method: 'GET', headers: this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {} });
-        return response.json().catch(() => ({}));
+        const info = await response.json().catch(() => ({}));
+        this.pixaiRemember(info);
+        return info;
+    }
+    pixaiRemember(info) {
+        const r = info?.resolution;
+        if (Number.isInteger(r?.width) && Number.isInteger(r?.height)) this.pixaiWeb = { width: r.width, height: r.height };
+    }
+    /** PixAI 反代: switch the PixAI page to draw `count` pictures per task (1 or 4: the page has no other); answers like pixaiStatus. */
+    async pixaiSetCount(count) {
+        this.assertOpen();
+        const url = this.settings.draw.pixai.url, n = Number(count);
+        if (!url) throw Error('还没有填写 PixAI 反代地址');
+        if (n !== 1 && n !== 4) throw Error('PixAI 一次只能出 1 张或 4 张');
+        this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
+        let response;
+        try {
+            response = await this.pixai.call('/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify({ count: n }) });
+        } catch (error) {
+            // The bridge's own words are in the body, which the NovelAI-shaped error does not carry: say what these statuses mean here.
+            throw Error(error?.status === 409 ? '反代正在出图，画完再切张数' : error?.status === 502 ? '没能在 PixAI 网页上切换张数，检查反代的日志' : error?.status === 404 || error?.status === 405 ? '反代版本太旧，没有切换张数的接口（/ai/settings）' : error.message);
+        }
+        const info = await response.json().catch(() => ({}));
+        this.pixaiRemember(info);
+        return info;
     }
     async gptModels() { this.assertOpen(); return gptModels({ fetch: this.imageFetch, settings: this.settings.draw.gpt, key: this.gptKey }); }
     /** ComfyUI: connection check and what it offers (models, samplers, schedulers). url: an address not saved yet. */
@@ -3502,6 +3528,7 @@ export class TTSBackend {
             gptModels: () => this.gptModels(),
             pixaiHealth: () => this.pixaiHealth(),
             pixaiStatus: () => this.pixaiStatus(),
+            pixaiSetCount: count => this.pixaiSetCount(count),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
             unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId),
