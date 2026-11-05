@@ -107,7 +107,13 @@ export function drawApp(ctx) {
     if (!api.drawReady()) return `<span class="chip" data-engine="none">${e === 'comfy' || e === 'pixai' ? '未填地址' : '未填密钥'}</span>`;
     if (e === 'gpt') return `<span class="chip${q.free === false ? ' warn' : ''}">${icon('alert')}每张都要花钱${q.free === false ? '' : ' · 不先问'}</span>`;
     if (e === 'comfy') return `<span class="chip">ComfyUI</span>`;
-    if (e === 'pixai') return `<span class="chip">PixAI 反代 · 用你自己的 PixAI 额度</span>`;
+    if (e === 'pixai') {
+      // What the bridge reads off the PixAI page (size, pictures per task, points per task): the page decides these, not this plugin.
+      if (pixaiInfo === undefined) return `<span class="chip">读取反代状态……</span>`;
+      const r = pixaiInfo?.resolution || {}, c = pixaiInfo?.cost;
+      const bits = [r.width && r.height ? `${r.width}×${r.height}` : '', Number.isInteger(pixaiInfo?.count) ? `一次 ${pixaiInfo.count} 张` : '', Number.isFinite(c) ? `消耗 ${c.toLocaleString('zh-CN')}` : ''].filter(Boolean);
+      return `<button type="button" class="chip as-button" data-action="pixai-refresh" title="重新读取反代的设置">${bits.length ? esc(bits.join(' · ')) : 'PixAI 反代 · 读不到状态，点一下重试'}</button>`;
+    }
     if (q.free === true) return q.v5 ? `<button type="button" class="chip as-button" data-action="usage-info">${icon(q.guard ? 'lock' : 'unlock')}V5 免费额度 ${q.usage.percent}%</button>` : `<span class="chip">${icon(q.guard ? 'lock' : 'unlock')}免费档 · 0 Anlas</span>`;
     if (q.free === false) return q.v5 && q.usage && q.params.steps <= 28 && q.params.width * q.params.height <= 1048576 ? `<button type="button" class="chip warn as-button" data-action="usage-info">${icon('alert')}V5 免费额度用完 · 会扣 Anlas</button>` : `<span class="chip warn">${icon('alert')}会扣 Anlas</span>`;
     return `<span class="chip" data-engine="none">${icon(q.guard ? 'lock' : 'unlock')}免费档内 · 订阅未确认</span>`;
@@ -323,6 +329,18 @@ export function drawApp(ctx) {
     if (!v.disposed && token === comfyRequest && url === state().comfy.url) { comfyInfo = info; render(); }
   }
 
+  // PixAI 反代: the bridge's /ai/status (undefined: not read yet, null: could not be read).
+  let pixaiInfo, pixaiEpoch = 0;
+  async function refreshPixai() {
+    const ticket = ++pixaiEpoch;
+    if (eng() !== 'pixai' || !api.drawReady()) return;
+    const url = state().pixai.url;
+    let info = null;
+    try { info = await api.pixaiStatus(); } catch { info = null; }
+    if (v.disposed || ticket !== pixaiEpoch || eng() !== 'pixai' || state().pixai.url !== url) return;
+    pixaiInfo = info; render();
+  }
+
   let subscriptionEpoch=0;
   async function refreshSubscription(force = false) {
     const ticket=++subscriptionEpoch;
@@ -346,7 +364,7 @@ export function drawApp(ctx) {
     tab = 'prompt';
     render();
   };
-  v.refresh = () => { render(); refreshSubscription(); };
+  v.refresh = () => { render(); refreshSubscription(); refreshPixai(); };
   v.onDraw = event => {
     // A step of a picture: only its words change, nothing is redrawn under a finger.
     if (event.steps !== undefined || event.preview) {
@@ -466,7 +484,8 @@ export function drawApp(ctx) {
     const index = Number(el.dataset.index);
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
-      case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); render(); refreshSubscription(); break;
+      case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') pixaiInfo = undefined; render(); refreshSubscription(); refreshPixai(); break;
+      case 'pixai-refresh': pixaiInfo = undefined; render(); await refreshPixai(); break;
       case 'gpt-quality': api.saveDraw({gpt: {quality: el.dataset.value}}); render(); break;
       case 'gpt-orientation': api.saveDraw({gpt: {orientation: el.dataset.value}}); render(); break;
       case 'comfy-size': { const [, , width, height] = SIZES.find(s => s[0] === el.dataset.size); api.saveDraw({comfy: {width, height}}); render(); break; }
@@ -679,6 +698,7 @@ export function drawApp(ctx) {
       } catch (error) { ctx.notify('拼网格图失败：' + error.message, {error: true}); }
     }
     refreshSubscription(true);
+    refreshPixai();
     busy = false;
     render();
   }
@@ -944,5 +964,6 @@ export function drawApp(ctx) {
   readHearts();
   render();
   refreshSubscription();
+  refreshPixai();
   return v;
 }

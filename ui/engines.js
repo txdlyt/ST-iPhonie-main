@@ -35,6 +35,21 @@ export function enginesApp(ctx) {
   let embedDraft = null, embedModels = [];
   const IMAGE = ['nai', 'gpt', 'comfy', 'pixai'];
   let pixaiStatus = '';
+  // PixAI 反代 card: the points left on the PixAI account, read from the bridge's /ai/status (null: not read).
+  let pixaiCredits = null, pixaiAsked = false;
+  const pixaiCreditsText = () => pixaiCredits === null ? '—' : Number(pixaiCredits).toLocaleString('zh-CN');
+  async function loadPixaiCredits() {
+    pixaiAsked = true;
+    if (!api.getState().draw.pixai.url) { pixaiCredits = null; return; }
+    try { const status = await api.pixaiStatus(); pixaiCredits = Number.isFinite(status?.balance) ? status.balance : null; }
+    catch { pixaiCredits = null; }
+    if (!v.disposed && (engine === null || engine === 'pixai')) {
+      // The answer may arrive while the user is typing the address or token: keep what is in the fields.
+      const fields = [...v.root.querySelectorAll('[data-field]')].filter(el => el.type !== 'checkbox').map(el => [el.dataset.field, el.value, el.classList.contains('secret-visible')]);
+      render();
+      for (const [name, value, visible] of fields) { const el = v.root.querySelector(`[data-field="${name}"]`); if (el) { el.value = value; if (name === 'key') el.classList.toggle('secret-visible', visible); } }
+    }
+  }
   // Voice balances shown on the ElevenLabs and Fish cards: engine -> {value, error, loading}.
   const balances = new Map(), PRICED = ['eleven', 'fish'];
   const number = n => Number(n).toLocaleString('zh-CN');
@@ -73,7 +88,7 @@ export function enginesApp(ctx) {
     const fields = song(id) ? [['MODEL', id === 'lyria' ? st.music.sing.lyriaModel : id === 'replicate' ? st.music.sing.replicateModel : 'StepAudio 3'], ['USE', '写歌']]
       : vector ? [['MODEL', em.model || '未填写'], ['MEMORY', em.enabled ? '语义检索' : '本地检索']]
       : id === 'gpt' ? [['MODEL', d.gpt.model], ['QUALITY', d.gpt.quality.toUpperCase()]]
-      : pix ? [['FORMAT', 'NOVELAI'], ['TOKEN', api.keyStatus('pixai') ? '已填写' : '没填']]
+      : pix ? [['CREDITS', pixaiCreditsText()], ['TOKEN', api.keyStatus('pixai') ? '已填写' : '没填']]
       // A workflow that names its own model has nothing left to choose.
       : comfy ? [['MODEL', d.comfy.workflow && !d.comfy.workflow.includes('"%model%"') ? '工作流决定' : d.comfy.model ? d.comfy.model.replace(/\.[^.]*$/, '').slice(0, 18) : '未选'], ['WORKFLOW', d.comfy.workflows.find(p => p.id === d.comfy.activeWorkflow)?.name || '默认工作流']]
       : llm
@@ -385,6 +400,7 @@ export function enginesApp(ctx) {
           <div class="pocket-lip" aria-hidden="true"></div></section>`;
       }).join(''));
     for (const id of PRICED) if (!balances.has(id)) loadBalance(id);
+    if (!pixaiAsked) loadPixaiCredits();
   }
   /** The 额度 group of the ElevenLabs and Fish cards. */
   /** Fish relay (中转): an address in front of Fish Audio, saved on its own, and a check of what it forwards. */
@@ -625,7 +641,7 @@ export function enginesApp(ctx) {
     if (id === 'embed') { embedDraft = structuredClone(api.getState().embed); embedModels = []; dirty = false; render(); v.root.scrollTop = 0; return; }
     if (song(id)) { render(); v.root.scrollTop = 0; return; }
     if (id === 'nai') { render(); v.root.scrollTop = 0; loadSubscription(false); return; }
-    if (id === 'pixai') pixaiStatus = '';
+    if (id === 'pixai') { pixaiStatus = ''; loadPixaiCredits(); }
     if (id === 'gpt' || id === 'comfy' || id === 'pixai') { render(); v.root.scrollTop = 0; return; }
     if (id === 'custom') { customAddress = null; customFound = null; customNote = ''; }
     if (!drafts.has(id)) drafts.set(id, structuredClone(api.getState().connections[id]));
@@ -693,7 +709,7 @@ export function enginesApp(ctx) {
     if (el.dataset.field === 'gpt-model') { api.saveDraw({gpt: {model: el.value.trim()}}); updateGptModels(); return; }
     if (el.dataset.field === 'comfy-transport') { api.saveDraw({comfy: {loraTransport: el.value}}); return; }
     if (el.dataset.field === 'gpt-url') { saveImageField({url: el.value}, el.value.trim() ? '接口地址已保存' : '已改回直连 OpenAI'); return; }
-    if (el.dataset.field === 'pixai-url') { try { api.saveDraw({pixai: {url: el.value}}); pixaiStatus = ''; later(render); ctx.notify(el.value.trim() ? '反代地址已保存' : '反代地址已清除'); } catch (error) { ctx.notify(error.message, {error: true}); } return; }
+    if (el.dataset.field === 'pixai-url') { try { api.saveDraw({pixai: {url: el.value}}); pixaiStatus = ''; later(render); loadPixaiCredits(); ctx.notify(el.value.trim() ? '反代地址已保存' : '反代地址已清除'); } catch (error) { ctx.notify(error.message, {error: true}); } return; }
     if (el.dataset.field === 'comfy-url') { api.saveDraw({comfy: {url: el.value}}); later(render); ctx.notify('ComfyUI 地址已保存'); return; }
     if (el.dataset.field === 'guard') { api.saveDraw({guard: el.checked}); return; }
     if (el.dataset.field === 'relayOpus') { api.saveDraw({relay: {assumeOpus: el.checked}}); return; }
@@ -707,7 +723,7 @@ export function enginesApp(ctx) {
     if (!typed) return;
     try {
       if (engine === 'nai' || engine === 'gpt') { saveImageField({key: typed}, '密钥已保存'); return; }
-      if (engine === 'embed' || engine === 'pixai' || song(engine)) api.setKey(engine, typed);
+      if (engine === 'embed' || engine === 'pixai' || song(engine)) { api.setKey(engine, typed); if (engine === 'pixai') later(loadPixaiCredits); }
       else if (engine === 'llm') api.setTextKey(textDraft.active, typed);
       else { const added = api.addKeys(engine, typed); balances.delete(engine); ctx.notify(added > 1 ? `已添加 ${added} 个密钥` : '密钥已保存'); later(render); loadBalance(engine, true); if (engine === 'custom') later(findVoices); return; }
     } catch (error) { ctx.notify(error.message, {error: true}); return; }
@@ -860,6 +876,7 @@ export function enginesApp(ctx) {
           pixaiStatus = `✓ 反代在线：${health?.page ? 'PixAI 页面已连接' : 'PixAI 页面没连上（检查反代里的浏览器）'}，${health?.generating ? '正在出图' : '空闲'}。只查了 /health，没有出图。`;
         } catch (error) { pixaiStatus = '✗ ' + error.message; }
         if (!v.disposed && engine === 'pixai') render();
+        loadPixaiCredits();
         break;
       }
       case 'gpt-models': {
@@ -935,7 +952,7 @@ export function enginesApp(ctx) {
       case 'clear-key': if (engine === 'embed') { if (await ctx.confirm('清除向量模型的密钥？', '之后用向量模型需要重新填写。')) { api.clearKey('embed'); render(); } break; }
         if (engine === 'llm') { if (await ctx.confirm('清除这套接口的密钥？', '其他接口预设的密钥不受影响。')) { api.clearTextKey(textDraft.active); render(); } break; }
         if (engine === 'custom') { if (await ctx.confirm('清除这套接口的密钥？', '其他几套的密钥保留。')) { api.clearKey('custom'); render(); } break; }
-        if (engine === 'pixai') { if (await ctx.confirm('清除反代令牌？', '地址保留；反代设了令牌的话，之后需要重新填写。')) { api.clearKey('pixai'); render(); } break; }
+        if (engine === 'pixai') { if (await ctx.confirm('清除反代令牌？', '地址保留；反代设了令牌的话，之后需要重新填写。')) { api.clearKey('pixai'); render(); loadPixaiCredits(); } break; }
         if (engine === 'nai' || engine === 'gpt') { if (await ctx.confirm('清除这组连接的密钥？', '其他连接的密钥保留，这组之后需要重新填写。')) { api.clearKey(engine); imageSaved(); } break; }
         if (await ctx.confirm(['nai', 'gpt'].includes(engine) ? '清除密钥？' : '清除全部密钥？', '之后使用这个引擎需要重新填写。')) { api.clearKey(engine); if (engine === 'nai') subscription = null; balances.delete(engine); render(); } break;
       case 'song-pick': api.saveMusic({sing: {replicateModel: el.dataset.model}}); render(); break;

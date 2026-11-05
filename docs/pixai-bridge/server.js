@@ -23,7 +23,11 @@ const CONFIG = {
   // 插件没带「一次几张」信息时（没打补丁的旧插件）：按同提示词出几张、多久内算同一批
   legacySize: Number(env('LEGACY_SIZE', 4)),
   legacyTtlMs: Number(env('LEGACY_TTL_SECONDS', 120)) * 1000,
-  runTtlMs: Number(env('RUN_TTL_SECONDS', 600)) * 1000
+  runTtlMs: Number(env('RUN_TTL_SECONDS', 600)) * 1000,
+  // 找不到生图页时（比如 VPS 重启后浏览器是空白页）自动打开的地址
+  pixaiUrl: env('PIXAI_URL', 'https://pixai.art/zh/generator/image'),
+  // 打开生图页后自动选的模型（名字必须以此结尾）；设成空字符串则不自动选
+  model: env('PIXAI_MODEL', 'MiaoMiao RealSkin 1.4')
 };
 
 const app = express();
@@ -48,14 +52,87 @@ app.use(express.json({ limit: '20mb' }));
 let browser;
 let generating = false;
 
-async function getPixAIPage() {
+async function connectBrowser() {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.connectOverCDP(CONFIG.cdp);
   }
-  const pages = browser.contexts()[0].pages();
-  const page = pages.find(p => p.url().includes('/generator/image'));
-  if (!page) throw new Error('找不到已登录的 PixAI 生图页面');
+  return browser;
+}
+
+let opening = null;
+
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// 页面是繁体，按文字匹配并兼容简繁。
+// 流程：点「查看全部模型」→ 搜索框输入模型名 → 选中名字以该模型名结尾的卡片（如 ...1.4）→ 点「使用這個模型」
+async function selectModel(page, model) {
+  if (!model) return;
+  console.log(`正在选择模型：${model}`);
+
+  await page.getByRole('button', { name: /查看全部模型/ }).first().click({ timeout: 15000 });
+
+  const dialog = page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: /市集/ }).last();
+  await dialog.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+  const scoped = (await dialog.count()) > 0;
+  const root = scoped ? dialog : page;
+
+  const search = scoped ? root.locator('input:visible').first() : page.locator('input:visible').last();
+  await search.waitFor({ state: 'visible', timeout: 15000 });
+  await search.fill(model);
+  await search.press('Enter');
+
+  const name = new RegExp(model.trim().split(/\s+/).map(escapeRegExp).join('\\s*') + '\\s*$', 'i');
+  const card = root.getByText(name).last();
+  try {
+    await card.waitFor({ state: 'visible', timeout: 20000 });
+  } catch {
+    await page.keyboard.press('Escape').catch(() => {});
+    throw new Error(`搜索结果里没有名字以「${model}」结尾的模型`);
+  }
+  await card.click();
+  await sleep(800);
+
+  const use = root.getByRole('button', { name: /使用[這这][個个]模型/ }).first();
+  await use.waitFor({ state: 'visible', timeout: 15000 });
+  await use.click();
+  await search.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+  console.log(`已选择模型：${model}`);
+}
+
+// 找不到生图页就自己打开：优先复用空白页 / PixAI 其他页，否则新开标签。登录状态来自浏览器持久化数据，不用重新登录。
+async function openGeneratorPage() {
+  const ctx = (await connectBrowser()).contexts()[0];
+  const pages = ctx.pages();
+  const page = pages.find(p => /^(about:blank|chrome:\/\/newtab)/.test(p.url()))
+    ?? pages.find(p => p.url().includes('pixai.art'))
+    ?? await ctx.newPage();
+
+  console.log(`未找到生图页，正在打开：${CONFIG.pixaiUrl}`);
+  await page.goto(CONFIG.pixaiUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+  const ready = await page
+    .locator('div[contenteditable="true"].tiptap.ProseMirror')
+    .waitFor({ state: 'visible', timeout: 30000 })
+    .then(() => true, () => false);
+
+  if (!page.url().includes('/generator/image')) {
+    const error = new Error(`打开生图页后被跳转到 ${page.url()}，登录可能已失效，请人工重新登录一次`);
+    error.login = true;
+    throw error;
+  }
+  if (!ready) console.log('生图页已打开，但提示词输入框暂未出现');
+
+  await selectModel(page, CONFIG.model).catch(error => console.error('自动选模型失败，请人工检查：', error.message));
   return page;
+}
+
+async function getPixAIPage() {
+  if (opening) return await opening;
+  const ctx = (await connectBrowser()).contexts()[0];
+  const existing = ctx.pages().find(p => p.url().includes('/generator/image'));
+  if (existing) return existing;
+  // 并发调用只开一次页面
+  return await (opening ??= openGeneratorPage().finally(() => { opening = null; }));
 }
 
 function crc32(buffer) {
@@ -367,6 +444,181 @@ app.get('/debug/controls', async (_req, res) => {
   }
 });
 
+// 积分数字是 NumberFlow 动画组件画在 shadow DOM 里的，网页文字读不到；数值通过无障碍树的名字暴露，用 CDP 读。
+const BALANCE_HOST = `(() => { const b = Array.from(document.querySelectorAll('button')).find(el => /^(儲值|储值|充值)$/.test(el.textContent.trim())); return (b && b.parentElement && b.parentElement.querySelector('number-flow-react')) || null; })()`;
+const COST_HOST = `(() => { const g = document.querySelector('section[class*="group/prompt-box"] button[data-react-aria-pressable="true"]'); return (g && g.querySelector('number-flow-react')) || null; })()`;
+
+async function axName(page, expression) {
+  let client;
+  try {
+    client = await page.context().newCDPSession(page);
+    const { result } = await client.send('Runtime.evaluate', { expression });
+    if (!result?.objectId) return null;
+    const { node } = await client.send('DOM.describeNode', { objectId: result.objectId });
+    const { nodes } = await client.send('Accessibility.getPartialAXTree', { backendNodeId: node.backendNodeId, fetchRelatives: false });
+    return nodes?.[0]?.name?.value ?? null;
+  } catch {
+    return null;
+  } finally {
+    await client?.detach().catch(() => {});
+  }
+}
+
+const toNumber = v => {
+  const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+(?:\.\d+)?)\s*$/);
+  return m ? Number(m[1]) : null;
+};
+
+// 读取页面上当前的出图设置和积分。只读，不点任何东西，生成过程中也能调用；读不到的字段返回 null，不猜。
+async function readPageStatus(page, debug = false) {
+  const { out, hasBalHost, hasCostHost } = await page.evaluate(debug => {
+    const visible = el => !!(el.offsetWidth || el.offsetHeight);
+    const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const clean = (html, n) => html
+      .replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<img[^>]*>/g, '<img/>')
+      .replace(/ (class|style|id|data-rac|data-react-aria-pressable|tabindex)="[^"]*"/g, '')
+      .replace(/\s+/g, ' ').slice(0, n);
+    const toNum = v => { const m = String(v ?? '').replace(/,/g, '').match(/^\s*(\d+(?:\.\d+)?)\s*$/); return m ? Number(m[1]) : null; };
+    const hint = el => String(el.className || '').split(/\s+/).filter(c => /ring-|selected|violet|border-|bg-neutral/.test(c)).slice(0, 8).join(' ');
+    const buttons = Array.from(document.querySelectorAll('button, [role="radio"]')).filter(visible);
+
+    const isOn = el => {
+      const a = n => el.getAttribute(n);
+      return a('aria-checked') === 'true' || a('aria-pressed') === 'true' || a('aria-selected') === 'true' ||
+        a('data-selected') === 'true' || a('data-pressed') === 'true' || ['on', 'checked', 'active', 'selected'].includes(a('data-state'));
+    };
+    // 比例按钮：选中的带 ring-neutral-700（从页面实际 HTML 看出）；其余情况退回「样式上唯一不同」
+    const marked = el => isOn(el) || /(^|\s)ring-neutral-700(\s|$)/.test(String(el.className || ''));
+    const pickSelected = group => {
+      const hit = group.find(marked);
+      if (hit) return hit;
+      if (group.length < 2) return null;
+      const sig = el => { const st = getComputedStyle(el); return [st.backgroundColor, st.borderTopColor, st.boxShadow, st.color, st.fontWeight].join('|'); };
+      const counts = new Map();
+      group.forEach(el => counts.set(sig(el), (counts.get(sig(el)) || 0) + 1));
+      const odd = group.filter(el => counts.get(sig(el)) === 1);
+      return odd.length === 1 ? odd[0] : null;
+    };
+
+    const flowInfo = host => {
+      if (!host) return null;
+      const d = host.data;
+      const sr = host.shadowRoot;
+      return {
+        fromData: d ? String(d.valueAsString ?? d.value ?? '') || null : null,
+        fromAria: host.getAttribute('aria-label'),
+        shadowText: sr ? (sr.textContent || '').replace(/\s+/g, '') : null,
+        shadowHtml: debug && sr ? clean(sr.innerHTML, 1500) : undefined
+      };
+    };
+
+    // 一次出几张
+    const radios = buttons.filter(el => el.getAttribute('role') === 'radio');
+    const countEl = pickSelected(radios);
+    const countLabel = countEl ? text(countEl) : null;
+    let count = null;
+    if (countLabel) {
+      const m = /x\s*(\d+)/i.exec(countLabel);
+      count = m ? Number(m[1]) : /單張|单张/.test(countLabel) ? 1 : null;
+    }
+
+    // 分辨率
+    const ratios = buttons.filter(el => /^\d+:\d+$/.test(text(el)));
+    const sizes = buttons.filter(el => /^[A-Z]{1,3}\s*\d+\s*[×x]\s*\d+$/i.test(text(el)));
+    const ratioEl = pickSelected(ratios);
+    const sizeEl = pickSelected(sizes);
+    const sm = sizeEl ? /([A-Z]{1,3})\s*(\d+)\s*[×x]\s*(\d+)/i.exec(text(sizeEl)) : null;
+
+    // 剩余积分：「儲值」按钮同一容器里的 number-flow 组件
+    const topup = Array.from(document.querySelectorAll('button')).find(el => /^(儲值|储值|充值)$/.test(el.textContent.trim()));
+    const balHost = topup && topup.parentElement ? topup.parentElement.querySelector('number-flow-react') : null;
+    const bal = flowInfo(balHost);
+    const balance = bal ? (toNum(bal.fromData) ?? toNum(bal.fromAria)) : null;
+
+    // 消耗积分：生成按钮上的数字
+    const gen = document.querySelector('section[class*="group/prompt-box"] button[data-react-aria-pressable="true"]');
+    const costHost = gen ? gen.querySelector('number-flow-react') : null;
+    const costInfo = flowInfo(costHost);
+    const genText = gen ? (gen.textContent || '').replace(/\s+/g, ' ').trim() : null;
+    // 实测：生成按钮里「啟動！」那段有个只含数字的 span（如 4,200），其余文字都不是纯数字
+    const costSpan = gen ? Array.from(gen.querySelectorAll('span')).find(el => !el.children.length && /^\d[\d,]*$/.test((el.textContent || '').trim())) : null;
+    const cost = costSpan ? toNum(costSpan.textContent) : null;
+
+    const out = {
+      count,
+      countLabel,
+      resolution: {
+        ratio: ratioEl ? text(ratioEl) : null,
+        size: sm ? sm[1].toUpperCase() : null,
+        width: sm ? Number(sm[2]) : null,
+        height: sm ? Number(sm[3]) : null,
+        label: sizeEl ? text(sizeEl) : null
+      },
+      cost,
+      balance
+    };
+
+    if (debug) {
+      out.raw = {
+        balanceFlow: bal,
+        costFlow: costInfo,
+        generateButtonText: genText,
+        generateButtonHtml: gen ? clean(gen.outerHTML, 1500) : null,
+        radios: radios.map(el => ({ text: text(el), on: marked(el) })),
+        ratios: ratios.map(el => ({ text: text(el), on: marked(el), hint: hint(el) })),
+        sizes: sizes.map(el => ({ text: text(el), on: marked(el), hint: hint(el) })),
+        numberFlows: Array.from(document.querySelectorAll('number-flow-react')).slice(0, 10).map(el => {
+          const btn = el.closest('button');
+          return { inButton: btn ? (btn.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) : null, info: flowInfo(el) };
+        })
+      };
+    }
+    return { out, hasBalHost: !!balHost, hasCostHost: !!costHost };
+  }, debug);
+
+  // 页面里读不到数值时，用无障碍树的名字兜底
+  let axBalance = null, axCost = null;
+  if (out.balance === null && hasBalHost) { axBalance = await axName(page, BALANCE_HOST); out.balance = toNumber(axBalance); }
+  if (out.cost === null && hasCostHost) { axCost = await axName(page, COST_HOST); out.cost = toNumber(axCost); }
+  if (debug) out.raw.ax = { balance: axBalance, cost: axCost };
+  return out;
+}
+
+// 给酒馆插件取的参数：GET /ai/status（带密钥时同样要 Authorization）；加 ?debug=1 会多返回原始节点信息，用来校准选择器
+app.get('/ai/status', async (req, res) => {
+  try {
+    const page = await getPixAIPage();
+    const status = await readPageStatus(page, req.query.debug === '1');
+    res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    res.status(503).json({ ok: false, message: error.message });
+  }
+});
+
+// 调试：导出顶栏（积分）、提示词框（生成按钮）、设置区（张数/比例/尺寸）的 HTML，用来校准选择器：curl http://127.0.0.1:3188/debug/dom
+app.get('/debug/dom', async (_req, res) => {
+  try {
+    const page = await getPixAIPage();
+    const dom = await page.evaluate(() => {
+      const visible = el => !!(el.offsetWidth || el.offsetHeight);
+      const cut = (el, n) => el
+        ? el.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<img[^>]*>/g, '<img/>').replace(/\s+/g, ' ').slice(0, n)
+        : null;
+      const up = (el, n) => { for (let i = 0; i < n && el?.parentElement; i++) el = el.parentElement; return el; };
+      const topup = Array.from(document.querySelectorAll('button')).find(el => /^(儲值|储值|充值)$/.test((el.innerText || '').trim()));
+      const radio = Array.from(document.querySelectorAll('[role="radio"]')).find(visible);
+      return {
+        header: cut(up(topup, 3), 3000),
+        promptBox: cut(document.querySelector('section.group\\/prompt-box'), 5000),
+        settings: cut(up(radio, 5), 9000)
+      };
+    });
+    res.json(dom);
+  } catch (error) {
+    res.status(503).json({ message: error.message });
+  }
+});
+
 /** bridge_batch: {run, index, size}，格式不对就当没带。 */
 function readHint(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -444,3 +696,18 @@ let requestQueue = Promise.resolve();
 app.listen(CONFIG.port, '0.0.0.0', () => {
   console.log(`PixAI Bridge API listening on ${CONFIG.port}`);
 });
+
+// 启动后自动打开生图页；浏览器可能还没起来，所以重试一阵
+(async () => {
+  for (let i = 1; i <= 30; i++) {
+    try {
+      const page = await getPixAIPage();
+      console.log(`PixAI 生图页就绪：${page.url()}`);
+      return;
+    } catch (error) {
+      console.log(`等待浏览器/生图页（${i}/30）：${error.message}`);
+      if (error.login) return;
+      await sleep(5000);
+    }
+  }
+})();

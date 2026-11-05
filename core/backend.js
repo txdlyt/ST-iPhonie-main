@@ -1573,6 +1573,15 @@ export class TTSBackend {
         const response = await this.pixai.call('/health', { method: 'GET', headers: {} });
         return response.json().catch(() => ({}));
     }
+    /** PixAI 反代: the bridge's /ai/status (the token is sent when there is one): {count, resolution, cost, balance …}; a field the bridge cannot read is null. */
+    async pixaiStatus() {
+        this.assertOpen();
+        const url = this.settings.draw.pixai.url;
+        if (!url) throw Error('还没有填写 PixAI 反代地址');
+        this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
+        const response = await this.pixai.call('/ai/status', { method: 'GET', headers: this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {} });
+        return response.json().catch(() => ({}));
+    }
     async gptModels() { this.assertOpen(); return gptModels({ fetch: this.imageFetch, settings: this.settings.draw.gpt, key: this.gptKey }); }
     /** ComfyUI: connection check and what it offers (models, samplers, schedulers). url: an address not saved yet. */
     async comfyCatalog(url) { this.assertOpen(); return comfyCatalog({ fetch: this.imageFetch, headers: this.tavernHeaders(), url: comfyUrl(url ?? this.settings.draw.comfy.url) }); }
@@ -3492,6 +3501,7 @@ export class TTSBackend {
             saveEmbed: patch => this.saveEmbed(clone(patch)), embedReady: () => this.embedReady(), embedModels: draft => this.embedModels(clone(draft || {})),
             gptModels: () => this.gptModels(),
             pixaiHealth: () => this.pixaiHealth(),
+            pixaiStatus: () => this.pixaiStatus(),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
             unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId),
