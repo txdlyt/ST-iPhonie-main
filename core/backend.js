@@ -1692,7 +1692,8 @@ export class TTSBackend {
             // PixAI 反代: which picture of a request for several this is ({run, index, size}); alone, a request of one. Fixed here, so a retry asks for the same picture.
             const pixaiBatch = engine === 'pixai' ? normalizeBatch(batch) || { run: crypto.randomUUID(), index: 0, size: 1 } : null;
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
-            const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
+            // PixAI 反代 is not the NovelAI account: no pause between its pictures (the 2nd to 4th of a batch are only handed out by the bridge).
+            const job = this.drawQueue.add({ key, gap: engine === 'pixai' ? 0 : undefined, label: label || String(prompt).slice(0, 40), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;

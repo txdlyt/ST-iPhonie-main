@@ -40,11 +40,11 @@ export class DrawQueue {
     this.remoteError = '';
     this.running = false;
   }
-  /** Adds a job; the same key joins the job already in line. task(signal) makes the request. */
-  add({key = crypto.randomUUID(), label = '', task}) {
+  /** Adds a job; the same key joins the job already in line. task(signal) makes the request. `gap` (ms) replaces the usual pause before it, and 0 also leaves the shared last-request time alone (a request that does not go to the NovelAI account). */
+  add({key = crypto.randomUUID(), label = '', task, gap}) {
     const existing = this.jobs.find(j => j.key === key);
     if (existing) return existing.promise;
-    const job = {key, label, task, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
+    const job = {key, label, task, gap, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     this.jobs.push(job);
     this.changed();
@@ -102,7 +102,7 @@ export class DrawQueue {
     const signal = job.controller.signal;
     try {
       for (let attempt = 0; ; attempt++) {
-        const readyAt = this.storage.get() + this.gap();
+        const readyAt = job.gap === undefined ? this.storage.get() + this.gap() : this.now() + job.gap;
         if (readyAt > this.now()) {
           job.state = 'spacing'; job.until = readyAt; this.changed();
           await this.wait(readyAt - this.now(), signal);
@@ -111,13 +111,13 @@ export class DrawQueue {
         job.state = 'running'; job.attempt = attempt; job.until = 0; job.cloud = null; this.changed();
         try {
           const result = await job.task(signal);
-          this.storage.set(this.now());
+          if (job.gap === undefined) this.storage.set(this.now());
           lease?.release('done');
           job.settled = true;
           job.resolve(result);
           return;
         } catch (error) {
-          this.storage.set(this.now());
+          if (job.gap === undefined) this.storage.set(this.now());
           const delay = error?.status === 429 ? this.backoff(attempt + 1) : 0;
           // A 429 makes everyone in the cloud queue wait as well.
           lease?.release(delay ? 'busy' : 'done', delay);
