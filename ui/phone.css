@@ -316,6 +316,10 @@ button[aria-pressed=true] small,.primary small{color:inherit;opacity:.85}
 .setting-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:58px;padding:10px 0}
 .setting-row+.setting-row{border-top:1px solid var(--line)}
 .setting-row>span{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:14px;font-weight:700}
+/* A switch's name keeps its little i right after its last word: a long name folds into two even lines instead of leaving the
+   i alone on a line below. */
+.setting-row>.switch-label{display:block;text-wrap:balance}
+.setting-row>.switch-label>.info{vertical-align:middle;margin-left:6px}
 .setting-row small{font-weight:600}
 .switch{appearance:none;-webkit-appearance:none;width:50px;height:30px;border-radius:999px;background:var(--line);position:relative;flex-shrink:0;cursor:pointer;margin:0;transition:background .2s}
 .switch:after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.2);transition:transform .25s cubic-bezier(.3,1.4,.5,1)}
@@ -820,7 +824,7 @@ details>div{padding-bottom:10px}
 .group-av i:nth-child(1){left:0;top:4%}.group-av i:nth-child(2){right:0;top:4%}.group-av i:nth-child(3){left:22%;bottom:0}
 .pick-list{display:flex;flex-direction:column}
 .pick-list .list-row{min-height:56px;padding:8px 0}
-.pick-list .setting-row>span{gap:10px}
+.pick-list .setting-row>span{gap:10px}.pick-list .setting-row>.switch-label>.info{margin-left:10px}
 /* Thread: the view becomes a column with its own scrolling message list and a composer at the bottom. */
 .view.chat-mode{padding:0;overflow:hidden}
 .view.chat-mode:before{display:none}
@@ -1070,8 +1074,10 @@ html[data-keyboard=true] *{animation:none!important;transition:none!important}
 .wall-motion{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .wall-motion i,.wall-motion b,.call-motion i,.call-motion b{position:absolute;display:block;will-change:transform,opacity;animation-delay:var(--delay,0s)}
 .screen[data-wall-motion=off] .wall-motion,.screen[data-view=app] .wall-motion{display:none}
-/* Under a sheet nothing behind moves: the sheet's frosted glass would blur the whole screen again on every frame. */
-.screen:has(>.overlay) .wall-motion *,.screen:has(>.overlay) .wall-motion *::before,.screen:has(>.overlay) .aura i,.screen:has(>.overlay) .aura::before,.screen:has(.home[data-today-in]) .wall-motion *,.screen:has(.home[data-today-in]) .wall-motion *::before{animation-play-state:paused}
+/* Under a sheet nothing behind moves: the sheet's frosted glass would blur the whole screen again on every frame.
+   Marked on the screen by phone.js (syncStill), not with .screen:has(…): with :has() on the screen the browser restyled
+   everything in it whenever anything anywhere inside was added or taken out (each message of a chat, 2026-11-05). */
+.screen[data-under-sheet] .wall-motion *,.screen[data-under-sheet] .wall-motion *::before,.screen[data-under-sheet] .aura i,.screen[data-under-sheet] .aura::before,.screen[data-today-in] .wall-motion *,.screen[data-today-in] .wall-motion *::before{animation-play-state:paused}
 @media (prefers-reduced-motion:reduce){.wall-motion,.call-motion{display:none}}
 /* 晴空 · 月白: clouds drifting across */
 /* Keep every gradient's transparent edge inside its box, so drifting clouds have no clipped vertical seam. */
@@ -1851,6 +1857,19 @@ button.gift-item[data-short]{opacity:.55}
 .token-meter[data-state=over] small,.token-meter[data-state=over] b{color:var(--danger)}
 /* ---------- Chat background scenes (ui/chat-scenes.js): a still picture behind the messages and a moving layer ---------- */
 .msgs-wrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+/* 0.9.26: the notes over the messages (新消息 below while scrolled up, 未读 above when opened), the versions of the last round, a reply that did not come, 停止, a draft in the list, a note that opens its chat */
+.chat-jump{position:absolute;z-index:3;display:flex;align-items:center;gap:4px;padding:6px 12px;border:0;border-radius:999px;font:inherit;font-size:12px;font-weight:800;color:var(--accent-ink);background:var(--card);box-shadow:0 3px 12px rgba(0,0,0,.14);cursor:pointer}
+.chat-jump svg{width:14px;height:14px}
+.chat-jump-new{bottom:10px;left:50%;transform:translateX(-50%)}
+.chat-jump-unread{top:10px;right:12px}
+.chat-versions{align-self:center;display:flex;align-items:center;gap:10px;margin:-2px 0 4px;font-size:12px;font-weight:700;color:var(--ink2)}
+.chat-versions .icon-button{min-width:32px;min-height:28px}
+.sys.chat-failed{flex-wrap:wrap;justify-content:center;row-gap:2px;border-radius:14px;color:var(--danger);background:var(--danger-soft)}
+.sys.chat-failed small{flex-basis:100%;font-weight:600;opacity:.8}
+.sys.chat-failed svg{width:14px;height:14px}
+.composer .send.stop{background:var(--danger-soft);color:var(--danger);box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--danger) 35%,transparent)}
+.draft-mark{font-style:normal;color:var(--danger);margin-right:2px}
+.toast.tappable{cursor:pointer;pointer-events:auto}
 .chat-scene{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
 .cs-art{position:absolute;inset:0;overflow:hidden}
 .cs-sky{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -2296,6 +2315,26 @@ button.gift-item[data-short]{opacity:.55}
 .friend-cut span{flex:1;min-width:0}
 .friend-row{cursor:default}
 .friend-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.friend-row{flex-wrap:wrap;row-gap:4px}
+.friend-ask{flex:1 1 100%;margin:0 0 0 54px;font-size:13px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere}
+/* 黑名单 (0.9.27): the banner of a blocked chat, its mark in the list, the 拦截记录. */
+/* Go Music (0.9.28): a login's QR code, the login rows, the categories of 发现. */
+.go-qr{display:grid;place-items:center;padding:6px 0}
+.go-qr img{width:min(240px,70vw);height:auto;image-rendering:pixelated;border-radius:12px;background:#fff}
+.go-login,.go-account{flex-wrap:wrap;row-gap:6px}
+.list-row.go-login>span:not(.avatar):not(.plate),.list-row.go-account>span:not(.avatar):not(.plate){flex:1 1 130px;min-width:0}
+.go-login small,.go-account small{display:block}
+.go-login>button,.go-account>button{flex-shrink:0}
+.list-row.go-login>span.go-tools:not(.avatar):not(.plate){flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-left:auto}
+.go-cats{max-height:132px;overflow:auto}
+.friend-cut.is-blocked{flex-wrap:wrap;row-gap:6px;padding-bottom:26px;background:var(--card2);color:var(--ink2)}
+.friend-cut.is-blocked span{flex:1 1 calc(100% - 32px)}
+.friend-cut.is-blocked>button:first-of-type{margin-left:auto}
+.friend-cut.is-blocked svg{color:var(--ink2)}
+.tag-blocked{background:var(--danger-soft,#ffe3e8);color:var(--danger,#c8364f)}
+.held-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.held-list li{display:flex;flex-direction:column;gap:2px;padding:9px 12px;border-radius:14px;background:var(--card2);font-size:14px;overflow-wrap:anywhere}
+.held-list time{font-size:11px;color:var(--ink2)}
 /* 助手 · 智能界面 and 出图块 cards: native pieces in a reply, in the phone's own colours. */
 .assistant-ui{display:grid;gap:10px;margin:8px 0}
 .aui{border:1px solid var(--line);border-radius:14px;background:var(--card2);padding:10px 12px;min-width:0}
@@ -2865,8 +2904,10 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .segmented button{position:relative;z-index:1}
 .seg-pill{position:absolute;z-index:0;pointer-events:none;transform-origin:left center}
 .segmented button.seg-arriving{background:transparent!important;border-color:transparent!important;box-shadow:none!important;transition:color .2s,transform .35s cubic-bezier(.3,1.7,.45,1)}
-/* Decorated bubbles move only on the last few messages: dozens of moving bubbles would cost a phone every frame. */
-.chat-thread .msg:not(:nth-last-child(-n+6)) .chat-bubble,.chat-thread .msg:not(:nth-last-child(-n+6)) .chat-bubble::before,.chat-thread .msg:not(:nth-last-child(-n+6)) .chat-bubble::after{animation-play-state:paused}
+/* Decorated bubbles move only on the last few messages: dozens of moving bubbles would cost a phone every frame. The
+   last six are marked by chat.js (data-recent): :nth-last-child() made the browser restyle every message whenever a row
+   came or went at the end (the typing dots, each new message). */
+.chat-thread .msg:not([data-recent]) .chat-bubble,.chat-thread .msg:not([data-recent]) .chat-bubble::before,.chat-thread .msg:not([data-recent]) .chat-bubble::after{animation-play-state:paused}
 /* A long note folded into a small 「ⓘ 说明」 (ui/motion.js); tapped, the note opens under it. */
 .note-chip{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:5px;margin:6px 4px 4px;padding:3px 10px 3px 4px;border-radius:999px;font-size:12px;font-weight:700;color:var(--ink2);background:color-mix(in srgb,var(--ink2) 9%,transparent);cursor:pointer;transition:background .2s,color .2s,transform .3s cubic-bezier(.3,1.6,.45,1)}
 .note-chip i{display:grid;place-items:center;width:17px;height:17px;border-radius:50%;font:italic 800 11px/1 Georgia,serif;color:var(--card);background:var(--ink2);transition:transform .35s cubic-bezier(.3,1.6,.45,1)}

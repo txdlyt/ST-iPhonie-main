@@ -13,22 +13,39 @@
 // A thread can be pinned (置顶) or muted (免打扰: its unread messages do not count toward the app's badge).
 // friend (删好友, private chats only): {by:'me'|'them', at, requests:[{text, at}]} — by 'me': the user deleted the contact
 // (the chat is put away; what the contact sends meanwhile waits as 好友申请 in requests); by 'them': the contact deleted
-// the user (the user's messages are refused until a 好友申请 is accepted).
+// the user (the user's messages are refused until a 好友申请 is accepted). refused: when the user last turned down a 好友申请.
+// blocked (黑名单, private chats only): {at, held:[{kind, text, at}], requests:[{text, at}], refused} — the user blocked the
+// contact: what they send meanwhile is held (拦截记录, never in the chat), a 好友申请 waits in requests; the chat stays.
 // streak (聊天火花): days in a row, up to today or yesterday, on which both the user and the other side wrote.
+// alts (重新回复的几个版本, the last round only): {after: the user's message the round answers ('' at the start), versions:
+// [[Message]], shown: which one is in messages}. Any message added after it, or that message deleted, ends them.
 import {connectionLost, lostError, breath} from './idb.js';
 
-export const CHAT_STORE_LIMITS = Object.freeze({messages: 1000, text: 4000, members: 20, fileText: 30000});
+export const CHAT_STORE_LIMITS = Object.freeze({messages: 1000, text: 4000, members: 20, fileText: 30000, versions: 10, held: 50});
+/** A chat's last round: the contacts' messages after the user's last one (after: that message's id, '' at the start). */
+export function lastRound(messages) {
+  const list = Array.isArray(messages) ? messages : [], at = list.findLastIndex(m => m.from === 'me' && m.kind !== 'system');
+  return {after: at >= 0 ? String(list[at].id) : '', round: list.slice(at + 1).filter(m => m.from !== 'me')};
+}
 const KINDS = ['text', 'voice', 'photo', 'sticker', 'system', 'redpacket', 'transfer', 'location', 'pat', 'dice', 'notice', 'recall', 'call', 'gift', 'song', 'file'];
 const CALL_STATES = ['answered', 'missed', 'declined', 'cancelled'];
 const spoken = (list, max, withFrom) => (Array.isArray(list) ? list : []).slice(-max).filter(l => l && String(l.text || l.translation || '').trim()).map(l => ({...(withFrom ? {from: clip(l.from, 40).trim() || 'me'} : {}), text: clip(l.text || l.translation, 1000), translation: clip(l.translation || l.text, 1000), emotion: clip(l.emotion || 'calm', 100)}));
 const STATES = {redpacket: ['sent', 'opened'], transfer: ['sent', 'accepted', 'returned'], gift: ['sent', 'accepted', 'returned']};
 /** The messages that can be edited: their words; a photo keeps its picture. */
 export const EDITABLE_KINDS = Object.freeze(['text', 'voice', 'photo']);
+const requestsOf = list => (Array.isArray(list) ? list : []).filter(r => r && String(r.text || '').trim()).slice(-10).map(r => ({text: clip(r.text, 300).trim(), at: Number.isFinite(r.at) ? r.at : 0}));
+const refusedOf = v => Number.isFinite(v) && v > 0 ? {refused: v} : {};
 /** A private chat's 删好友 state, checked; null when there is none. */
 export function cleanFriend(f) {
   if (!f || typeof f !== 'object' || !['me', 'them'].includes(f.by)) return null;
-  const requests = (Array.isArray(f.requests) ? f.requests : []).filter(r => r && String(r.text || '').trim()).slice(-10).map(r => ({text: clip(r.text, 300).trim(), at: Number.isFinite(r.at) ? r.at : 0}));
-  return {by: f.by, at: Number.isFinite(f.at) ? f.at : 0, requests};
+  return {by: f.by, at: Number.isFinite(f.at) ? f.at : 0, requests: requestsOf(f.requests), ...refusedOf(f.refused)};
+}
+/** A private chat's 黑名单 state, checked; null when there is none. */
+export function cleanBlocked(b) {
+  if (!b || typeof b !== 'object') return null;
+  const held = (Array.isArray(b.held) ? b.held : []).filter(h => h && String(h.text || '').trim()).slice(-CHAT_STORE_LIMITS.held)
+    .map(h => ({kind: clip(h.kind, 20).trim() || 'text', text: clip(h.text, 500).trim(), at: Number.isFinite(h.at) ? h.at : 0}));
+  return {at: Number.isFinite(b.at) ? b.at : 0, held, requests: requestsOf(b.requests), ...refusedOf(b.refused)};
 }
 /** The words a search looks through in a message. */
 export function messageWords(m) {
@@ -119,6 +136,15 @@ function cleanMessage(m, id, at) {
   if (!textless.includes(kind) && !out.text.trim()) throw fail('消息内容为空');
   return out;
 }
+/** A chat's 重新回复 versions, checked (a message that does not hold is left out); null when fewer than two are left. */
+function cleanAlts(a, makeId) {
+  if (!a || typeof a !== 'object' || !Array.isArray(a.versions)) return null;
+  const versions = a.versions.slice(-CHAT_STORE_LIMITS.versions).map(list => (Array.isArray(list) ? list : []).slice(0, 100).flatMap(m => {
+    try { return [cleanMessage(m, clip(m?.id || makeId(), 512), Number.isFinite(m?.at) ? m.at : 0)]; } catch { return []; }
+  }));
+  if (versions.length < 2) return null;
+  return {after: clip(a.after, 512), versions, shown: Math.max(0, Math.min(versions.length - 1, Math.round(Number(a.shown)) || 0))};
+}
 
 // Where the pages of a browser see that one of them wrote (a page with no storage of its own: only itself).
 const pageStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
@@ -201,8 +227,9 @@ export class ChatStore {
     return structuredClone({pinned: false, muted: false, ...rest});
   }
   #summary(row) {
-    const {scope, messages, ...rest} = row;
-    return structuredClone({pinned: false, muted: false, ...rest, count: messages.length, last: messages.filter(m => m.kind !== 'system').at(-1) || null, streak: this.#streak(messages)});
+    const {scope, messages, alts, blocked, ...rest} = row;
+    // A blocked chat's 拦截记录 stays out of the list: only how much there is.
+    return structuredClone({pinned: false, muted: false, ...rest, ...(blocked ? {blocked: {at: blocked.at, requests: blocked.requests, count: blocked.held.length, ...refusedOf(blocked.refused)}} : {}), count: messages.length, last: messages.filter(m => m.kind !== 'system').at(-1) || null, streak: this.#streak(messages)});
   }
   #streak(messages) {
     const day = at => { const d = new Date(at); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
@@ -257,7 +284,7 @@ export class ChatStore {
       done(this.#public(row));
     }));
   }
-  async update(id, {name, members, pinned, muted, friend, story, open, label} = {}) {
+  async update(id, {name, members, pinned, muted, friend, blocked, befriended, story, open, label} = {}) {
     return this.#change(id, row => {
       // 聊天窗口: a private chat can have several; the one opened last is the one the list shows and replies go to.
       if (open === true) row.openedAt = this.#now();
@@ -265,6 +292,9 @@ export class ChatStore {
       // 一直带着: the story always knows this chat (its memory and what is not written up yet).
       if (story !== undefined) { if (story === true) row.story = true; else delete row.story; }
       if (friend !== undefined && row.type === 'dm') { const f = cleanFriend(friend); if (f) row.friend = f; else delete row.friend; }
+      if (blocked !== undefined && row.type === 'dm') { const b = cleanBlocked(blocked); if (b) row.blocked = b; else delete row.blocked; }
+      // befriended: when the user last took them back (a 好友申请 passed, or 添加), told to the story for a while.
+      if (befriended !== undefined && row.type === 'dm') { if (Number.isFinite(befriended) && befriended > 0) row.befriended = befriended; else delete row.befriended; }
       if (pinned !== undefined) row.pinned = pinned === true;
       if (muted !== undefined) row.muted = muted === true;
       if (name !== undefined) row.name = clip(name, 40).trim() || row.name;
@@ -282,8 +312,46 @@ export class ChatStore {
       const now = this.#now();
       const added = messages.map((m, i) => cleanMessage(m, this.#id(), now + i));
       row.messages.push(...added);
+      // Anything coming after the last round ends its versions (it is no longer the last).
+      if (added.length) delete row.alts;
       if (!read) row.unread += added.filter(m => m.from !== 'me' && !['system', 'notice', 'recall'].includes(m.kind)).length;
       row.updatedAt = now;
+    });
+  }
+  /**
+   * 重新回复 came back: the chat's last round (the contacts' messages after the user's last one) gives way to these
+   * messages and stays among the round's versions (at most CHAT_STORE_LIMITS.versions), to be shown again. after: the
+   * user's message the round answered when it was asked; a chat that moved on since is not changed.
+   */
+  async replaceRound(id, after, messages, {read = false} = {}) {
+    return this.#change(id, row => {
+      const last = lastRound(row.messages);
+      if (last.after !== String(after ?? '')) throw fail('这段聊天已经变了，这次重新回复没有写入', 'CHANGED');
+      const now = this.#now(), added = messages.map((m, i) => cleanMessage(m, this.#id(), now + i)), old = new Set(last.round.map(m => m.id));
+      // The versions so far (the one showing as it is now: edited, drawn, some deleted), or the round being replaced.
+      const kept = row.alts?.after === last.after ? row.alts.versions.map((list, i) => i === row.alts.shown ? last.round : list) : last.round.length ? [last.round] : [];
+      const versions = [...kept, added].slice(-CHAT_STORE_LIMITS.versions);
+      row.messages = [...row.messages.filter(m => !old.has(m.id)), ...added];
+      if (versions.length > 1) row.alts = structuredClone({after: last.after, versions, shown: versions.length - 1}); else delete row.alts;
+      if (!read) row.unread += added.filter(m => m.from !== 'me' && !['system', 'notice', 'recall'].includes(m.kind)).length;
+      row.updatedAt = now;
+    });
+  }
+  /**
+   * Another version of the last round shows. Its messages come back with new ids (the ones they had were deleted from
+   * the chat, maybe on another device too); the round that showed goes back among the versions as it is now.
+   */
+  async showRound(id, index) {
+    return this.#change(id, row => {
+      const alts = row.alts, last = lastRound(row.messages);
+      if (!alts || alts.after !== last.after || !alts.versions[index]) throw fail('这一轮的回复版本已经不在了', 'MISSING');
+      if (index === alts.shown) return;
+      const old = new Set(last.round.map(m => m.id)), back = alts.versions[index].map(m => ({...structuredClone(m), id: this.#id()}));
+      alts.versions[alts.shown] = structuredClone(last.round);
+      alts.versions[index] = back;
+      alts.shown = index;
+      row.messages = [...row.messages.filter(m => !old.has(m.id)), ...structuredClone(back)];
+      row.updatedAt = Math.max(this.#now(), (row.updatedAt || 0) + 1);
     });
   }
   /**
@@ -325,18 +393,31 @@ export class ChatStore {
       if (patch.openedBy !== undefined) m.openedBy = clip(patch.openedBy, 40);
     });
   }
-  /** A 好友申请 from a contact the user deleted: kept with the chat until the user adds them back. */
+  /** A 好友申请 from a contact the user deleted or blocked: kept with the chat until the user answers it. */
   async addRequest(id, texts) {
     return this.#change(id, row => {
-      if (row.friend?.by !== 'me') throw fail('TA 还是你的好友');
-      const now = this.#now(), list = (Array.isArray(texts) ? texts : [texts]).map(t => clip(t, 300).trim()).filter(Boolean);
-      row.friend = cleanFriend({...row.friend, requests: [...row.friend.requests, ...list.map((text, i) => ({text, at: now + i}))]});
+      const now = this.#now(), list = (Array.isArray(texts) ? texts : [texts]).map(t => clip(t, 300).trim()).filter(Boolean), add = old => [...old, ...list.map((text, i) => ({text, at: now + i}))];
+      if (row.blocked) row.blocked = cleanBlocked({...row.blocked, requests: add(row.blocked.requests)});
+      else if (row.friend?.by === 'me') row.friend = cleanFriend({...row.friend, requests: add(row.friend.requests)});
+      else throw fail('TA 还是你的好友');
       row.updatedAt = now;
+    });
+  }
+  /** What a blocked contact sends: kept as 拦截记录 (not in the chat, not unread). */
+  async hold(id, items) {
+    return this.#change(id, row => {
+      if (!row.blocked) throw fail('TA 不在黑名单里');
+      const now = this.#now(), list = (Array.isArray(items) ? items : [items]).filter(Boolean).map((h, i) => ({kind: h.kind || 'text', text: h.text, at: now + i}));
+      row.blocked = cleanBlocked({...row.blocked, held: [...row.blocked.held, ...list]});
     });
   }
   async removeMessages(id, ids) {
     const drop = new Set(ids);
-    return this.#change(id, row => { row.messages = row.messages.filter(m => !drop.has(m.id)); });
+    return this.#change(id, row => {
+      row.messages = row.messages.filter(m => !drop.has(m.id));
+      // The user's message the last round answered is gone: so are the round's other versions.
+      if (row.alts && lastRound(row.messages).after !== row.alts.after) delete row.alts;
+    });
   }
   async markRead(id) {
     return this.#change(id, row => { row.unread = 0; });
@@ -360,8 +441,12 @@ export class ChatStore {
       const members = [...new Set((Array.isArray(t.members) ? t.members : []).map(m => clip(m, 40).trim()).filter(Boolean))].slice(0, CHAT_STORE_LIMITS.members);
       if (!members.length) throw fail('备份里有一段聊天没有聊天对象');
       const messages = (Array.isArray(t.messages) ? t.messages : []).slice(-CHAT_STORE_LIMITS.messages).map(m => cleanMessage(m, clip(m?.id || this.#id(), 512), Number.isFinite(m?.at) ? m.at : now));
-      return {scope: this.#scope, id: clip(t.id, 512), type: t.type === 'group' ? 'group' : 'dm', name: clip(t.name, 40).trim() || members.join('、').slice(0, 40), members: t.type === 'group' ? members : [members[0]], pinned: t.pinned === true, muted: t.muted === true, ...(t.story === true ? {story: true} : {}), ...(Number.isFinite(t.openedAt) ? {openedAt: t.openedAt} : {}), ...(typeof t.label === 'string' && t.label.trim() ? {label: clip(t.label, 40).trim()} : {}), ...(t.type === 'group' && t.windowOf ? {windowOf: clip(t.windowOf, 512)} : {}),
-        unread: Math.max(0, Math.min(CHAT_STORE_LIMITS.messages, Math.round(Number(t.unread)) || 0)), createdAt: Number.isFinite(t.createdAt) ? t.createdAt : now, updatedAt: Number.isFinite(t.updatedAt) ? t.updatedAt : now, messages, ...(t.space ? {space: clip(t.space, 300)} : {}), ...(t.save ? {save: clip(t.save, 400)} : {}), ...(t.type !== 'group' && cleanFriend(t.friend) ? {friend: cleanFriend(t.friend)} : {})};
+      const row = {scope: this.#scope, id: clip(t.id, 512), type: t.type === 'group' ? 'group' : 'dm', name: clip(t.name, 40).trim() || members.join('、').slice(0, 40), members: t.type === 'group' ? members : [members[0]], pinned: t.pinned === true, muted: t.muted === true, ...(t.story === true ? {story: true} : {}), ...(Number.isFinite(t.openedAt) ? {openedAt: t.openedAt} : {}), ...(typeof t.label === 'string' && t.label.trim() ? {label: clip(t.label, 40).trim()} : {}), ...(t.type === 'group' && t.windowOf ? {windowOf: clip(t.windowOf, 512)} : {}),
+        unread: Math.max(0, Math.min(CHAT_STORE_LIMITS.messages, Math.round(Number(t.unread)) || 0)), createdAt: Number.isFinite(t.createdAt) ? t.createdAt : now, updatedAt: Number.isFinite(t.updatedAt) ? t.updatedAt : now, messages, ...(t.space ? {space: clip(t.space, 300)} : {}), ...(t.save ? {save: clip(t.save, 400)} : {}), ...(t.type !== 'group' && cleanFriend(t.friend) ? {friend: cleanFriend(t.friend)} : {}), ...(t.type !== 'group' && cleanBlocked(t.blocked) ? {blocked: cleanBlocked(t.blocked)} : {}), ...(t.type !== 'group' && Number.isFinite(t.befriended) && t.befriended > 0 ? {befriended: t.befriended} : {})};
+      // 重新回复的版本 come along with a backup or a sync, while they still belong to the chat's last round.
+      const alts = cleanAlts(t.alts, () => this.#id());
+      if (alts && lastRound(messages).after === alts.after) row.alts = alts;
+      return row;
     });
     const rows = prepare(threads);
     return this.#tx('readwrite', (store, done, abort) => {

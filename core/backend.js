@@ -6,6 +6,7 @@ import {PROMPT_BLOCKS, normalizePromptRules} from './prompt-rules.js';
 import { normalizeVn, spriteRequest, castFiles, moveCastFiles } from './vn.js';
 import { currentModel } from './model-files.js';
 import { MomentStore } from './moments-store.js';
+import { isGoMusic, goUrl, goData, goSongs, goGroups, goCategories, goQrSession, goQrState, goLogins, goSongParams, readGoId, GO_PLATFORMS, GO_LOGINS, GO_LIMITS } from './go-music.js';
 import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readGroups, paged, PAGE_WAYS, withPages, songKey, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, sameFile, lyricOwner, bestMatch, matchScore, pick as pickPath, GROUP_KINDS } from './music.js';
 import { AppStore } from './app-store.js';
 import { ASSISTANT_LIMITS, ASSISTANT_IMAGE_SLOT, normalizeAssistant, validateAssistantPatch, assistantId, assistantMessage, assistantMeta, assistantThoughts, assistantClip, assistantFirstTitle, assertAssistantThread, assistantSummary } from './assistant.js';
@@ -29,6 +30,8 @@ import { lookPictures, lookThumb } from './looks.js';
 import { DRAWN_SOURCES, FAVORITES, ALBUM_LIMITS, albumName, albumsInOrder } from './albums.js';
 import { paintStore } from './paint-store.js';
 import { Ledger } from './ledger.js';
+import { cleanItem, cleanSet, cleanWear, WARDROBE_LIMITS } from './wardrobe.js';
+import { cleanTheater, GENERATOR_LIMITS } from './generator.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
 import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, gptBase, gptSize, gptPrompt, gptGenerate, comfyUrl, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, comfyProgress, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS } from './image-engines.js';
 import {activeLoraWorkflow} from './comfy-loras.js';
@@ -110,7 +113,7 @@ const firstCard = route => (Array.isArray(route.cards) ? route.cards.find(k => !
 const clone = value => structuredClone(value);
 // a 歌单 the user made was deleted meanwhile (in another tab, say)
 // Which documents of the apps' stores make up a part of a backup and of 保存到酒馆 (画画的作品 has a store of its own).
-const PART_KINDS = Object.freeze({ forum: ['forum', 'forum-hot'], peek: ['peek'], ledger: ['ledger'], looks: ['look'], albums: ['album'], music: ['song', 'playlist', 'heard', 'draft'], sounds: ['sound'], games: ['gamesave'] });
+const PART_KINDS = Object.freeze({ forum: ['forum', 'forum-hot'], peek: ['peek'], ledger: ['ledger'], wardrobe: ['wardrobe-item', 'wardrobe-set', 'wardrobe-wear'], theater: ['theater'], looks: ['look'], albums: ['album'], music: ['song', 'playlist', 'heard', 'draft'], sounds: ['sound'], games: ['gamesave'] });
 // the 大游戏 whose saves the phone keeps (方块世界's worlds are too big to carry; they stay in the browser)
 const GAME_SAVES = Object.freeze(['antarctic']);
 // The tavern takes 500 MB a request, and a file goes as base64.
@@ -253,7 +256,7 @@ export class TTSBackend {
     async partRows(part) {
         if (part === 'paint') return this.paintWorks.all();
         if (part === 'ledger') await this.ledger.flush();
-        if (part === 'ledger' || part === 'peek' || part === 'looks' || part === 'albums') return this.apps.listFrom(part + ':');
+        if (part === 'ledger' || part === 'peek' || part === 'looks' || part === 'albums' || part === 'wardrobe' || part === 'theater') return this.apps.listFrom(part + ':');
         const kinds = PART_KINDS[part];
         return (await this.partStore(part).list()).filter(row => kinds.includes(row.kind));
     }
@@ -278,7 +281,7 @@ export class TTSBackend {
     /** Tells the app a part's rows changed under it. */
     partsChanged(part) {
         if (part === 'music') this.emit('music', { library: true, heard: true });
-        else if (part === 'forum' || part === 'peek' || part === 'sounds' || part === 'ledger' || part === 'paint' || part === 'looks' || part === 'albums') this.emit(part, {});
+        else if (part === 'forum' || part === 'peek' || part === 'sounds' || part === 'ledger' || part === 'paint' || part === 'looks' || part === 'albums' || part === 'wardrobe' || part === 'theater') this.emit(part, {});
     }
     /** What the backup page shows of the parts that are not simply counted. */
     async backupCounts() {
@@ -286,7 +289,7 @@ export class TTSBackend {
         const bytes = rows => rows.reduce((n, row) => n + (row.blob?.size || row.size || row.bytes || 0), 0);
         const [docs, music, sounds, works] = await Promise.all([this.apps.list(), this.music.list(), this.sounds.list('sound'), this.paintRows().catch(() => [])]);
         const songs = music.filter(row => row.kind === 'song' && row.origin !== 'source'), looks = docs.filter(row => row.kind === 'look');
-        return { games: docs.filter(row => row.kind === 'gamesave').map(row => ({ game: row.game, day: Number(row.data?.day) || 0 })), looks: looks.length, lookBytes: bytes(looks), forum: docs.filter(row => row.kind === 'forum').length, peek: docs.filter(row => row.kind === 'peek').length, ledger: new Set(docs.filter(row => row.kind === 'ledger').map(row => row.day)).size, playlists: music.filter(row => row.kind === 'playlist').length, songs: songs.length, musicBytes: bytes(songs), sounds: sounds.length, soundBytes: bytes(sounds), works: works.length, workBytes: bytes(works) };
+        return { wardrobe: docs.filter(row => row.kind === 'wardrobe-item' || row.kind === 'wardrobe-set').length, theater: docs.filter(row => row.kind === 'theater').length, games: docs.filter(row => row.kind === 'gamesave').map(row => ({ game: row.game, day: Number(row.data?.day) || 0 })), looks: looks.length, lookBytes: bytes(looks), forum: docs.filter(row => row.kind === 'forum').length, peek: docs.filter(row => row.kind === 'peek').length, ledger: new Set(docs.filter(row => row.kind === 'ledger').map(row => row.day)).size, playlists: music.filter(row => row.kind === 'playlist').length, songs: songs.length, musicBytes: bytes(songs), sounds: sounds.length, soundBytes: bytes(sounds), works: works.length, workBytes: bytes(works) };
     }
     /** The works' list; one saved before it kept its size has its layers read for that. */
     async paintRows() {
@@ -423,7 +426,7 @@ export class TTSBackend {
     emit(type, data = {}) {
         if (this.closed) return;
         const event = { type, revision: this.revision, ...clone(data) };
-        if (!this.syncApplying && (type === 'chat' || type === 'moments' || ((type === 'forum' || type === 'peek') && !('busy' in data)) || (type === 'sounds' && !data.missing) || (type === 'music' && !data.settings) || type === 'looks' || type === 'albums' || type === 'games' || (['memory', 'assistant'].includes(type) && data.persisted) || (type === 'library' && SYNC_PARTS[data.collection]))) this.scheduleSync();
+        if (!this.syncApplying && (type === 'chat' || type === 'moments' || ((type === 'forum' || type === 'peek') && !('busy' in data)) || (type === 'sounds' && !data.missing) || (type === 'music' && !data.settings) || type === 'looks' || type === 'albums' || type === 'games' || type === 'wardrobe' || type === 'theater' || (['memory', 'assistant'].includes(type) && data.persisted) || (type === 'library' && SYNC_PARTS[data.collection]))) this.scheduleSync();
         for (const listener of this.listeners) { try { listener(clone(event)); } catch { /* One view cannot stop the other subscribers. */ } }
     }
     subscribe(listener) {
@@ -501,7 +504,7 @@ export class TTSBackend {
     updateGeneral(patch) {
         if (!patch || typeof patch !== 'object') throw Error('设置格式无效');
         const next = this.getState();
-        for (const key of ['voiceEnabled', 'hideStoryWaves', 'storyTools', 'cacheEnabled', 'floatingEnabled', 'waveformEnabled', 'wallpaperMotion', 'stripVoice', 'voiceExample', 'autoVoice', 'voiceIsland', 'pregenerate', 'autoplay']) if (key in patch) {
+        for (const key of ['voiceEnabled', 'hideStoryWaves', 'storyTools', 'cacheEnabled', 'floatingEnabled', 'waveformEnabled', 'wallpaperMotion', 'stripVoice', 'voiceExample', 'autoVoice', 'voiceIsland', 'pregenerate', 'autoplay', 'outfitSync']) if (key in patch) {
             if (typeof patch[key] !== 'boolean') throw Error('开关设置无效'); next.general[key] = patch[key];
         }
         // 配音方式: the story model writes the voice tags itself ('inline'), or they are added after the reply ('separate').
@@ -1096,8 +1099,9 @@ export class TTSBackend {
      * Writes phone text (chat, 朋友圈, calls, picture plans) with the chosen model. context: the tavern context, used
      * when the source is the tavern's model. request: {prompt, responseLength?, ...} as for generateRaw.
      */
-    async generateText(context, { use = 'other', ...request }) {
-        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request));
+    /** signal: the request is let go (停止回复). Kept out of the request log, which keeps copies of the request. */
+    async generateText(context, { use = 'other', signal, ...request }) {
+        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request, signal));
         // A model that never answers must not keep a reply "being voiced / drawn" for ever: after this long the request is given up
         // (the state is freed and the floor can be tried again).
         let timer, answer;
@@ -1107,9 +1111,9 @@ export class TTSBackend {
         this.ledger.text(use, request.prompt, answer);
         return answer;
     }
-    async generateTextRaw(context, request) {
+    async generateTextRaw(context, request, signal) {
         const text = activeText(this.settings.text);
-        if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch });
+        if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch, signal });
         if (!context?.generateRaw) throw Error('当前酒馆版本不支持后台生成');
         // The chat-completion request the tavern builds is kept, so an empty answer can be asked again as a stream:
         // "假流式" channels only answer streamed requests, and the tavern's background generation never streams.
@@ -1692,8 +1696,7 @@ export class TTSBackend {
             // PixAI 反代: which picture of a request for several this is ({run, index, size}); alone, a request of one. Fixed here, so a retry asks for the same picture.
             const pixaiBatch = engine === 'pixai' ? normalizeBatch(batch) || { run: crypto.randomUUID(), index: 0, size: 1 } : null;
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
-            // PixAI 反代 is not the NovelAI account: no pause between its pictures (the 2nd to 4th of a batch are only handed out by the bridge).
-            const job = this.drawQueue.add({ key, gap: engine === 'pixai' ? 0 : undefined, label: label || String(prompt).slice(0, 40), task: async signal => {
+            const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
@@ -1946,13 +1949,26 @@ export class TTSBackend {
         if (!words) throw Error(kind === 'album' ? '写一下专辑名' : kind === 'artist' ? '写一下歌手名' : '写一下想听的歌');
         const all = sourceId && typeof sourceId === 'object' ? [this.musicSource(sourceId)] : clone(this.settings.music.sources.filter(s => sourceId ? s.id === sourceId : s.enabled));
         if (!all.length) throw Error('还没有能用的音源：先在「音乐 → 设置 → 音源」里添加一个');
-        const key = GROUP_KINDS[kind] ? kind + 'Search' : 'search', sources = all.filter(s => s[key]);
+        const key = GROUP_KINDS[kind] ? kind + 'Search' : 'search', sources = all.filter(s => isGoMusic(s) ? kind !== 'artist' && !!s.base : s[key]);
         if (!sources.length) throw Error(`音源都不能搜${GROUP_KINDS[kind]}：在音源设置的「搜专辑、歌手和歌单」里填地址（自己搭的网易云后端会自动填好）`);
         const songs = [], groups = [], errors = [], unpaged = [], at = { query: words, offset: page * 30, page: page + 1, limit: 30 };
         const had = new Set((Array.isArray(seen) ? seen : []).map(String));
         let more = false;
         await Promise.all(sources.map(async s => {
             try {
+                // Go Music: one answer from all its platforms, taken in turns so the first ones are not all from one.
+                if (isGoMusic(s)) {
+                    if (page > 0) return;
+                    const data = goData(await this.musicFetch(goUrl(s.base, 'music/search', { q: words, type: kind, sources: s.platforms })));
+                    if (key === 'search') {
+                        const byPlatform = new Map();
+                        for (const song of goSongs(s, data?.songs)) byPlatform.set(song.platform, [...(byPlatform.get(song.platform) || []), song]);
+                        const lanes = [...byPlatform.values()];
+                        for (let i = 0; lanes.some(l => l.length > i) && songs.length < 150; i++) for (const lane of lanes) if (lane[i]) songs.push(lane[i]);
+                    }
+                    else groups.push(...goGroups(s, kind === 'album' ? data?.albums : data?.playlists, kind));
+                    return;
+                }
                 const read = json => (key === 'search' ? readSearch(s, json) : readGroups(s, json, kind)).map(x => ({ ...x, sourceName: s.name }));
                 let found = null;
                 if (paged(s[key]) || page === 0) found = read(await this.musicFetch(fillSource(s[key], at)));
@@ -1985,7 +2001,15 @@ export class TTSBackend {
      */
     async groupSongs(sourceId, kind, id, page = 0, { limit = 50, offset, seen } = {}) {
         this.assertOpen();
-        const s = this.musicSource(sourceId), template = GROUP_KINDS[kind] ? s[kind + 'Songs'] : '';
+        const s = this.musicSource(sourceId);
+        if (isGoMusic(s)) {
+            const g = readGoId(id);
+            if (!g || !['album', 'playlist'].includes(kind)) throw Error(`这个音源不能取${GROUP_KINDS[kind] || '专辑'}里的歌`);
+            if (page > 0) return { songs: [], more: false };
+            const data = goData(await this.musicFetch(goUrl(s.base, kind === 'album' ? 'album/detail' : 'playlist/detail', { source: g.platform, id: g.id })));
+            return { songs: goSongs(s, (Array.isArray(data) ? data : []).map(x => ({ ...x, source: x?.source || g.platform })), GO_LIMITS.songs), more: false };
+        }
+        const template = GROUP_KINDS[kind] ? s[kind + 'Songs'] : '';
         if (!template) throw Error(`这个音源不能取${GROUP_KINDS[kind] || '专辑'}里的歌`);
         const size = Math.max(1, Math.min(MUSIC_LIMITS.bulk, Math.floor(limit) || 50));
         const get = async address => readSearch(s, await this.musicFetch(fillSource(address, { id, offset: offset ?? page * size, page: page + 1, limit: size })), s[kind + 'SongsPath'], size).map(x => ({ ...x, sourceName: s.name }));
@@ -2011,7 +2035,7 @@ export class TTSBackend {
         this.heardAt = Math.max(Date.now(), (this.heardAt || 0) + 1);
         const row = { id: 'heard:' + songKey(song), kind: 'heard', at: this.heardAt, title, artist: String(song.artist || '').trim().slice(0, 200) };
         const old = await this.music.get(row.id).catch(() => null);
-        if (song.source && song.songId) Object.assign(row, { source: String(song.source).slice(0, 60), songId: String(song.songId).slice(0, 200) });
+        if (song.source && song.songId) Object.assign(row, { source: String(song.source).slice(0, 60), songId: String(song.songId).slice(0, 2000) });
         else if (old?.source && old.songId) Object.assign(row, { source: old.source, songId: old.songId });
         // its lyrics, once they were fetched (keepLyric), stay with it
         const lyric = song.lyric || old?.lyric;
@@ -2042,7 +2066,9 @@ export class TTSBackend {
     /** A playable link for a song of a source. */
     async musicLink(sourceId, songId, hint = {}) {
         this.assertOpen();
-        const s = this.musicSource(sourceId), address = fillSource(s.url, { id: songId, title: hint.title, artist: hint.artist });
+        const s = this.musicSource(sourceId);
+        if (isGoMusic(s)) return this.goMusicLink(s, songId, hint);
+        const address = fillSource(s.url, { id: songId, title: hint.title, artist: hint.artist });
         // The address itself is the song: played as it is (the tavern's own address stays as it is, the page's origin).
         const own = () => onTavern(address) ? address : playable(address, globalThis.location?.protocol);
         if (s.direct) return own();
@@ -2058,12 +2084,107 @@ export class TTSBackend {
         if (trialOnly(answer)) { this.trialLinks ??= new Set(); this.trialLinks.add(out); if (this.trialLinks.size > 50) this.trialLinks.delete(this.trialLinks.values().next().value); }
         return out;
     }
+    /** What to say when a link from musicLink plays (a Go Music song found on another platform), or ''. */
+    musicNote(link) { return this.musicNotes?.get(link) || ''; }
     /** Whether a link from musicLink is only a 30-second preview (a 会员 song, the source not logged in). */
     musicTrial(link) { return !!this.trialLinks?.has(link); }
     async musicLyric(sourceId, songId, hint = {}) {
         const s = this.musicSource(sourceId);
+        if (isGoMusic(s)) {
+            const song = readGoId(songId);
+            if (!song) return '';
+            try { const data = goData(await this.musicFetch(goUrl(s.base, 'music/lyric', { id: song.id, source: song.platform }))); return typeof data?.lyric === 'string' ? data.lyric.slice(0, 60000) : ''; } catch { return ''; }
+        }
         if (!s.lyric) return '';
         try { const value = pickPath(await this.musicFetch(fillSource(s.lyric, { id: songId, title: hint.title, artist: hint.artist })), s.lyricPath); return typeof value === 'string' ? value.slice(0, 60000) : ''; } catch { return ''; }
+    }
+    // ---------- Go Music (core/go-music.js) ----------
+    /** A Go Music source: saved (by id) or a draft being set up. */
+    goSource(id) {
+        const s = this.musicSource(id);
+        if (!isGoMusic(s)) throw Error('这不是 Go Music 音源');
+        return s;
+    }
+    /**
+     * Requests that send or answer with Cookies (the logins, 扫码): straight to the backend, else through the tavern's
+     * own proxy, and never into the request log — the backend names Cookies by platform, so the log would not hide them.
+     */
+    async goPrivate(url, init = {}) {
+        let response = null;
+        try { response = await this.assetFetch(url, { ...init, credentials: 'omit' }); }
+        catch { response = await this.assetFetch('/proxy/' + encodeURIComponent(url), { ...init, credentials: 'same-origin' }).catch(() => null); }
+        if (!response) throw Error('连不上 Go Music：地址不对，或者后端没有开着');
+        let json = null;
+        try { json = await response.json(); } catch { /* not JSON */ }
+        if (!response.ok) throw Error(`Go Music 回答：${String(json?.msg || json?.error || 'HTTP ' + response.status).slice(0, 200)}`);
+        return json;
+    }
+    /** Which platforms the backend holds a login for: {qq: true, …} (the Cookies stay with the backend). */
+    async goMusicLogins(sourceId) {
+        this.assertOpen();
+        return goLogins(await this.goPrivate(goUrl(this.goSource(sourceId).base, 'system/cookies')));
+    }
+    /** A Cookie the user pasted, sent on to the backend (empty: logged out there); the phone keeps nothing of it. */
+    async goMusicSetCookie(sourceId, platform, cookie) {
+        this.assertOpen();
+        const s = this.goSource(sourceId);
+        if (!GO_LOGINS.some(l => l.id === platform)) throw Error('这个平台不能登录');
+        const value = String(cookie ?? '').replace(/^\s*cookie\s*:\s*/i, '').trim().slice(0, 20000);
+        await this.goPrivate(goUrl(s.base, 'system/cookies'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [platform]: value }) });
+        this.emit('music', { logins: true });
+        return this.goMusicLogins(sourceId);
+    }
+    /** 扫码登录 started: {key, url (to draw), image (the platform's own picture, when it gives one), expiresAt}. */
+    async goMusicQr(sourceId, way) {
+        this.assertOpen();
+        const s = this.goSource(sourceId);
+        if (!GO_LOGINS.some(l => l.qr.includes(way))) throw Error('这个平台不能扫码登录');
+        return goQrSession(goData(await this.goPrivate(goUrl(s.base, `system/qr_login/${way}`), { method: 'POST' })));
+    }
+    /** Where a 扫码登录 is ({status, message}); on success the backend has kept the login itself. */
+    async goMusicQrCheck(sourceId, way, key) {
+        this.assertOpen();
+        const s = this.goSource(sourceId), state = goQrState(goData(await this.goPrivate(goUrl(s.base, `system/qr_login/${way}`, { key }))));
+        if (state.status === 'success') this.emit('music', { logins: true });
+        return state;
+    }
+    /** The logged-in account's own playlists on a platform (我喜欢, made, kept), as groups to open or take in. */
+    async goMusicAccountLists(sourceId, platform) {
+        this.assertOpen();
+        const s = this.goSource(sourceId);
+        let json;
+        try { json = await this.musicFetch(goUrl(s.base, 'playlist/user', { source: platform, page: 1, limit: 100 })); }
+        catch (error) { if (/\b401\b/.test(error.message)) throw Error(`${GO_PLATFORMS[platform] || platform}还没登录：先登录再来读`); throw error; }
+        return goGroups(s, goData(json)?.playlists, 'playlist');
+    }
+    /** 发现: the backend's 推荐歌单 (what 'recommend'), its 歌单分类 ('categories') or a category's playlists ('category'). */
+    async goMusicDiscover(sourceId, { what = 'recommend', platform = '', category = '', page = 1 } = {}) {
+        this.assertOpen();
+        const s = this.goSource(sourceId);
+        if (what === 'categories') return goCategories(goData(await this.musicFetch(goUrl(s.base, 'playlist/categories', { sources: s.platforms }))));
+        if (what === 'category') return goGroups(s, goData(await this.musicFetch(goUrl(s.base, 'playlist/category', { source: platform, category_id: category, page: Math.max(1, Math.floor(page) || 1), limit: 30 })))?.playlists, 'playlist');
+        return goGroups(s, goData(await this.musicFetch(goUrl(s.base, 'playlist/recommend', { sources: s.platforms }))), 'playlist');
+    }
+    /**
+     * A Go Music song to play: the backend is asked first whether this platform gives it at all (要会员, 没有版权,
+     * 下架); it does: its /stream plays it (the backend deals with the platform's referer). It does not: the same song
+     * on another platform (by name, singer and length), said in a note; none: why.
+     */
+    async goMusicLink(s, songId, hint = {}) {
+        const song = readGoId(songId), here = globalThis.location?.protocol;
+        if (!song) throw Error('这首歌的信息不全：重新搜一次再放');
+        const params = goSongParams(song, hint), platform = GO_PLATFORMS[song.platform] || song.platform;
+        const given = await this.musicFetch(goUrl(s.base, 'music/url', params)).then(json => !!goData(json)?.url).catch(() => false);
+        if (given) return playable(goUrl(s.base, 'music/stream', params), here);
+        const other = await this.musicFetch(goUrl(s.base, 'music/switch', { name: hint.title || '', artist: hint.artist || '', source: song.platform, duration: song.duration || '' })).catch(() => null);
+        if (other?.id && other?.source) {
+            const out = playable(goUrl(s.base, 'music/stream', { id: String(other.id), source: other.source, name: other.name || hint.title || '', artist: other.artist || hint.artist || '', duration: other.duration || '' }), here);
+            // said when it plays (musicNote), like a 30-second preview is
+            (this.musicNotes ??= new Map()).set(out, `「${hint.title || other.name}」在${platform}放不了，换成了${GO_PLATFORMS[other.source] || other.source}的`);
+            if (this.musicNotes.size > 50) this.musicNotes.delete(this.musicNotes.keys().next().value);
+            return out;
+        }
+        throw Error(`「${hint.title || '这首歌'}」在${platform}放不了（可能要会员、没有版权或者下架了），别的平台也没找到能放的`);
     }
     /** The 歌单 (全部): songs without their files. */
     async listSongs() { this.assertOpen(); return (await this.music.list('song')).map(({ blob, ...row }) => row); }
@@ -2793,6 +2914,8 @@ export class TTSBackend {
         const own = all.filter(c => c.source === 'manual' || (here.members || []).includes(c.name) || this.settings.routes.some(r => r.name === c.name && roleInSpace(r, here)));
         return own.length ? own : all;
     }
+    /** Who the user has blocked here (黑名单): they neither post nor comment in 朋友圈, and their posts stay out of sight. */
+    async blockedNames() { return (await this.threads()).filter(t => t.type === 'dm' && t.blocked).map(t => t.members[0]); }
     /** Phone chats of the card open now. */
     async threads() { const here = this.here(); return (await this.chats.list()).filter(t => inSpace(t, here)); }
     /** Messages holding these words, in the chats the list shows (core/chats.js searchThreads). */
@@ -2952,6 +3075,96 @@ export class TTSBackend {
             post.likes += replies.filter(r => r.from !== 'me').length ? Math.round(Math.random() * 6) : 0;
         }));
     }
+    // ---------- 衣柜 (core/wardrobe.js) ----------
+    /** The 衣柜 here (this card's, with 分区): its clothes and outfits, newest first, and what each one wears; one owner's only. */
+    async wardrobe(owner = '') {
+        this.assertOpen();
+        const here = this.here(), rows = (await this.apps.listFrom('wardrobe:')).filter(d => inSpace(d, here) && (!owner || d.owner === owner));
+        const newest = (a, b) => b.at - a.at;
+        return { items: rows.filter(d => d.kind === 'wardrobe-item').sort(newest), sets: rows.filter(d => d.kind === 'wardrobe-set').sort(newest), wears: rows.filter(d => d.kind === 'wardrobe-wear') };
+    }
+    /** A piece of clothing, new or changed (kept where it was made: its card, with 分区). */
+    async saveWardrobeItem(item) {
+        this.assertOpen();
+        const old = item?.id ? await this.apps.get(item.id) : null;
+        const doc = cleanItem({ ...(old || this.spaceTag()), ...item, ...(old ? { at: old.at, space: old.space, save: old.save } : {}), updatedAt: Date.now() });
+        if (!old && (await this.wardrobe(doc.owner)).items.length >= WARDROBE_LIMITS.items) throw Error(`一个人的衣柜最多放 ${WARDROBE_LIMITS.items} 件`);
+        return (await this.appsMutate('wardrobe', () => this.apps.put([doc])))[0];
+    }
+    /** An outfit kept (存成一套). */
+    async saveWardrobeSet(set) {
+        this.assertOpen();
+        const old = set?.id ? await this.apps.get(set.id) : null;
+        const doc = cleanSet({ ...(old || this.spaceTag()), ...set, ...(old ? { at: old.at, space: old.space, save: old.save } : {}), updatedAt: Date.now() });
+        if (!old && (await this.wardrobe(doc.owner)).sets.length >= WARDROBE_LIMITS.sets) throw Error(`一个人最多存 ${WARDROBE_LIMITS.sets} 套`);
+        return (await this.appsMutate('wardrobe', () => this.apps.put([doc])))[0];
+    }
+    /** Clothes or outfits taken out (their photos stay in the album). */
+    async deleteWardrobe(ids) {
+        this.assertOpen();
+        const list = [...new Set((ids || []).map(String).filter(id => /^wardrobe:(?:item|set):/.test(id)))];
+        if (!list.length) return false;
+        await this.appsMutate('wardrobe', () => this.apps.removeMany(list));
+        this.noteGone('wardrobe', list);
+        return true;
+    }
+    /** What someone wears now: put on from the phone (told to the next story reply, once) or changed by the story. One a
+     *  person here: what they wore before (here, also from another card while 分区 is off) is taken off. */
+    async setWardrobeWear({ owner, text, from = 'phone' }) {
+        this.assertOpen();
+        const doc = cleanWear({ owner, text, from, pending: from !== 'story', ...this.spaceTag(), key: this.spaceKey() });
+        if (!doc) throw Error('先写一下穿什么');
+        const before = (await this.wardrobe(doc.owner)).wears.map(w => w.id).filter(id => id !== doc.id);
+        const [saved] = await this.appsMutate('wardrobe', async () => { if (before.length) await this.apps.removeMany(before); return this.apps.put([doc]); });
+        if (before.length) this.noteGone('wardrobe', before);
+        // 当前服装 sync (host-wardrobe.js): says who put what on, so the picture planner's record can follow.
+        this.emit('wardrobe-wear', { owner: doc.owner, text: doc.text, from });
+        return saved;
+    }
+    /** 脱下: no longer told anything about. */
+    async clearWardrobeWear(owner) {
+        this.assertOpen();
+        const ids = (await this.wardrobe(String(owner || '') || '-')).wears.map(w => w.id);
+        if (!ids.length) return false;
+        await this.appsMutate('wardrobe', () => this.apps.removeMany(ids));
+        this.noteGone('wardrobe', ids);
+        this.emit('wardrobe-wear', { owner: String(owner || ''), removed: true });
+        return true;
+    }
+    /** The outfits put on and not yet told, for the story reply starting now: told, so no longer pending (still worn;
+     *  the told copy is the newer one when two devices meet). */
+    async takeWardrobeWear() {
+        this.assertOpen();
+        const pending = (await this.wardrobe()).wears.filter(w => w.pending);
+        if (pending.length) await this.appsMutate('wardrobe', () => this.apps.put(pending.map(w => ({ ...w, pending: false, updatedAt: Date.now() }))));
+        return pending;
+    }
+    // ---------- 小剧场 (core/generator.js) ----------
+    /** The 小剧场 kept here (this card's, with 分区), newest first. */
+    async theaters() {
+        this.assertOpen();
+        const here = this.here();
+        return (await this.apps.listFrom('theater:')).filter(d => d.kind === 'theater' && inSpace(d, here)).sort((a, b) => b.at - a.at);
+    }
+    /** A 小剧场 kept (where it was written: its card, with 分区); the oldest go past the limit. */
+    async saveTheater(doc) {
+        this.assertOpen();
+        const old = doc?.id ? await this.apps.get(doc.id) : null;
+        const kept = cleanTheater({ ...(old || this.spaceTag()), ...doc, ...(old ? { at: old.at, space: old.space, save: old.save } : {}) });
+        const all = (await this.apps.listFrom('theater:')).filter(d => d.kind === 'theater' && d.id !== kept.id).sort((a, b) => b.at - a.at);
+        const gone = all.slice(GENERATOR_LIMITS.theaters - 1).map(d => d.id);
+        const [saved] = await this.appsMutate('theater', async () => { if (gone.length) await this.apps.removeMany(gone); return this.apps.put([kept]); });
+        if (gone.length) this.noteGone('theater', gone);
+        return saved;
+    }
+    async deleteTheater(ids) {
+        this.assertOpen();
+        const list = [...new Set((ids || []).map(String).filter(id => /^theater:/.test(id)))];
+        if (!list.length) return false;
+        await this.appsMutate('theater', () => this.apps.removeMany(list));
+        this.noteGone('theater', list);
+        return true;
+    }
     // ---------- 查手机 ----------
     /** A character's phone as the model made it up; replaces the earlier one of the same person. space: the card it was
      *  looked at under (spaceKey() when the look began; the tavern may have moved to another card while it was written). */
@@ -2969,6 +3182,27 @@ export class TTSBackend {
         const result = await task();
         this.emit('chat', { threadId });
         return result;
+    }
+    /** Messages that left a chat other than by 删除 (a round replaced, a version switched): gone for the sync too, and the
+     *  memory follows, as when they are deleted. */
+    async #chatLeft(threadId, before, after) {
+        const kept = new Set((after?.messages || []).map(m => m.id));
+        this.noteGone('chats', (before?.messages || []).filter(m => !kept.has(m.id)).map(m => `${threadId}/${m.id}`));
+        await this.memoryAfterDelete(threadId, before, after).catch(() => {});
+    }
+    /** 重新回复 came back: the chat's last round gives way to these messages (core/chats.js replaceRound). */
+    async replaceChatRound(threadId, after, messages, options) {
+        const before = await this.chats.get(threadId), saved = await this.chats.replaceRound(threadId, after, messages, options);
+        await this.#chatLeft(threadId, before, saved);
+        return saved;
+    }
+    /** Another version of the chat's last round shows (core/chats.js showRound). */
+    chatShowVersion(threadId, index) {
+        return this.chatMutate(threadId, async () => {
+            const before = await this.chats.get(threadId), after = await this.chats.showRound(threadId, index);
+            await this.#chatLeft(threadId, before, after);
+            return after;
+        });
     }
     // ---------- 删好友 ----------
     /** The private chat with `name` on this card (made when there is none yet). */
@@ -2992,15 +3226,65 @@ export class TTSBackend {
         if (thread?.friend?.by !== 'me') throw Error('TA 已经是你的好友了');
         const name = thread.members[0], requests = thread.friend.requests || [];
         await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你已添加了${name}，现在可以开始聊天了` }, ...requests.map(r => ({ from: name, kind: 'text', text: r.text }))], { read: true });
-        const saved = await this.chats.update(threadId, { friend: null });
+        const saved = await this.chats.update(threadId, { friend: null, befriended: Date.now() });
         this.emit('chat', { threadId, friend: true });
         return saved;
     }
-    /** What a deleted contact sends arrives as 好友申请 (kept until the user adds them back). */
+    /** A 好友申请 from a contact the user deleted or blocked (kept until the user answers it). */
     async friendRequest(threadId, texts) {
         this.assertOpen();
         const saved = await this.chats.addRequest(threadId, texts);
         this.emit('chat', { threadId, friend: true, request: true });
+        return saved;
+    }
+    /** 黑名单: the user blocks a contact. The chat stays; what they send meanwhile is held (拦截记录), a 好友申请 waits. */
+    async blockContact(name) {
+        this.assertOpen();
+        if (!this.contacts().some(c => c.name === name)) throw Error(`联系人里没有「${name}」`);
+        const thread = await this.dmThread(name);
+        if (thread.blocked) return thread;
+        await this.chats.update(thread.id, { blocked: { at: Date.now(), held: [], requests: [] } });
+        const saved = await this.chats.append(thread.id, [{ from: 'me', kind: 'system', text: `你已把${name}加入黑名单` }], { read: true });
+        this.emit('chat', { threadId: thread.id, friend: true });
+        return saved;
+    }
+    /** Out of the 黑名单: what was held was never delivered and goes with it. */
+    async unblockContact(threadId) {
+        this.assertOpen();
+        const thread = await this.chats.get(threadId);
+        if (!thread?.blocked) throw Error('TA 不在黑名单里');
+        await this.chats.update(threadId, { blocked: null });
+        const saved = await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你已把${thread.members[0]}移出黑名单` }], { read: true });
+        this.emit('chat', { threadId, friend: true });
+        return saved;
+    }
+    /** What a blocked contact sends: into the 拦截记录 only. */
+    async holdMessages(threadId, items) {
+        this.assertOpen();
+        const saved = await this.chats.hold(threadId, items);
+        this.emit('chat', { threadId, held: true });
+        return saved;
+    }
+    /**
+     * A 好友申请 answered (from someone the user deleted or blocked). Accepted: friends again and out of the 黑名单, the
+     * 申请 put in the chat; turned down: the 申请 go, and the story is told (refused) while they stay apart.
+     */
+    async answerFriendRequest(threadId, accept) {
+        this.assertOpen();
+        const thread = await this.chats.get(threadId);
+        const cut = thread?.friend?.by === 'me', blocked = !!thread?.blocked;
+        if (!thread || (!cut && !blocked)) throw Error('TA 已经是你的好友了');
+        const name = thread.members[0], requests = [...(cut ? thread.friend.requests : []), ...(thread.blocked?.requests || [])].sort((a, b) => a.at - b.at);
+        if (accept) {
+            await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你通过了${name}的好友申请，现在可以开始聊天了` }, ...requests.map(r => ({ from: name, kind: 'text', text: r.text }))], { read: true });
+            const saved = await this.chats.update(threadId, { friend: null, blocked: null, befriended: Date.now() });
+            this.emit('chat', { threadId, friend: true });
+            return saved;
+        }
+        const now = Date.now();
+        await this.chats.update(threadId, { ...(cut ? { friend: { ...thread.friend, requests: [], refused: now } } : {}), ...(blocked ? { blocked: { ...thread.blocked, requests: [], refused: now } } : {}) });
+        const saved = await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你拒绝了${name}的好友申请` }], { read: true });
+        this.emit('chat', { threadId, friend: true });
         return saved;
     }
     /** The user's messages to someone who deleted them: sent, then refused with the usual note. */
@@ -3018,7 +3302,7 @@ export class TTSBackend {
     speak(line) {
         const lines = (Array.isArray(line) ? line : [line]).filter(l => l?.role && l.text);
         if (!lines.length) throw Error('这条语音没有内容');
-        return this.player.start(lines.map(l => ({ role: l.role, emotion: l.emotion || 'calm', text: l.text, translation: l.translation || '' })), () => !this.closed);
+        return this.player.start(lines.map(l => ({ role: l.role, emotion: l.emotion || 'calm', text: l.text, translation: l.translation || '', ...(l.narration ? { narration: true } : {}) })), () => !this.closed);
     }
     /**
      * Album photos the phone drew, by where they were drawn (told apart by the name generateImage gives them):
@@ -3478,6 +3762,7 @@ export class TTSBackend {
             },
             assistantMemoryRemove: (id, nodeId) => this.assistantMemoryRevise(id, book => removeNode(book, nodeId)),
             assistantMemoryForget: id => this.assistantMemoryForget(id),
+            goMusicLogins: id => this.goMusicLogins(clone(id)), goMusicSetCookie: (id, platform, cookie) => this.goMusicSetCookie(clone(id), String(platform), String(cookie ?? '')), goMusicQr: (id, way) => this.goMusicQr(clone(id), String(way)), goMusicQrCheck: (id, way, key) => this.goMusicQrCheck(clone(id), String(way), String(key)), goMusicAccountLists: (id, platform) => this.goMusicAccountLists(clone(id), String(platform)), goMusicDiscover: (id, options) => this.goMusicDiscover(clone(id), clone(options || {})),
             saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId, options) => this.searchMusic(query, clone(sourceId), clone(options || {})), groupSongs: (sourceId, kind, id, page, options) => this.groupSongs(sourceId, kind, String(id), Number(page) || 0, clone(options || {})),
             listHeard: () => this.listHeard(), forgetHeard: ids => this.forgetHeard([...(ids || [])]), clearHeard: () => this.clearHeard(), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
             listSongs: () => this.listSongs(), songBlob: id => this.songBlob(id), addSongs: list => this.addSongs(list), updateSong: (id, patch) => this.updateSong(id, clone(patch || {})), deleteSongs: ids => this.deleteSongs([...(ids || [])]),
@@ -3532,10 +3817,12 @@ export class TTSBackend {
             pixaiSetCount: count => this.pixaiSetCount(count),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
-            unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId),
+            wardrobe: owner => this.wardrobe(String(owner || '')), saveWardrobeItem: item => this.saveWardrobeItem(clone(item)), saveWardrobeSet: set => this.saveWardrobeSet(clone(set)), deleteWardrobe: ids => this.deleteWardrobe([...(ids || [])]), setWardrobeWear: wear => this.setWardrobeWear(clone(wear || {})), clearWardrobeWear: owner => this.clearWardrobeWear(String(owner || '')), theaters: () => this.theaters(), saveTheater: doc => this.saveTheater(clone(doc)), deleteTheater: ids => this.deleteTheater([...(ids || [])]),
+            unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId), blockContact: name => this.blockContact(name), blockedNames: () => this.blockedNames(), unblockContact: threadId => this.unblockContact(threadId), answerFriendRequest: (threadId, accept) => this.answerFriendRequest(threadId, accept),
             deleteChatMessages: (id, ids) => this.chatMutate(id, async () => { const before = await this.chats.get(id); const thread = await this.chats.removeMessages(id, clone(ids)); this.noteGone('chats', (ids || []).map(m => `${id}/${m}`)); await this.memoryAfterDelete(id, before, thread).catch(() => {}); return thread; }),
             updateChatMessage: (id, messageId, patch) => this.chatMutate(id, () => this.chats.updateMessage(id, messageId, clone(patch || {}))),
             markThreadRead: id => this.chatMutate(id, () => this.chats.markRead(id)),
+            chatShowVersion: (id, index) => this.chatShowVersion(id, index),
             speak: line => this.speak(clone(line)), voiceFormat: () => this.voiceFormat(),
         };
         return Object.freeze({ apiVersion: BACKEND_API_VERSION, defaultPrompt: DEFAULT_PROMPT, defaultFormat: DEFAULT_FORMAT,

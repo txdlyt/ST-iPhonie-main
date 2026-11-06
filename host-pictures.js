@@ -32,7 +32,7 @@ const versionsOf = record => !record ? [] : Array.isArray(record.versions) ? rec
 // the viewer (image-viewer.js) is loaded the first time a picture is opened, not with the tavern
 let viewerLoad = null;
 const viewerCode = () => viewerLoad ||= import('./image-viewer.js').catch(error => { viewerLoad = null; throw error; });
-export function createPictureHost({context, redrawMessage = (id, message) => context().updateMessageBlock?.(id, message), settings, backend, marker, scheduleRender, openDraw, notice, voice = null, phone = null, speakers = () => [], voiced: lined = () => {}}) {
+export function createPictureHost({context, redrawMessage = (id, message) => context().updateMessageBlock?.(id, message), settings, backend, marker, scheduleRender, openDraw, notice, voice = null, phone = null, speakers = () => [], voiced: lined = () => {}, outfitChanged = () => {}}) {
   const jobs = new Map(); // queue key -> {state: 'generating'|'error', message}
   const folds = new Map(); // `${id}:${hash}` -> true/false, this session's fold choice per picture
   // The latest single tap on a picture: {key, id, message, tag, was, at, rect, timer, done}. It folds or unfolds the
@@ -115,7 +115,13 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const why = (who ? `「${who}」想用小手机画一张图。\n` : '') + (engine === 'gpt' ? 'GPT 生图每张都要花钱（按 OpenAI 或中转的价格）。' : quote.free === null ? '暂时读不到 NovelAI 订阅信息，无法确认是否免费。' : '按当前参数和订阅，这张图会扣 Anlas。');
     return globalThis.confirm(why + '\n确定要生成吗？') ? 'paid' : false;
   }
-    async function drawFor({prompt, negative, characters = [], size, seed, ask = true, signal, from}) {
+
+  /**
+   * A picture another plugin asks for (host-public.js), drawn like one in the story: the engine, the 画风, the looks of the people
+   * named. One that costs is asked about first; with ask: false it is refused. It goes in the album, and in the tavern's files for
+   * its address. signal: an AbortSignal, to take it back.
+   */
+  async function drawFor({prompt, negative, characters = [], size, seed, ask = true, signal, from}) {
     const words = String(prompt ?? '').trim().slice(0, 4000), who = String(from ?? '').trim().slice(0, 40);
     if (!words) throw Object.assign(Error('请先写提示词'), {code: 'NO_PROMPT'});
     if (!backend.drawReady()) throw Object.assign(Error(backend.drawMissing()), {code: 'NOT_READY'});
@@ -136,7 +142,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   }
 
   /** Queues one picture. Redrawing adds a version; the earlier versions stay. */
-  async function generate(id, tag, {interactive = false, permission = null, batch = null} = {}) {
+  async function generate(id, tag, {interactive = false, permission = null} = {}) {
     const ctx = context(), message = ctx.chat[id], key = jobKey(id, tag);
     if (!message || jobs.get(key)?.state === 'generating') return;
     permission ??= await allowed(interactive);
@@ -145,7 +151,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     scheduleRender();
     try {
       const inputs = pictureInputs(settings(), tag, message.mes);
-      const result = await backend.generateImage({...inputs, ...(batch ? {batch} : {}), allowPaid: permission === 'paid', name: 'chat', key, label: '正文图片 · ' + tag.prompt.slice(0, 24)});
+      const result = await backend.generateImage({...inputs, allowPaid: permission === 'paid', name: 'chat', key, label: '正文图片 · ' + tag.prompt.slice(0, 24)});
       const url = await upload(result.blob, 'st-iphonie-' + Date.now());
       // Only store the picture when the same message is still there with this tag.
       const now = context().chat[id];
@@ -193,7 +199,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     try {
       if (!wantsOutfits(settings().draw)) return;
       const found = readOutfits(reply);
-      if (found.length) saveBook(recordOutfits(outfitBook(), id, found));
+      if (found.length) { saveBook(recordOutfits(outfitBook(), id, found)); try { outfitChanged(id, found); } catch { /* the 衣柜 not following is not worth a failed reply */ } }
     } catch { /* a record that could not be kept is not worth a failed reply */ }
   }
   const outfitsList = () => currentOutfits(outfitBook());
@@ -204,6 +210,12 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     if (!String(name).trim() || !String(outfit).trim()) throw Error('名字和衣服都要写');
     saveBook(recordOutfits(outfitBook(), Math.max(0, ctx.chat.length - 2), [{name, outfit}], 'me'));
     return outfitsList();
+  }
+  /** What someone wears from message `at` on, said by another part (the 衣柜): the same record as the planner's own. */
+  function outfitAt(list, at, by = 'ai') {
+    if (!context()?.chatMetadata) return false;
+    saveBook(recordOutfits(outfitBook(), Math.max(0, Number(at) || 0), list, by));
+    return true;
   }
   function outfitDelete(name) { saveBook(forgetOutfit(outfitBook(), name)); return outfitsList(); }
   function outfitsClear() { saveBook({}); return []; }
@@ -242,8 +254,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     if (!force && parsePictures(message.mes).length) return false;
     planning.add(id);
     notice('正在给这条回复挑画面……');
-    
-      try {
+    try {
       const source = force ? withoutPictures(message.mes) : message.mes;
       const {text, count} = await planOnce(id, source, {manual: force});
       if (context().chat[id] !== message) return false;
@@ -305,7 +316,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
         }
       }
       if (!voiced && !pictured && wantPictures && !wantVoice && noneOk(s.draw) && !force) { notice('这条回复没有值得画的画面'); return {voiced: 0, pictured: 0}; }
-      if (!voiced && !pictured) throw Error(wantVoice ? '这次没有配上音，可以在小手机的「设置 → 正文」里点「给最新回复配音」再试一次' : '这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
+      if (!voiced && !pictured) throw Error(wantVoice ? '这次没有配上音，可以在小手机的「设置 → 正文 → 正文语音」里点「给最新回复配音」再试一次' : '这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
       message.mes = text;
       if (Array.isArray(message.swipes)) message.swipes[message.swipe_id ?? 0] = text;
       await ctx.saveChat();
@@ -314,8 +325,8 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (sent) phone.deliver(id).catch(() => {});
       // The lines are in now: 提前生成 can make them.
       if (voiced) lined(id);
-      if (wantVoice && !voiced) notice('画面挑好了，台词这次没配上，可以在「设置 → 正文」里点「给最新回复配音」');
-      if (wantPictures && !pictured && !(noneOk(s.draw) && !force)) notice('台词配好了，画面这次没挑出来，可以在「设置 → 正文」里点「给最新回复配图」');
+      if (wantVoice && !voiced) notice('画面挑好了，台词这次没配上，可以在「设置 → 正文 → 正文语音」里点「给最新回复配音」');
+      if (wantPictures && !pictured && !(noneOk(s.draw) && !force)) notice('台词配好了，画面这次没挑出来，可以在「设置 → 正文 → 正文出图」里点「给最新回复配图」');
       return {voiced, pictured};
     } finally { planning.delete(id); }
   }
@@ -365,11 +376,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (backend.drawQuote?.().free === null) notice('自动出图没有执行：暂时读不到订阅信息，确认不了免不免费。可以点楼层菜单里的「给这层楼生图」手动画');
       scheduleRender(); return;
     }
-    const run = crypto.randomUUID();
-    await Promise.all(tags.map((tag, index) => generate(id, tag, {
-      permission,
-            batch: {run, index, size: tags.length}
-    })));
+    await Promise.all(tags.map(tag => generate(id, tag, {permission})));
   }
 
   /** What the queue says about a job, for the placeholder. */
@@ -473,7 +480,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     act('zoom', t.id, t.message, t.tag);
     return true;
   }
-    function act(action, id, message, tag, source = null) {
+  function act(action, id, message, tag, source = null) {
     const pic = shown(message, tag.hash);
     if (action === 'draw' || action === 'redo') generate(id, tag, {interactive: true});
     if (action === 'cancel') backend.drawQueue?.cancel?.(jobKey(id, tag));
@@ -714,14 +721,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const tags = parsePictures(message.mes).filter(tag => !shown(message, tag.hash));
     if (!tags.length) { notice('这层楼的图片已经生成'); return; }
     const permission = await allowed(true); if (!permission) return;
-    const run = crypto.randomUUID();
-    for (let index = 0; index < tags.length; index++) {
-      if (context().chat[id] !== message) break;
-      await generate(id, tags[index], {
-        permission,
-        batch: {run, index, size: tags.length}
-      });
-    }
+    for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {drawFor, tagText, drawMessage, voiceMessage, outfitsList, outfitSave, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {drawFor, tagText, drawMessage, voiceMessage, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }

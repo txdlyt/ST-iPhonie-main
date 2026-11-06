@@ -120,6 +120,8 @@ export interface GeneralSettings {
     pregenerate?: boolean;
     /** The reply is played as a whole once its voices are ready. */
     autoplay?: boolean;
+    /** 衣柜's 正在穿 and the picture planner's 当前服装 follow each other (default on). */
+    outfitSync?: boolean;
     floatingEnabled: boolean;
     waveformEnabled: boolean;
     /** Built-in wallpapers move slowly (clouds, stars, bubbles, leaves, fireflies). */
@@ -419,7 +421,7 @@ export interface ChatMessage { id: string; from: 'me' | string; kind: ChatKind; 
 /** pinned: 置顶. muted: 免打扰 (its unread messages do not count toward the badge). */
 /** 删好友 on a private chat: by 'me' the user deleted the contact (their messages wait as requests); by 'them' the contact deleted the user. */
 /** A music source the user added: search and link addresses ({{query}}, {{id}}) and where the answers keep each field. */
-export interface MusicSource { id: string; name: string; enabled: boolean; search: string; url: string; lyric: string; listPath: string; idPath: string; titlePath: string; artistPath: string; urlPath: string; lyricPath: string; direct: boolean; albumSearch: string; albumListPath: string; albumSongs: string; albumSongsPath: string; artistSearch: string; artistListPath: string; artistSongs: string; artistSongsPath: string; playlistSearch: string; playlistListPath: string; playlistSongs: string; playlistSongsPath: string; }
+export interface MusicSource { id: string; name: string; enabled: boolean; /** 'go-music': the user's go-music-api (base, platforms); the address fields stay empty. */ kind?: 'go-music'; base?: string; platforms?: string[]; search: string; url: string; lyric: string; listPath: string; idPath: string; titlePath: string; artistPath: string; urlPath: string; lyricPath: string; direct: boolean; albumSearch: string; albumListPath: string; albumSongs: string; albumSongsPath: string; artistSearch: string; artistListPath: string; artistSongs: string; artistSongsPath: string; playlistSearch: string; playlistListPath: string; playlistSongs: string; playlistSongsPath: string; }
 /** 音乐: bgm 'off' | 'tap' | 'auto' (the story picks songs with <bgm>), its rule, the volume, turning down for voice lines, songs shared in chats, how lists go on, whether some of the 歌单 goes with the rule as a taste. */
 export interface MusicSettings { writing: Omit<SongForm, 'about' | 'who' | 'instrumental'>; sing: {engine: string; lyriaModel: string; lyriaUrl: string; replicateModel: string; comfyOn: boolean; comfyOwn: boolean; comfyWorkflow: string; comfyName: string; comfyMap: {lyrics: string; style: string}}; bgm: 'off' | 'tap' | 'auto'; rule: string; volume: number; duck: boolean; share: boolean; mode: 'order' | 'shuffle' | 'one'; taste: boolean; sources: MusicSource[]; }
 /** A 歌单 song: a file on this device, or a song of a source (its link is fetched when it plays). */
@@ -428,7 +430,7 @@ export interface SongDraft { id: string; kind: 'draft'; at: number; updatedAt: n
 export interface SongWorkflowInfo { lyrics: string; style: string; output: string; seconds: number; seeds: number; fields: {at: string; title: string; text: string}[]; }
 export interface SingOption { id: string; name: string; ready: boolean; model: string; price: {free: boolean; text: string}; /** Whether the length asked for (SongDraft.seconds) reaches the service. */ timed: boolean; }
 export interface MusicSong { id: string; kind: 'song'; at: number; title: string; artist: string; origin: 'file' | 'source'; source?: string; songId?: string; lyric?: string; size?: number; mime?: string; file?: string; }
-export interface MusicFound { source: string; sourceName: string; id: string; title: string; artist: string; }
+export interface MusicFound { source: string; sourceName: string; id: string; title: string; artist: string; /** Go Music: the platform it was found on */ platform?: string; }
 /** An album or an artist a search found (an album's artist; how many songs, when the source says). */
 export interface MusicGroup { source: string; sourceName: string; kind: 'album' | 'artist' | 'playlist'; id: string; name: string; artist: string; count: number; }
 /** 正文点的歌: a song the story picked (where it was found, once it was). */
@@ -438,8 +440,15 @@ export interface MusicPlaylist { id: string; kind: 'playlist'; at: number; name:
 /** What plays now (the tavern page's player). */
 export interface MusicStatus { phase: 'idle' | 'loading' | 'playing' | 'paused' | 'error'; message: string; track: { title: string; artist: string; from: string; origin: string; id: string; source: string; songId: string } | null; position: number; duration: number; volume: number; queue: number; index: number; mode: 'order' | 'shuffle' | 'one'; from: string; lyric: string; lyricIndex: number; lyrics: { at: number; text: string }[]; }
 export type MusicTrack = Partial<MusicSong> & { title: string; artist?: string; from?: string };
-export interface ChatFriendState { by: 'me' | 'them'; at: number; requests: { text: string; at: number }[]; }
-export interface ChatThread { id: string; type: 'dm' | 'group'; name: string; members: string[]; unread: number; pinned: boolean; muted: boolean; createdAt: number; updatedAt: number; messages: ChatMessage[]; friend?: ChatFriendState; }
+export interface WardrobeItem { id: string; kind: 'wardrobe-item'; owner: string; name: string; category: string; description: string; photoId?: string; recognized: boolean; at: number; updatedAt: number; }
+export interface WardrobeSet { id: string; kind: 'wardrobe-set'; owner: string; name: string; description: string; items: string[]; at: number; updatedAt: number; }
+export interface WardrobeWear { id: string; kind: 'wardrobe-wear'; owner: string; text: string; from: 'phone' | 'story'; pending: boolean; at: number; }
+/** 小剧场 (core/generator.js): a script's line (旁白 lines are narration) or a card's HTML. */
+export interface TheaterLine { role: string; text: string; translation: string; emotion: string; narration?: boolean; }
+export interface Theater { id: string; kind: 'theater'; form: 'script' | 'card'; title: string; lines?: TheaterLine[]; html?: string; source: 'story' | 'card'; wish: string; at: number; space?: string; save?: string; }
+export interface GeneratorDirection { title: string; text: string; }
+export interface ChatFriendState { by: 'me' | 'them'; at: number; requests: { text: string; at: number }[]; /** when the user last turned down a 好友申请 */ refused?: number; }
+export interface ChatThread { id: string; type: 'dm' | 'group'; name: string; members: string[]; unread: number; pinned: boolean; muted: boolean; createdAt: number; updatedAt: number; messages: ChatMessage[]; friend?: ChatFriendState; /** 黑名单: what they sent meanwhile (held, never in the chat) and their 好友申请; refused: when the user last turned one down. The list carries count instead of held. */ blocked?: {at: number; held?: {kind: string; text: string; at: number}[]; count?: number; requests: {text: string; at: number}[]; refused?: number}; /** 重新回复的版本 of the last round: what the user's message it answers is, each version's messages, which one shows. */ alts?: {after: string; versions: ChatMessage[][]; shown: number}; }
 /** streak: 聊天火花, days in a row both sides wrote. */
 export interface ChatThreadSummary extends Omit<ChatThread, 'messages'> { count: number; last: ChatMessage | null; streak: number; }
 export type ChatMessageInput = Omit<ChatMessage, 'id' | 'at'>;
@@ -961,6 +970,17 @@ export interface BackendFacade {
     clearHeard(): Promise<boolean>;
     musicLink(sourceId: string | Partial<MusicSource>, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     musicLyric(sourceId: string, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
+    /** Go Music (the user's go-music-api): which platforms it holds a login for — never the Cookies themselves. */
+    goMusicLogins(sourceId: string | Partial<MusicSource>): Promise<Record<string, boolean>>;
+    /** A pasted Cookie sent on to the backend ('' logs that platform out there); the phone keeps nothing. */
+    goMusicSetCookie(sourceId: string | Partial<MusicSource>, platform: string, cookie: string): Promise<Record<string, boolean>>;
+    /** 扫码登录: way is netease, qq, qq_wx, kugou or bilibili; image is the platform's own picture (data:) when given, else url is drawn. */
+    goMusicQr(sourceId: string | Partial<MusicSource>, way: string): Promise<{ key: string; url: string; image: string; expiresAt: number }>;
+    goMusicQrCheck(sourceId: string | Partial<MusicSource>, way: string, key: string): Promise<{ status: 'waiting' | 'scanned' | 'success' | 'expired' | 'failed'; message: string }>;
+    /** The logged-in account's playlists on qq, netease or kugou (401: not logged in). */
+    goMusicAccountLists(sourceId: string | Partial<MusicSource>, platform: string): Promise<MusicGroup[]>;
+    /** 推荐歌单 (recommend), 歌单分类 (categories: [{platform, name, categories}]) or a category's playlists (category). */
+    goMusicDiscover(sourceId: string | Partial<MusicSource>, options?: { what?: 'recommend' | 'categories' | 'category'; platform?: string; category?: string; page?: number }): Promise<MusicGroup[] | { platform: string; name: string; categories: { id: string; name: string; group: string }[] }[]>;
     listSongs(): Promise<MusicSong[]>;
     /** 写歌: the songs written, newest first. */
     listSongDrafts(): Promise<SongDraft[]>;
@@ -1109,6 +1129,8 @@ export interface BackendFacade {
     searchChatMessages(query: string, options?: {limit?: number; around?: number; tail?: number}): Promise<{hits: {thread: string; id: string; from: string; at: number; before: string; hit: string; after: string}[]; total: number}>;
     listThreads(): Promise<ChatThreadSummary[]>;
     getThread(id: string): Promise<ChatThread | null>;
+    /** 重新回复的版本: another version of the chat's last round shows (the one showing is kept among them). */
+    chatShowVersion(id: string, index: number): Promise<ChatThread>;
     chatUnread(): Promise<number>;
     createThread(value: { type: 'dm' | 'group'; members: string[]; name?: string }): Promise<ChatThread>;
     updateThread(id: string, patch: { name?: string; members?: string[]; pinned?: boolean; muted?: boolean }): Promise<ChatThread>;
@@ -1130,6 +1152,24 @@ export interface BackendFacade {
     unfriend(name: string): Promise<ChatThread>;
     /** Adds a deleted contact back, with their 好友申请 as messages. */
     refriend(threadId: string): Promise<ChatThread>;
+    /** 黑名单: the chat stays, what they send is held as 拦截记录, a 好友申请 waits. */
+    blockContact(name: string): Promise<ChatThread>;
+    unblockContact(threadId: string): Promise<ChatThread>;
+    /** The contacts blocked here: left out of 朋友圈 both ways. */
+    blockedNames(): Promise<string[]>;
+    /** 衣柜 here (this card's, with 分区): clothes and outfits, newest first, and what each owner wears ('me' or 'role:名字'). */
+    wardrobe(owner?: string): Promise<{ items: WardrobeItem[]; sets: WardrobeSet[]; wears: WardrobeWear[] }>;
+    saveWardrobeItem(item: Partial<WardrobeItem> & { owner: string }): Promise<WardrobeItem>;
+    saveWardrobeSet(set: Partial<WardrobeSet> & { owner: string; description: string }): Promise<WardrobeSet>;
+    deleteWardrobe(ids: string[]): Promise<boolean>;
+    /** 穿上 (from: 'phone', told to the next story reply once) or what the story changed (from: 'story'). */
+    setWardrobeWear(wear: { owner: string; text: string; from?: 'phone' | 'story' }): Promise<WardrobeWear>;
+    clearWardrobeWear(owner: string): Promise<boolean>;
+    theaters(): Promise<Theater[]>;
+    saveTheater(doc: Partial<Theater>): Promise<Theater>;
+    deleteTheater(ids: string[]): Promise<boolean>;
+    /** A 好友申请 from someone deleted or blocked: accepted (friends again) or turned down. */
+    answerFriendRequest(threadId: string, accept: boolean): Promise<ChatThread>;
     deleteChatMessages(id: string, ids: string[]): Promise<ChatThread>;
     /** {state, openedBy} for a red packet or transfer, or {recall: true} to withdraw a message. */
     updateChatMessage(id: string, messageId: string, patch: { text?: string; translation?: string; state?: string; openedBy?: string; recall?: boolean; photoId?: string; imageTags?: string; imageVersions?: string[] }): Promise<ChatThread>;
@@ -1228,6 +1268,23 @@ export interface BackendAPI extends BackendFacade {
     musicSeek(seconds: number): void;
     /** New 朋友圈 posts from the characters (one model request). */
     momentsRefresh(): Promise<MomentPost[]>;
+    /** 衣柜 (tavern side): a piece's photo recognized by a model that sees; an outfit put together; a 试穿图 drawn (code 'PAID' with prompt until allowPaid). */
+    wardrobeRecognize(itemId: string): Promise<WardrobeItem>;
+    wardrobeSuggest(options: { owner: string; mode?: 'closet' | 'free'; wish?: string; itemIds?: string[] }): Promise<string>;
+    wardrobeTryOn(options: { owner: string; text: string; allowPaid?: boolean }): Promise<string>;
+    /** 生成器 (host-generator.js): the card open now, what is being written, and each kind's request. */
+    generatorCard(): { name: string; group: boolean; messages: number; greetingOnly: boolean };
+    generatorBusy(): string;
+    generatorOpening(form: { mode?: 'random' | 'brief'; brief?: string; focus?: string; length?: string; before?: string; wish?: string }): Promise<string>;
+    generatorWriteOpening(text: string, options?: { append?: boolean }): Promise<{ how: 'swipe' | 'append' | 'ask'; index?: number; messages?: number }>;
+    generatorPersona(form: { wish?: string; length?: string }): Promise<{ name: string; description: string }>;
+    generatorSavePersona(value: { name: string; description: string }): Promise<{ avatarId: string; name: string }>;
+    generatorUsePersona(avatarId: string): Promise<void>;
+    generatorDirections(form: { wish?: string }): Promise<GeneratorDirection[]>;
+    generatorSteer(direction: GeneratorDirection | null): GeneratorDirection | null;
+    generatorSteering(): GeneratorDirection | null;
+    generatorTheater(form: { kind?: 'script' | 'card'; source?: 'story' | 'card'; length?: string; wish?: string; focus?: string }): Promise<Theater>;
+    generatorPlay(id: string): Promise<unknown>;
     /** Friends react to the user's post. */
     momentsReact(id: string): Promise<MomentPost>;
     /** Answers to the user's comment. */
