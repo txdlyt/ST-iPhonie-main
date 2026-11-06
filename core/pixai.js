@@ -27,7 +27,14 @@ export class PixaiClient extends NovelAIClient {
   }
   async generate(body, signal) {
     if (!this.relay) throw Error('还没有填写 PixAI 反代地址');
-    return super.generate(body, signal);
+    try { return await super.generate(body, signal); }
+    catch (error) {
+      // 410: asked to only fetch a picture (bridge_batch.recover) the bridge no longer has: it was not drawn again.
+      if (error?.status === 410) throw Object.assign(Error('PixAI 反代里已经没有这张图了（超过 10 分钟，或反代重启过）。点「重试」会重新画一张，会再扣一次积分'), {status: 410, code: 'PIXAI_EXPIRED'});
+      // The client is NovelAI's: what it says about "NovelAI" is about this engine here.
+      if (error && typeof error.message === 'string') error.message = error.message.replace(/NovelAI/g, PIXAI_NAME);
+      throw error;
+    }
   }
 }
 
@@ -39,7 +46,7 @@ export function normalizeBatch(value) {
   if (!value || typeof value !== 'object') return null;
   const run = typeof value.run === 'string' ? value.run.slice(0, 80) : '', index = Number(value.index), size = Number(value.size);
   if (!run || !Number.isInteger(index) || !Number.isInteger(size) || size < 1 || size > 64 || index < 0 || index >= size) return null;
-  return {run, index, size};
+  return {run, index, size, ...(value.recover === true ? {recover: true} : {})};
 }
 
 /**

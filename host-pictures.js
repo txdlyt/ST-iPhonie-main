@@ -379,12 +379,16 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     await Promise.all(tags.map(tag => generate(id, tag, {permission})));
   }
 
+  /** The engine drawing, by its own name (PixAI 反代 speaks NovelAI's interface; it is still not NovelAI). */
+  const engineName = () => ({nai: 'NovelAI', gpt: 'GPT 生图', comfy: 'ComfyUI', pixai: 'PixAI 反代'})[settings().draw.engine] || 'NovelAI';
+
   /** What the queue says about a job, for the placeholder. */
   function queueText(key) {
     const job = backend.drawQueue?.get?.(key);
-    if (!job) return 'NovelAI 正在画……';
-    if (job.state === 'running') return job.attempt ? `NovelAI 正在画……（第 ${job.attempt + 1} 次尝试）` : 'NovelAI 正在画……';
-    if (job.state === 'busy') return `NovelAI 账号正忙，稍后自动重试（第 ${job.attempt} 次）`;
+    const name = engineName();
+    if (!job) return `${name} 正在画……`;
+    if (job.state === 'running') return job.attempt ? `${name} 正在画……（第 ${job.attempt + 1} 次尝试）` : `${name} 正在画……`;
+    if (job.state === 'busy') return `${name} 账号正忙，稍后自动重试（第 ${job.attempt} 次）`;
     if (job.state === 'spacing') return '排队中，马上开始';
     if (job.state === 'remote') {
       const c = job.cloud || {};
@@ -417,10 +421,12 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
         ? frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下收起，双击放大查看"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button><span class="sttts-pic-note">${esc(waiting)}<button type="button" data-sttts-pic-action="cancel">取消</button></span>`)
         : frame(`<span class="sttts-pic-wait">${esc(waiting)}<br><button type="button" data-sttts-pic-action="cancel">取消</button></span>`);
     } else if (state === 'error') {
-      el.innerHTML = frame(`<span class="sttts-pic-wait">${esc(job.message)}<br><button type="button" data-sttts-pic-action="draw">重试</button></span>`);
+      const again = backend.pixaiRecoverable?.(key) && settings().draw.engine === 'pixai';
+      el.innerHTML = frame(`<span class="sttts-pic-wait">${esc(job.message)}${again ? '<br>反代那边可能已经画好了，可以直接取回（不重画、不再扣积分）' : ''}<br><button type="button" data-sttts-pic-action="draw">${again ? '重新获取' : '重试'}</button></span>`);
     } else {
       const reason = !s.draw.enabled ? '正文出图没有开启' : !backend.drawReady() ? backend.drawMissing() : !s.draw.auto ? '自动出图已关闭' : s.draw.engine === 'gpt' && s.draw.gpt.ask ? 'GPT 生图每张都要花钱，点了才画' : '这张图没有自动生成';
-      el.innerHTML = frame(`<span class="sttts-pic-wait">${reason}<br><button type="button" data-sttts-pic-action="draw">点击生成</button></span>`);
+      const again = backend.pixaiRecoverable?.(key) && s.draw.engine === 'pixai';
+      el.innerHTML = frame(again ? `<span class="sttts-pic-wait">这张图刚才没有收到，PixAI 反代那边可能已经画好了<br><button type="button" data-sttts-pic-action="draw">重新获取</button></span>` : `<span class="sttts-pic-wait">${reason}<br><button type="button" data-sttts-pic-action="draw">点击生成</button></span>`);
     }
   }
 

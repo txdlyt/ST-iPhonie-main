@@ -247,7 +247,11 @@ class Batcher {
     if (hint) {
       key = 'run:' + hint.run;
       run = this.runs.get(key);
-      if (!run || run.prompt !== prompt) run = { legacy: false, prompt, size: hint.size, groups: new Map(), used: 0, next: 0 };
+      // hint.recover: the plugin lost the answer and only wants this picture again: never draw one for it.
+      if (!run || run.prompt !== prompt) {
+        if (hint.recover) throw Object.assign(new Error('这张图已不在反代里'), { code: 'EXPIRED' });
+        run = { legacy: false, prompt, size: hint.size, groups: new Map(), used: 0, next: 0 };
+      }
       run.size = hint.size;
       index = hint.index;
     } else {
@@ -262,6 +266,7 @@ class Batcher {
     const group = Math.floor(index / per), slot = index % per;
     const want = this.countFor(Math.min(per, Math.max(1, run.size - group * per)));
     let entry = run.groups.get(group);
+    if (hint?.recover && (!entry || (entry.result && slot >= entry.result.files.length))) throw Object.assign(new Error('这张图已不在反代里'), { code: 'EXPIRED' });
     if (!entry || (entry.result && slot >= entry.result.files.length)) {
       entry = { result: null, promise: null };
       run.groups.set(group, entry);
@@ -699,7 +704,7 @@ function readHint(raw) {
   const run = typeof raw.run === 'string' ? raw.run.slice(0, 80) : '';
   const index = Number(raw.index), size = Number(raw.size);
   if (!run || !Number.isInteger(index) || !Number.isInteger(size) || index < 0 || size < 1 || size > 64 || index >= size) return null;
-  return { run, index, size };
+  return { run, index, size, recover: raw.recover === true };
 }
 
 app.post('/ai/generate-image', async (req, res) => {
@@ -749,6 +754,11 @@ app.post('/ai/generate-image', async (req, res) => {
 
       console.log(`任务 ${taskId}：已返回第 ${index + 1}/${size} 张${hint ? '' : '（旧插件，按提示词归批）'}`);
     } catch (error) {
+      if (error?.code === 'EXPIRED') {
+        console.log('重新获取：这张图已不在反代里（超过时限或反代重启过），没有重画');
+        if (!res.headersSent) res.status(410).json({ message: error.message, expired: true });
+        return;
+      }
       console.error('生成失败：', error);
       if (!res.headersSent) {
         res.status(500).json({ message: error.message || 'PixAI 生成失败' });

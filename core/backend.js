@@ -1590,6 +1590,27 @@ export class TTSBackend {
         this.pixaiRemember(info);
         return info;
     }
+    // ---------- PixAI 反代: a picture whose answer was lost (page reloaded or updated, connection cut) ----------
+    // The bridge keeps what it drew ~10 minutes under the request's run id. The run id is kept here, on this device, from
+    // the start of the picture until it is in hand, so asking again fetches that picture (bridge_batch.recover) instead of
+    // drawing and paying for another. Dropped when the picture came, when the bridge answered with an error (nothing was
+    // drawn for it), or when it was stopped.
+    static #PENDING = 'sttts_pixai_pending';
+    static #PENDING_MS = 9 * 60 * 1000;
+    #pixaiPending() {
+        try {
+            const all = JSON.parse(localStorage.getItem(TTSBackend.#PENDING) || '{}'), now = Date.now(), live = {};
+            for (const [key, v] of Object.entries(all && typeof all === 'object' ? all : {})) if (v && now - v.at < TTSBackend.#PENDING_MS && normalizeBatch(v)) live[key] = v;
+            return live;
+        } catch { return {}; }
+    }
+    #savePixaiPending(all) {
+        try { localStorage.setItem(TTSBackend.#PENDING, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-24)))); } catch { /* no storage: it is only a convenience */ }
+    }
+    /** Whether the bridge may still hold the picture of this job (asked before, no answer came). */
+    pixaiRecoverable(key) { return !!this.#pixaiPending()[key]; }
+    #pixaiKeep(key, batch) { const all = this.#pixaiPending(); all[key] = { ...batch, at: Date.now() }; delete all[key].recover; this.#savePixaiPending(all); }
+    #pixaiDrop(key) { const all = this.#pixaiPending(); if (key in all) { delete all[key]; this.#savePixaiPending(all); } }
     pixaiRemember(info) {
         const r = info?.resolution;
         if (Number.isInteger(r?.width) && Number.isInteger(r?.height)) this.pixaiWeb = { width: r.width, height: r.height };
@@ -1694,13 +1715,27 @@ export class TTSBackend {
             const comfy = engine === 'comfy' ? clone(Object.fromEntries(['url', 'workflow', 'disabledLoras', 'disabledNodes', 'output', ...COMFY_PARAM_KEYS].map(k => [k, c[k]]))) : undefined;
             // 角色参考图 (pictureInputs: the people in it who have one) go to GPT when nothing was given by hand.
             // PixAI 反代: which picture of a request for several this is ({run, index, size}); alone, a request of one. Fixed here, so a retry asks for the same picture.
-            const pixaiBatch = engine === 'pixai' ? normalizeBatch(batch) || { run: crypto.randomUUID(), index: 0, size: 1 } : null;
+            let pixaiBatch = null;
+            if (engine === 'pixai') {
+                const given = normalizeBatch(batch), kept = given ? null : this.#pixaiPending()[key];
+                if (given) pixaiBatch = given;
+                else if (kept) pixaiBatch = { ...normalizeBatch(kept), recover: true };
+                else { pixaiBatch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, pixaiBatch); }
+            }
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
             const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
-                const made = await this.drawWithEngine(engine, { ...picture, ...(own ? { refs: own.refs, characters: own.characters, roles: true } : {}), signal });
+                let made;
+                try { made = await this.drawWithEngine(engine, { ...picture, ...(own ? { refs: own.refs, characters: own.characters, roles: true } : {}), signal }); }
+                catch (error) {
+                    // Kept only when no answer came (cut, reloaded, unreadable): the bridge may have drawn it. An answer that
+                    // says no, a stop, or "no longer here" means asking again must draw anew.
+                    if (engine === 'pixai' && (error?.cancelled || error?.status > 0 || error?.code === 'PIXAI_EXPIRED')) this.#pixaiDrop(key);
+                    throw error;
+                }
+                if (engine === 'pixai') this.#pixaiDrop(key);
                 this.assertOpen();
                 const ext = made.blob.type === 'image/jpeg' ? 'jpg' : made.blob.type === 'image/webp' ? 'webp' : 'png';
                 const info = this.pictureInfo(engine, made, picture);
