@@ -1,14 +1,15 @@
 // 衣柜, tavern side (core/wardrobe.js): a photo of clothes recognized by a model that sees, an outfit put together, a
 // 试穿图 drawn (paid only when the phone asked), what was put on told to the next story reply once, and the story's
 // hidden <outfit> lines followed (who wears what now), with no request of their own.
-import {recognizeRequest, parseRecognition, suggestRequest, cleanOutfit, wearText, outfitRule, parseOutfits, ownerKey, ownerName} from './core/wardrobe.js';
+import {recognizeRequest, parseRecognition, suggestRequest, cleanOutfit, splitRequest, parseSplit, wearText, outfitRule, parseOutfits, ownerKey, ownerName, WARDROBE_LIMITS} from './core/wardrobe.js';
 import {pictureInputs, photoPicture, tagTextRequest, tagTextAnswer} from './core/draw.js';
 import {plainStory} from './core/chat.js';
 import {activeText} from './core/llm.js';
 import {requestAssistantText, hasCompletionService, loadCompletionModule} from './host-assistant.js';
 import {pictureUrl} from './host-chat.js';
 
-export function createWardrobeHost({context, settings, backend, notice = () => {}, outfits = null, ask = requestAssistantText, loadCompletion = loadCompletionModule, picture = pictureUrl}) {
+// onChange (0.9.35, 衣柜 × 聊天): told whose clothes a story reply changed ([{name, text}], roles only), after they are kept.
+export function createWardrobeHost({context, settings, backend, notice = () => {}, outfits = null, ask = requestAssistantText, loadCompletion = loadCompletionModule, picture = pictureUrl, onChange = () => {}}) {
   const userName = () => context()?.name1 || '我';
   /** Whether the text model sees pictures (a tavern connection when the tavern says so; a custom one is tried). */
   async function sees(ctx = context()) {
@@ -42,6 +43,31 @@ export function createWardrobeHost({context, settings, backend, notice = () => {
     return text;
   }
   /**
+   * 存成一套 (0.9.33): kept with the pieces it is made of. Designed freely, it is split into pieces first (one request), and
+   * they go into the 衣柜 as words (one already there, the same name and words, is used again); from the 衣柜, the pieces
+   * picked. The same words kept again are not kept twice: {again: true}. Answers {set, added}.
+   */
+  async function saveOutfit({owner, text, mode = 'closet', itemIds = []} = {}) {
+    const words = cleanOutfit(text);
+    if (!words) throw Error('先搭一套');
+    const {items, sets} = await backend.wardrobe(owner), same = sets.find(s => s.description === words.slice(0, WARDROBE_LIMITS.wear));
+    if (same) return {set: same, added: 0, again: true};
+    let ids = itemIds.filter(id => items.some(x => x.id === id)), added = 0;
+    if (mode === 'free') {
+      const pieces = parseSplit(await backend.generateText(context(), {use: 'wardrobe', prompt: splitRequest(words, settings().promptRules), plainText: true, trimNames: false}));
+      if (!pieces.length) throw Error('模型没把这套拆成单件衣服，再试一次');
+      ids = [];
+      for (const piece of pieces) {
+        const kept = items.find(x => x.name === piece.name && x.description === piece.description);
+        if (kept) { ids.push(kept.id); continue; }
+        ids.push((await backend.saveWardrobeItem({owner, ...piece})).id);
+        added++;
+      }
+    }
+    const set = await backend.saveWardrobeSet({owner, name: `搭配 ${sets.length + 1}`, description: words, items: [...new Set(ids)]});
+    return {set, added, again: false};
+  }
+  /**
    * 试穿图: someone drawn wearing it, with their saved look (角色 App). A picture that costs money is only drawn when
    * allowPaid (the phone asks first): before that not even the words for its tags are spent. The picture goes to the album.
    */
@@ -59,6 +85,16 @@ export function createWardrobeHost({context, settings, backend, notice = () => {
     catch (error) { if (error?.code === 'PAID') throw paid(); throw error; }
   }
 
+  /**
+   * Who is in the story just now (0.9.33, for the row of faces when there are many): the user and the roles named or
+   * speaking in the last few messages, as 衣柜 owners.
+   */
+  function present() {
+    const ctx = context(), text = (ctx?.chat || []).filter(m => !m.is_system && typeof m.mes === 'string').slice(-6).map(m => `${m.name || ''}\n${m.mes}`).join('\n');
+    if (!text) return [];
+    const user = userName(), names = [...new Set(settings().routes.map(r => r.name).filter(n => n && n !== user))];
+    return [...(text.includes(user) ? ['me'] : []), ...names.filter(n => text.includes(n)).map(ownerKey)];
+  }
   // What inject() needs at once (it cannot wait): the outfits put on and not yet told, and who has a 衣柜 here.
   let cache = {pending: [], owners: [], loaded: false};
   function refresh() {
@@ -94,13 +130,19 @@ export function createWardrobeHost({context, settings, backend, notice = () => {
     if (!m || m.is_user || m.is_system || typeof m.mes !== 'string') return 0;
     const found = parseOutfits(m.mes);
     if (!found.length) return 0;
-    const user = userName(), roles = new Set(settings().routes.map(r => r.name));
+    const user = userName(), roles = new Set(settings().routes.map(r => r.name)), news = [];
     let changed = 0;
     for (const {name, text} of found) {
       const owner = name === user ? 'me' : roles.has(name) ? ownerKey(name) : '';
       if (!owner) continue;
-      try { await backend.setWardrobeWear({owner, text, from: 'story'}); changed++; if (syncing()) outfits.at([{name, outfit: text}], index, 'ai'); } catch { /* not worth interrupting the story */ }
+      try {
+        const before = owner === 'me' ? '' : (await backend.wardrobe(owner)).wears[0]?.text || '';
+        await backend.setWardrobeWear({owner, text, from: 'story'}); changed++;
+        if (syncing()) outfits.at([{name, outfit: text}], index, 'ai');
+        if (owner !== 'me' && before.trim() !== text.trim()) news.push({name, text});
+      } catch { /* not worth interrupting the story */ }
     }
+    if (news.length) { try { onChange(news); } catch { /* the phone's own business */ } }
     return changed;
   }
   // ---------- 当前服装 sync with the picture planner's record (host-pictures.js; on unless 设置 → 正文出图 turns it off) ----------
@@ -135,5 +177,5 @@ export function createWardrobeHost({context, settings, backend, notice = () => {
     }
     return changed;
   }
-  return {recognize, suggest, tryOn, storyPlan, storyReplied, outfitsFound, sees};
+  return {recognize, suggest, saveOutfit, tryOn, storyPlan, storyReplied, outfitsFound, sees, present};
 }

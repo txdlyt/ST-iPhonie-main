@@ -19,7 +19,12 @@
 // streak (聊天火花): days in a row, up to today or yesterday, on which both the user and the other side wrote.
 // alts (重新回复的几个版本, the last round only): {after: the user's message the round answers ('' at the start), versions:
 // [[Message]], shown: which one is in messages}. Any message added after it, or that message deleted, ends them.
+// watch (旁观群, group chats only, 0.9.35): the user is not in the group — its members talk among themselves and the user
+// only looks on (nothing can be sent there). Made by the user, or by a contact (「[建群]」 without the user).
+//   post (0.9.35): a forum post shared — post:{id ('' when it is not on the forum), title, author, text}
+//   outfit (0.9.35): clothes from the 衣柜 shown — outfit:{name, text, owner ('me' or whose 衣柜), photoId?}
 import {connectionLost, lostError, breath} from './idb.js';
+import {cleanBoard, BOARDS} from './board.js';
 
 export const CHAT_STORE_LIMITS = Object.freeze({messages: 1000, text: 4000, members: 20, fileText: 30000, versions: 10, held: 50});
 /** A chat's last round: the contacts' messages after the user's last one (after: that message's id, '' at the start). */
@@ -27,7 +32,67 @@ export function lastRound(messages) {
   const list = Array.isArray(messages) ? messages : [], at = list.findLastIndex(m => m.from === 'me' && m.kind !== 'system');
   return {after: at >= 0 ? String(list[at].id) : '', round: list.slice(at + 1).filter(m => m.from !== 'me')};
 }
-const KINDS = ['text', 'voice', 'photo', 'sticker', 'system', 'redpacket', 'transfer', 'location', 'pat', 'dice', 'notice', 'recall', 'call', 'gift', 'song', 'file'];
+const KINDS = ['text', 'voice', 'photo', 'sticker', 'system', 'redpacket', 'transfer', 'location', 'pat', 'dice', 'notice', 'recall', 'call', 'gift', 'song', 'file', 'forward', 'game', 'post', 'outfit'];
+/** 消息回应 (0.9.34): the emoji one can put on a message, one each person (the user's and the contacts'). */
+export const REACTIONS = Object.freeze(['❤️', '😂', '👍', '😮', '😢', '🎉']);
+const EMOJI = /\p{Extended_Pictographic}/u;
+/** One emoji (with its joiners and skin tones), or '' when the text holds none. */
+export const oneEmoji = value => {
+  const text = String(value ?? '').trim();
+  if (!EMOJI.test(text)) return '';
+  const seg = globalThis.Intl?.Segmenter ? [...new Intl.Segmenter('zh', {granularity: 'grapheme'}).segment(text)].map(s => s.segment) : [...text];
+  return (seg.find(s => EMOJI.test(s)) || '').slice(0, 16);
+};
+/** A message's reactions: [{from, emoji}], one a person (the last counts), at most 20. */
+export function cleanReactions(list) {
+  const by = new Map();
+  for (const r of Array.isArray(list) ? list : []) { const from = clip(r?.from, 40).trim(), emoji = oneEmoji(r?.emoji); if (from && emoji) { by.delete(from); by.set(from, emoji); } }
+  return [...by].slice(-20).map(([from, emoji]) => ({from, emoji}));
+}
+// 群游戏 (0.9.34): a card in a group chat, its state kept with it.
+//   vote:  {type, question, options [2–6], votes [{from, option (index), why}], open}
+//   truth: {type, pool [names, 'me' the user], target, choice '' | '真心话' | '大冒险'}
+//   chain: {type, mode 'idiom' | 'story', entries [{from, text}], open, loser}
+// 小游戏对战 (0.9.35, private chats): 井字棋 'ttt' and 五子棋 'gomoku' (core/board.js) — {type, them, first, moves [{by, at}],
+// resigned} kept, turn, winner, line and open worked out from them.
+export const GAME_LIMITS = Object.freeze({options: 6, option: 30, question: 80, why: 60, entries: 60, entry: 120, pool: 30});
+export const CHAIN_MODES = Object.freeze({idiom: '成语接龙', story: '故事接龙'});
+export function cleanGame(g) {
+  const type = String(g?.type || '');
+  if (BOARDS[type]) return cleanBoard(g, fail);
+  if (type === 'vote') {
+    const options = (Array.isArray(g.options) ? g.options : []).map(o => clip(o, GAME_LIMITS.option).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, GAME_LIMITS.options);
+    const question = clip(g.question, GAME_LIMITS.question).replace(/\s+/g, ' ').trim();
+    if (!question) throw fail('投票要有一个问题');
+    if (options.length < 2) throw fail('投票至少要两个选项');
+    const by = new Map();
+    for (const v of Array.isArray(g.votes) ? g.votes : []) { const from = clip(v?.from, 40).trim(), option = Math.round(Number(v?.option)); if (from && option >= 0 && option < options.length) { by.delete(from); by.set(from, {from, option, why: clip(v.why, GAME_LIMITS.why).trim()}); } }
+    return {type, question, options, votes: [...by.values()], open: g.open !== false};
+  }
+  if (type === 'truth') {
+    const pool = [...new Set((Array.isArray(g.pool) ? g.pool : []).map(n => clip(n, 40).trim()).filter(Boolean))].slice(0, GAME_LIMITS.pool);
+    const target = clip(g.target, 40).trim();
+    if (!pool.length || !pool.includes(target)) throw fail('转盘没有转到人');
+    return {type, pool, target, choice: ['真心话', '大冒险'].includes(g.choice) ? g.choice : ''};
+  }
+  if (type === 'chain') {
+    const entries = (Array.isArray(g.entries) ? g.entries : []).map(e => ({from: clip(e?.from, 40).trim(), text: clip(e?.text, GAME_LIMITS.entry).replace(/\s+/g, ' ').trim()})).filter(e => e.from && e.text).slice(0, GAME_LIMITS.entries);
+    if (!entries.length) throw fail('接龙要有第一句');
+    return {type, mode: g.mode === 'story' ? 'story' : 'idiom', entries, open: g.open !== false && entries.length < GAME_LIMITS.entries, loser: clip(g.loser, 40).trim()};
+  }
+  throw fail('不认识的群游戏');
+}
+/** What a game card is called (its text, for previews and search). */
+export function gameTitle(g) {
+  if (g.type === 'vote') return `投票：${g.question}`;
+  if (g.type === 'truth') return `真心话大冒险：转到了${g.target === 'me' ? '你' : g.target}`;
+  if (BOARDS[g.type]) return `${BOARDS[g.type].name}：${g.winner === 'draw' ? '平局' : g.winner === 'me' ? '你赢了' : g.winner ? `${g.winner}赢了` : g.turn === 'me' ? '轮到你' : `轮到${g.them}`}`;
+  return `${CHAIN_MODES[g.mode]}：${g.entries[0]?.text || ''}`;
+}
+/** 合并转发 (0.9.33): at most this many messages in one record, each this long. */
+export const FORWARD_LIMITS = Object.freeze({items: 80, text: 500, title: 60});
+/** A forum post or clothes shown in a chat (0.9.35): how long each part may be. note: what the one who shared it said. */
+export const SHARE_LIMITS = Object.freeze({title: 60, text: 600, note: 200});
 const CALL_STATES = ['answered', 'missed', 'declined', 'cancelled'];
 const spoken = (list, max, withFrom) => (Array.isArray(list) ? list : []).slice(-max).filter(l => l && String(l.text || l.translation || '').trim()).map(l => ({...(withFrom ? {from: clip(l.from, 40).trim() || 'me'} : {}), text: clip(l.text || l.translation, 1000), translation: clip(l.translation || l.text, 1000), emotion: clip(l.emotion || 'calm', 100)}));
 const STATES = {redpacket: ['sent', 'opened'], transfer: ['sent', 'accepted', 'returned'], gift: ['sent', 'accepted', 'returned']};
@@ -57,6 +122,10 @@ export function messageWords(m) {
     case 'song': return [m.song?.title, m.song?.artist].filter(Boolean).join(' ');
     case 'file': return m.name || '';
     case 'call': return [...(m.lines || []), ...(m.voicemail || [])].map(l => l.translation || l.text || '').join(' ');
+    case 'forward': return [m.title, ...(m.items || []).map(i => i.text)].filter(Boolean).join(' ');
+    case 'game': return [m.text, ...(m.game?.options || []), ...(m.game?.entries || []).map(e => e.text)].filter(Boolean).join(' ');
+    case 'post': return [m.post?.title, m.post?.author, m.post?.text, m.post?.note].filter(Boolean).join(' ');
+    case 'outfit': return [m.outfit?.name, m.outfit?.text, m.outfit?.note].filter(Boolean).join(' ');
     default: return '';
   }
 }
@@ -76,6 +145,30 @@ export function searchThreads(threads, query, {limit = 60, around = 16, tail = 4
     const from = Math.max(0, at - around), end = at + q.length;
     return {thread: t.id, id: m.id, from: m.from, at: m.at, before: (from ? '…' : '') + words.slice(from, at), hit: words.slice(at, end), after: words.slice(end, end + tail)};
   })};
+}
+/**
+ * A message as one line of a forwarded record (合并转发): its words, and what it is when it is not words alone. The one
+ * who sent it is the record's from, not part of this.
+ */
+export function forwardLine(m) {
+  switch (m?.kind) {
+    case 'voice': return `[语音] ${m.translation || m.text || ''}`;
+    case 'photo': return `[图片]${m.text ? ' ' + m.text : ''}`;
+    case 'sticker': return `[表情包] ${m.text || ''}`;
+    case 'redpacket': return `[红包] ${m.text || '恭喜发财，大吉大利'}`;
+    case 'transfer': return `[转账 ¥${m.amount}]${m.text ? ' ' + m.text : ''}`;
+    case 'gift': return `[礼物] ${m.gift?.name || ''}${m.text ? ' ' + m.text : ''}`;
+    case 'location': return `[位置] ${m.text || ''}${m.detail ? '（' + m.detail + '）' : ''}`;
+    case 'song': return `[音乐] ${m.song?.title || ''}${m.song?.artist ? ' - ' + m.song.artist : ''}${m.text ? ' ' + m.text : ''}`;
+    case 'file': return `[文件] ${m.name || ''}`;
+    case 'dice': return `[骰子] ${m.text} 点`;
+    case 'call': return '[语音通话]';
+    case 'forward': return `[聊天记录] ${m.title || ''}`;
+    case 'game': return `[${BOARDS[m.game?.type] ? '小游戏' : '群游戏'}] ${m.text || ''}`;
+    case 'post': return `[帖子] ${m.post?.title || String(m.post?.text || '').slice(0, 30)}${m.post?.note ? ' ' + m.post.note : ''}`;
+    case 'outfit': return `[穿搭] ${m.outfit?.name || ''}${m.outfit?.note ? ' ' + m.outfit.note : ''}`;
+    default: return m?.text || '';
+  }
 }
 /** Money as a string with two decimals, 0.01 to 200000; null when the value is not an amount. */
 export function money(value) {
@@ -117,11 +210,37 @@ function cleanMessage(m, id, at) {
   }
   // A song shared: what it is (played from the 歌单 or the user's music sources when tapped).
   if (kind === 'song') { const s = m.song && typeof m.song === 'object' ? m.song : {}; out.song = {title: clip(s.title, 120).trim(), artist: clip(s.artist, 120).trim(), ...(s.draft ? {draft: clip(s.draft, 200)} : {})}; if (!out.song.title) throw fail('歌曲缺少名字'); }
-  // A sticker keeps its address, so it still shows after it leaves the collection.
-  if (kind === 'sticker') { out.text = clip(m.text, 20); out.url = /^https?:\/\//i.test(String(m.url || '')) ? clip(m.url, 2000) : ''; }
+  // A sticker keeps its address, so it still shows after it leaves the collection; a role's own (表情包 drawn for them,
+  // 0.9.33) is a photo of the album.
+  if (kind === 'sticker') { out.text = clip(m.text, 20); out.url = /^https?:\/\//i.test(String(m.url || '')) ? clip(m.url, 2000) : ''; if (m.photoId) out.photoId = clip(m.photoId, 512); }
+  // 合并转发: a record of messages from another chat — its title and the lines, each who said it and what.
+  if (kind === 'forward') {
+    out.title = clip(m.title, FORWARD_LIMITS.title).trim() || '聊天记录';
+    out.items = (Array.isArray(m.items) ? m.items : []).filter(i => i && String(i.text ?? '').trim()).slice(0, FORWARD_LIMITS.items).map(i => ({from: clip(i.from, 40).trim() || '？', text: clip(i.text, FORWARD_LIMITS.text).trim()}));
+    if (!out.items.length) throw fail('转发的聊天记录是空的');
+    out.text = out.title;
+  }
   if (kind === 'pat' || kind === 'notice') out.target = clip(m.target, 40).trim() || 'me';
   if (kind === 'dice') out.text = String(Math.min(6, Math.max(1, Math.round(Number(m.text)) || 1)));
-  if (kind === 'recall') out.text = '';
+  // A contact's recall keeps what they said (said): the user may peek at it; what they are told is that it was not seen.
+  if (kind === 'recall') { out.text = ''; if (from !== 'me' && String(m.said ?? '').trim()) out.said = clip(m.said, 1000).trim(); }
+  if (kind === 'game') { out.game = cleanGame(m.game); out.text = gameTitle(out.game); }
+  // 论坛 × 聊天: a post shared (its id links back to it on the forum while it is there).
+  if (kind === 'post') {
+    const s = m.post && typeof m.post === 'object' ? m.post : {};
+    out.post = {id: clip(s.id, 512).trim(), title: clip(s.title, SHARE_LIMITS.title).trim(), author: clip(s.author, 40).trim(), text: clip(s.text, SHARE_LIMITS.text).trim(), ...(String(s.note ?? '').trim() ? {note: clip(s.note, SHARE_LIMITS.note).trim()} : {})};
+    if (!out.post.title && !out.post.text) throw fail('分享的帖子是空的');
+    out.text = out.post.title || out.post.text.slice(0, 30);
+  }
+  // 衣柜 × 聊天: clothes shown (whose 衣柜 they are from: 'me', or the one they were put together for).
+  if (kind === 'outfit') {
+    const s = m.outfit && typeof m.outfit === 'object' ? m.outfit : {};
+    out.outfit = {name: clip(s.name, 40).trim() || '一身衣服', text: clip(s.text, SHARE_LIMITS.text).trim(), owner: clip(s.owner, 80).trim() || 'me', ...(s.photoId ? {photoId: clip(s.photoId, 512)} : {}), ...(String(s.note ?? '').trim() ? {note: clip(s.note, SHARE_LIMITS.note).trim()} : {})};
+    if (!out.outfit.text) throw fail('这身衣服还没有描述');
+    out.text = out.outfit.name;
+  }
+  // 消息回应: the emoji people put on it.
+  if (Array.isArray(m.reactions) && !['system', 'notice', 'pat', 'recall'].includes(kind)) { const reactions = cleanReactions(m.reactions); if (reactions.length) out.reactions = reactions; }
   if (kind === 'call') {
     out.dir = m.dir === 'out' ? 'out' : 'in';
     out.state = CALL_STATES.includes(m.state) ? m.state : 'missed';
@@ -264,13 +383,13 @@ export class ChatStore {
   async get(id) {
     return this.#tx('readonly', (store, done) => this.#get(store, id, row => done(this.#public(row))));
   }
-  async create({type = 'dm', name = '', members = [], space = '', save = '', windowOf = ''} = {}) {
+  async create({type = 'dm', name = '', members = [], space = '', save = '', windowOf = '', watch = false} = {}) {
     const list = [...new Set((Array.isArray(members) ? members : []).map(m => clip(m, 40).trim()).filter(Boolean))];
     if (!list.length) throw fail('请选择聊天对象');
     if (list.length > CHAT_STORE_LIMITS.members) throw fail('群聊最多 20 人');
     if (type === 'group' && list.length < 2) throw fail('群聊至少要选两个人');
     // Later than the one before, even in the same millisecond: the window started last is the one in use (openedLast).
-    const now = this.#madeAt = Math.max(this.#now(), this.#madeAt + 1), row = {scope: this.#scope, id: this.#id(), type: type === 'group' ? 'group' : 'dm', name: clip(name, 40).trim() || (type === 'group' ? list.join('、').slice(0, 40) : list[0]), members: type === 'group' ? list : [list[0]], unread: 0, createdAt: now, updatedAt: now, messages: [], ...(space ? {space: clip(space, 300)} : {}), ...(save ? {save: clip(save, 400)} : {}), ...(type === 'group' && windowOf ? {windowOf: clip(windowOf, 512)} : {})};
+    const now = this.#madeAt = Math.max(this.#now(), this.#madeAt + 1), row = {scope: this.#scope, id: this.#id(), type: type === 'group' ? 'group' : 'dm', name: clip(name, 40).trim() || (type === 'group' ? list.join('、').slice(0, 40) : list[0]), members: type === 'group' ? list : [list[0]], unread: 0, createdAt: now, updatedAt: now, messages: [], ...(space ? {space: clip(space, 300)} : {}), ...(save ? {save: clip(save, 400)} : {}), ...(type === 'group' && windowOf ? {windowOf: clip(windowOf, 512)} : {}), ...(type === 'group' && watch === true ? {watch: true} : {})};
     await this.#tx('readwrite', (store, done, abort, after) => { store.put(row); after(list => list.set(row.id, this.#summary(row))); done(); });
     return this.#public(row);
   }
@@ -368,6 +487,23 @@ export class ChatStore {
         Object.assign(m, {kind: 'recall', text: ''});
         return;
       }
+      // 消息回应: {react: {from, emoji}} — the same again takes it off, another emoji takes the place of theirs.
+      if (patch.react) {
+        if (['system', 'notice', 'pat', 'recall'].includes(m.kind)) throw fail('这条消息不能回应');
+        const from = clip(patch.react.from, 40).trim(), emoji = oneEmoji(patch.react.emoji), had = (m.reactions || []).find(r => r.from === from);
+        if (!from) throw fail('不知道是谁回应的');
+        const rest = (m.reactions || []).filter(r => r.from !== from);
+        m.reactions = cleanReactions(emoji && had?.emoji !== emoji ? [...rest, {from, emoji}] : rest);
+        if (!m.reactions.length) delete m.reactions;
+        return;
+      }
+      // 群游戏: its state (a vote, a pick, a line of the chain), checked as a whole.
+      if (patch.game) {
+        if (m.kind !== 'game') throw fail('这条消息不是群游戏');
+        m.game = cleanGame({...m.game, ...patch.game, type: m.game.type});
+        m.text = gameTitle(m.game);
+        return;
+      }
       if ('text' in patch) {
         if (!EDITABLE_KINDS.includes(m.kind)) throw fail('这条消息不能编辑');
         const text = clip(patch.text, CHAT_STORE_LIMITS.text).trim();
@@ -441,7 +577,7 @@ export class ChatStore {
       const members = [...new Set((Array.isArray(t.members) ? t.members : []).map(m => clip(m, 40).trim()).filter(Boolean))].slice(0, CHAT_STORE_LIMITS.members);
       if (!members.length) throw fail('备份里有一段聊天没有聊天对象');
       const messages = (Array.isArray(t.messages) ? t.messages : []).slice(-CHAT_STORE_LIMITS.messages).map(m => cleanMessage(m, clip(m?.id || this.#id(), 512), Number.isFinite(m?.at) ? m.at : now));
-      const row = {scope: this.#scope, id: clip(t.id, 512), type: t.type === 'group' ? 'group' : 'dm', name: clip(t.name, 40).trim() || members.join('、').slice(0, 40), members: t.type === 'group' ? members : [members[0]], pinned: t.pinned === true, muted: t.muted === true, ...(t.story === true ? {story: true} : {}), ...(Number.isFinite(t.openedAt) ? {openedAt: t.openedAt} : {}), ...(typeof t.label === 'string' && t.label.trim() ? {label: clip(t.label, 40).trim()} : {}), ...(t.type === 'group' && t.windowOf ? {windowOf: clip(t.windowOf, 512)} : {}),
+      const row = {scope: this.#scope, id: clip(t.id, 512), type: t.type === 'group' ? 'group' : 'dm', name: clip(t.name, 40).trim() || members.join('、').slice(0, 40), members: t.type === 'group' ? members : [members[0]], pinned: t.pinned === true, muted: t.muted === true, ...(t.story === true ? {story: true} : {}), ...(Number.isFinite(t.openedAt) ? {openedAt: t.openedAt} : {}), ...(typeof t.label === 'string' && t.label.trim() ? {label: clip(t.label, 40).trim()} : {}), ...(t.type === 'group' && t.windowOf ? {windowOf: clip(t.windowOf, 512)} : {}), ...(t.type === 'group' && t.watch === true ? {watch: true} : {}),
         unread: Math.max(0, Math.min(CHAT_STORE_LIMITS.messages, Math.round(Number(t.unread)) || 0)), createdAt: Number.isFinite(t.createdAt) ? t.createdAt : now, updatedAt: Number.isFinite(t.updatedAt) ? t.updatedAt : now, messages, ...(t.space ? {space: clip(t.space, 300)} : {}), ...(t.save ? {save: clip(t.save, 400)} : {}), ...(t.type !== 'group' && cleanFriend(t.friend) ? {friend: cleanFriend(t.friend)} : {}), ...(t.type !== 'group' && cleanBlocked(t.blocked) ? {blocked: cleanBlocked(t.blocked)} : {}), ...(t.type !== 'group' && Number.isFinite(t.befriended) && t.befriended > 0 ? {befriended: t.befriended} : {})};
       // 重新回复的版本 come along with a backup or a sync, while they still belong to the chat's last round.
       const alts = cleanAlts(t.alts, () => this.#id());

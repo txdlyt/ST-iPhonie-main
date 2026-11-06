@@ -1,6 +1,7 @@
-import {currentDm, chatWindows, currentWindow, groupKey, EDITABLE_KINDS, lastRound} from '../core/chats.js';
+import {currentDm, chatWindows, currentWindow, groupKey, EDITABLE_KINDS, lastRound, forwardLine, REACTIONS, CHAIN_MODES, GAME_LIMITS} from '../core/chats.js';
+import {eggOf, playEgg} from './chat-eggs.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
-import {createView, esc, btn, field, input, textArea, toggle, heading, groupTitle, avatar, avatarPicture, empty, help, copyText} from './common.js';
+import {createView, esc, btn, field, input, textArea, toggle, heading, groupTitle, avatar, avatarPicture, empty, help, copyText, menu} from './common.js';
 import {songOf} from '../core/music.js';
 import {icon} from './icons.js';
 import {fly} from './carry.js';
@@ -9,7 +10,12 @@ import {viewerHeart} from './photo-heart.js';
 import {editTags} from '../host-ask.js';
 import {saveFile, downloadAction, shareFile, canShareFiles} from '../download.js';
 import {momentsPanel, momentsNew, momentsSeen} from './moments.js';
-import {PROFILE_STATUS, BUBBLES, FRAMES, BACKGROUNDS, parseStickers} from '../core/chat.js';
+import {PROFILE_STATUS, BUBBLES, FRAMES, BACKGROUNDS, parseStickers, STICKER_MOODS, ROLE_STICKER_LIMIT, stickerName, contactStatus, statusText} from '../core/chat.js';
+import {BOARDS, cellsOf, cellName} from '../core/board.js';
+import {NARRATOR} from '../core/narration.js';
+import {wornSet} from '../core/bubble-css.js';
+import {syncBubbleCss, bubbleSetsSheet, bubblePreview} from './chat-bubbles.js';
+import {chatLongImage} from './chat-shot.js';
 import {callSummary} from '../core/call.js';
 import {preview, BLESSING, patText, noticeText, seconds} from './chat-preview.js';
 import {pendant} from './pendants.js';
@@ -91,6 +97,8 @@ export function chatApp(ctx) {
   const failed = new Map();
   let unseen = 0, tailId = null, unreadMark = null;
   const photoURLs = new Map(), bubbleURLs = new Map(), photoSizes = new Map(), recalled = new Map(), transcribed = new Set();
+  // peeked: contacts' recalls the user has peeked at (here only: they are never told).
+  const peeked = new Set();
   let press = null, pressedAt = 0;
   const voiceText = () => api.readState().chat.voiceText || {mode: 'translation', auto: false};
   /** 转文字 for a voice message: the translation, the original line, or both (original first). */
@@ -111,11 +119,18 @@ export function chatApp(ctx) {
   const starred = () => api.getState().chat.starred || [];
   /** A contact's one line: a manual contact's persona, or where a role comes from. */
   const signatureOf = c => c.source === 'manual' ? (c.persona || '还没有写人设').split('\n')[0].slice(0, 40) : c.voice ? '角色 · 能发语音消息' : '角色 · 还没有配音';
+  /** 状态和签名 (0.9.35): how a contact shows now — what they set themselves, else a guess by the time and their last message. */
+  const statusOf = (name, threads = knownThreads) => { const dm = currentDm(threads || [], name); return contactStatus(api.getState().chat.statusOf?.[ownKey(name)], {lastAt: dm?.last?.from === name ? dm.last.at : 0}); };
+  const statusDot = st => `<i class="qq-dot" data-status="${esc(st.status)}"></i>${esc(statusText(st))}`;
+  /** A contact's line in 联系人: their status, and their signature (a manual contact's persona when they set none). */
+  const contactLine = (c, threads) => { const st = statusOf(c.name, threads), sig = st.signature || (c.source === 'manual' ? signatureOf(c) : ''); return statusDot(st) + (sig ? ' · ' + esc(sig) : ''); };
   const moments = momentsPanel(ctx, {v, frame: html => frame(html), me: () => ({name: myName(), avatar: myAvatar}), visible: () => ctx.visible?.('chat') !== false && mode === 'list' && tab === 'moments'});
   /** A tab page with the tab bar under it. */
   function frame(html) {
     const tabs = [['msgs', '消息', 'chat'], ['contacts', '联系人', 'person'], ['moments', '动态', 'moments']];
-    return `<div class="qq-page">${html}</div><nav class="qq-tabs" aria-label="聊天">${tabs.map(([k, l, g]) => `<button type="button" data-action="tab" data-tab="${k}" aria-pressed="${tab === k}"><span class="qq-tab-ico">${icon(g)}${k === 'msgs' && unreadTotal ? `<b class="badge">${unreadTotal > 99 ? '99+' : unreadTotal}</b>` : k === 'moments' && freshMoments && tab !== 'moments' ? '<b class="qq-dot-new" aria-label="有新动态"></b>' : ''}</span><span>${l}</span></button>`).join('')}</nav>`;
+    // data-page: which tab the page is, so only the page switched to rises in (0.9.34: the one left used to do it first,
+    // in place, while the new one was still being read — a flash before every switch).
+    return `<div class="qq-page" data-page="${tab}">${html}</div><nav class="qq-tabs" aria-label="聊天">${tabs.map(([k, l, g]) => `<button type="button" data-action="tab" data-tab="${k}" aria-pressed="${tab === k}"><span class="qq-tab-ico">${icon(g)}${k === 'msgs' && unreadTotal ? `<b class="badge">${unreadTotal > 99 ? '99+' : unreadTotal}</b>` : k === 'moments' && freshMoments && tab !== 'moments' ? '<b class="qq-dot-new" aria-label="有新动态"></b>' : ''}</span><span>${l}</span></button>`).join('')}</nav>`;
   }
   async function counts() {
     unreadTotal = await api.chatUnread().catch(() => 0);
@@ -201,7 +216,7 @@ export function chatApp(ctx) {
     const spark = t.type === 'dm' && t.streak >= 3 ? `<span class="spark" title="聊天火花：连续 ${t.streak} 天">🔥${t.streak}</span>` : '';
     // A chat with words typed and not sent shows them, as phones do.
     const typed = draftOf(t.id).trim(), pvLine = typed ? `<em class="draft-mark">[草稿]</em>${esc(typed)}` : `${atMe}${esc(who + preview(last))}`;
-    return `<button class="conv${t.pinned ? ' pinned' : ''}" data-action="open" data-id="${esc(t.id)}" data-conv="${esc(t.id)}">${threadAvatar(t, 50)}<span class="grow"><span class="conv-top"><strong>${esc(t.type === 'group' ? t.name : shown(t.members[0] || t.name))}</strong>${t.type === 'group' ? '<span class="tag-s">群</span>' : t.label ? `<span class="tag-s">${esc(t.label)}</span>` : ''}${t.type !== 'group' && t.blocked ? '<span class="tag-s tag-blocked">已拉黑</span>' : ''}${spark}<span class="conv-time">${last ? stamp(last.at) : ''}</span></span><span class="conv-bot"><span class="pv">${pvLine}</span>${t.muted ? `<span class="mute-ico" aria-label="免打扰">${icon('mute')}</span>` : ''}${badge}</span></span></button>`;
+    return `<button class="conv${t.pinned ? ' pinned' : ''}" data-action="open" data-id="${esc(t.id)}" data-conv="${esc(t.id)}">${threadAvatar(t, 50)}<span class="grow"><span class="conv-top"><strong>${esc(t.type === 'group' ? t.name : shown(t.members[0] || t.name))}</strong>${t.type === 'group' ? `<span class="tag-s">${t.watch ? '旁观' : '群'}</span>` : t.label ? `<span class="tag-s">${esc(t.label)}</span>` : ''}${t.type !== 'group' && t.blocked ? '<span class="tag-s tag-blocked">已拉黑</span>' : ''}${spark}<span class="conv-time">${last ? stamp(last.at) : ''}</span></span><span class="conv-bot"><span class="pv">${pvLine}</span>${t.muted ? `<span class="mute-ico" aria-label="免打扰">${icon('mute')}</span>` : ''}${badge}</span></span></button>`;
   }
   /** The messages found, under what the list found by name. */
   function hitsHTML({hits: list, total}) {
@@ -262,18 +277,18 @@ export function chatApp(ctx) {
     const contacts = api.chatContacts().filter(c => !away.has(c.name)), stars = starred(), groups = threads.filter(t => t.type === 'group' && currentWindow(threads, t)?.id === t.id);
     const blockedAsks = threads.filter(t => t.type === 'dm' && t.blocked?.requests?.length && t.friend?.by !== 'me');
     const asks = cut.reduce((n, t) => n + (t.friend.requests?.length || t.blocked?.requests?.length ? 1 : 0), 0) + blockedAsks.length;
-    const row = c => `<button class="list-row" data-action="profile" data-name="${esc(c.name)}">${avatar(c.name, c.engine, 42)}<span><strong>${esc(c.name)}</strong><small>${esc(signatureOf(c))}</small></span>${stars.includes(c.name) ? '<span class="star-mark" aria-label="特别关心">★</span>' : icon('next')}</button>`;
+    const row = c => `<button class="list-row" data-action="profile" data-name="${esc(c.name)}">${avatar(c.name, c.engine, 42)}<span><strong>${esc(c.name)}</strong><small>${contactLine(c, threads)}</small></span>${stars.includes(c.name) ? '<span class="star-mark" aria-label="特别关心">★</span>' : icon('next')}</button>`;
     const special = contacts.filter(c => stars.includes(c.name));
     v.draw(frame(heading('联系人', btn('contact-add', icon('add'), 'round-button', 'aria-label="添加联系人"'), 'Contacts')
       + (cut.length || blockedAsks.length ? `<div class="group"><button class="list-row" data-action="new-friends"><i class="friend-ico" aria-hidden="true">${icon('person')}</i><span><strong>新的朋友</strong><small>${asks ? `${asks} 个好友申请` : `删掉的好友（${cut.length}）可以在这里加回来`}</small></span>${asks ? `<b class="badge friend-badge">${asks}</b>` : icon('next')}</button></div>` : '')
       + (special.length ? groupTitle('特别关心') + `<div class="group">${special.map(row).join('')}</div>` : '')
       + groupTitle(`好友 · ${contacts.length}`, help('角色 App 里的角色会自动出现在这里。开了「按角色卡分开」时，只有这张卡的角色、在这张卡的剧情里说过话或被提到的角色，以及在这张卡里加的联系人；别的角色点右上角的「＋」加进来。剧情之外的人（同学、店员、网友……）也在「＋」里手动添加，写上人设就能聊。'))
       + (contacts.length ? `<div class="group">${contacts.map(row).join('')}</div>` : '<p class="hint">还没有好友。</p>')
-      + (groups.length ? groupTitle(`群聊 · ${groups.length}`) + `<div class="group">${groups.map(t => `<button class="list-row" data-action="open" data-id="${esc(t.id)}">${threadAvatar(t, 42)}<span><strong>${esc(t.name)}</strong><small>${t.members.length} 人</small></span>${icon('next')}</button>`).join('')}</div>` : '')));
+      + (groups.length ? groupTitle(`群聊 · ${groups.length}`) + `<div class="group">${groups.map(t => `<button class="list-row" data-action="open" data-id="${esc(t.id)}">${threadAvatar(t, 42)}<span><strong>${esc(t.name)}</strong><small>${t.members.length} 人${t.watch ? ' · 旁观' : ''}</small></span>${icon('next')}</button>`).join('')}</div>` : '')));
   }
   /** ＋ in 联系人: a role from the 角色 App that is not here yet, or someone outside the story by hand. */
   function addContact() {
-    const here = new Set(api.chatContacts().map(c => c.name)), roles = (api.rolesHere?.() || api.getState().routes).filter(r => r.name?.trim() && !here.has(r.name));
+    const here = new Set(api.chatContacts().map(c => c.name)), roles = (api.rolesHere?.() || api.getState().routes).filter(r => r.name?.trim() && r.name !== NARRATOR && !here.has(r.name));
     const d = ctx.dialog('添加联系人', `<div class="pick-list">
       ${roles.map(r => `<button class="list-row" data-add-role="${esc(r.name)}">${avatar(r.name, r.voice ? r.engine : 'none', 36)}<span><strong>${esc(r.name)}</strong><small>角色 App 里的角色${r.voice ? ' · 能发语音' : ''}</small></span>${icon('add')}</button>`).join('')}
       <button class="list-row" data-add-role="">${icon('edit')}<span><strong>手动添加</strong><small>剧情之外的人（同学、店员、网友……），写上人设就能聊</small></span></button></div>
@@ -301,10 +316,10 @@ export function chatApp(ctx) {
     if (!c) { mode = 'list'; return render(); }
     const dm = currentDm(threads, c.name), blocked = !!dm?.blocked;
     const star = starred().includes(c.name), manual = c.source === 'manual' && api.getState().chat.contacts.find(x => x.name === c.name);
-    v.draw(`<div class="qq-card" data-engine="${c.engine}"><span class="qq-card-cover" aria-hidden="true"></span>${avatar(c.name, c.engine, 84)}<h2>${esc(shown(c.name))}</h2>${shown(c.name) !== c.name ? `<p class="qq-card-real">昵称：${esc(c.name)}</p>` : ''}<p>${esc(signatureOf(c))}</p>
+    v.draw(`<div class="qq-card" data-engine="${c.engine}"><span class="qq-card-cover" aria-hidden="true"></span>${avatar(c.name, c.engine, 84)}<h2>${esc(shown(c.name))}</h2>${shown(c.name) !== c.name ? `<p class="qq-card-real">昵称：${esc(c.name)}</p>` : ''}<p class="qq-card-status">${statusDot(statusOf(c.name, threads))}</p><p>${esc(statusOf(c.name, threads).signature || signatureOf(c))}</p>
         <div class="qq-card-tags"><span class="chip">${c.source === 'role' ? '角色' : '手动联系人'}</span>${c.voice ? '<span class="chip">能发语音</span>' : ''}${star ? '<span class="chip">★ 特别关心</span>' : ''}</div></div>
       <div class="actions">${btn('profile-chat', icon('chat') + '发消息', 'primary')}${api.callDial && !blocked ? btn('profile-call', icon('phone') + '打电话', 'secondary') : ''}${btn('profile-moments', icon('moments') + 'TA 的动态', 'secondary')}</div>
-      <div class="group">${btn('remark', `${icon('edit')}<span><strong>设置备注</strong><small>${esc(remarks()[ownKey(c.name)] || '只有你看得到，聊天里显示这个名字')}</small></span>`, 'list-row')}${btn('avatar-pick', `${icon('image')}<span><strong>换头像</strong><small>${esc(avatarState(c.name))}</small></span>`, 'list-row', `data-key="${esc(c.name)}"`)}${btn('star', `<span>${star ? '★ 取消特别关心' : '☆ 设为特别关心'}</span>`, 'list-row')}${manual ? `<button class="list-row" data-action="contact-edit" data-id="${esc(manual.id)}">${icon('edit')}<span><strong>编辑资料和人设</strong></span></button>` : ''}</div>
+      <div class="group">${btn('remark', `${icon('edit')}<span><strong>设置备注</strong><small>${esc(remarks()[ownKey(c.name)] || '只有你看得到，聊天里显示这个名字')}</small></span>`, 'list-row')}${btn('avatar-pick', `${icon('image')}<span><strong>换头像</strong><small>${esc(avatarState(c.name))}</small></span>`, 'list-row', `data-key="${esc(c.name)}"`)}${btn('star', `<span>${star ? '★ 取消特别关心' : '☆ 设为特别关心'}</span>`, 'list-row')}${btn('person-look', `${icon('chat')}<span><strong>聊天装扮</strong><small>${esc(lookLine(c.name))}</small></span>`, 'list-row')}${c.source === 'role' ? btn('role-stickers', `${icon('smile')}<span><strong>专属表情包</strong><small>${ownStickers(c.name).length ? `${ownStickers(c.name).length} 个，聊天时 TA 自己会发` : '画一套，或者从相册里挑'}</small></span>`, 'list-row') : ''}${manual ? `<button class="list-row" data-action="contact-edit" data-id="${esc(manual.id)}">${icon('edit')}<span><strong>编辑资料和人设</strong></span></button>` : ''}</div>
       <div class="actions">${blocked ? btn('unblock', '移出黑名单', 'secondary', `data-id="${esc(dm.id)}"`) : btn('block', '加入黑名单', 'secondary')}${btn('unfriend', '删除好友', 'danger')}</div>`);
     listeningOf(c.name).then(song => { const box = v.root.querySelector('.qq-card'); if (!song || !box || profileOf !== c.name || mode !== 'profile') return; box.insertAdjacentHTML('beforeend', `<button type="button" class="qq-listening" data-action="play-song" data-title="${esc(song.title)}" data-artist="${esc(song.artist)}">${icon('music')}<span>最近在听：${esc(song.title)}${song.artist ? ' - ' + esc(song.artist) : ''}</span></button>`); }).catch(() => {});
   }
@@ -334,10 +349,25 @@ export function chatApp(ctx) {
   /** The looks of one kind (气泡, 挂件, 背景): the free ones, then the shop's (one not bought yet shows its price). */
   function decoChips(key, list, value) {
     const w = api.wallet();
-    return `<div class="deco-row">${[...Object.entries(list).map(([k, l]) => [k, l, null]), ...Object.entries(PREMIUM[key] || {}).map(([k, [l, price]]) => [k, l, price])].map(([k, l, price]) => { const owned = price === null || w.owned.includes(key + ':' + k); return `<button type="button" class="deco${price === null ? '' : ' premium'}" data-action="${owned ? 'me-set' : 'me-buy'}" data-key="${key}" data-value="${k}" data-name="${esc(l)}" data-price="${price ?? 0}" data-${key}="${k}" aria-pressed="${value === k}"><span class="deco-sample" aria-hidden="true">${key === 'frame' ? `<span class="me-av" style="--s:36px"><span class="avatar none" style="--s:36px"></span>${pendant(k)}</span>` : key === 'background' ? sceneArt(k) : ''}</span><span>${l}</span>${price === null ? '' : `<small class="deco-price">${owned ? '已拥有' : '¥' + price}</small>`}</button>`; }).join('')}</div>`;
+    // 自定义气泡: one more tile, the set worn (or how many there are) under it.
+    const worn = key === 'bubble' ? bubbleSets().find(s => s.id === wornSet(value)) : null, custom = key !== 'bubble' ? ''
+      : `<button type="button" class="deco custom-deco" data-action="me-custom" aria-pressed="${!!worn}"><span class="deco-sample" aria-hidden="true">${icon('edit')}</span><span>自定义</span><small class="deco-note">${worn ? esc(worn.name) : bubbleSets().length ? `${bubbleSets().length} 套` : '自己写 CSS'}</small></button>`;
+    return `<div class="deco-row">${[...Object.entries(list).map(([k, l]) => [k, l, null]), ...Object.entries(PREMIUM[key] || {}).map(([k, [l, price]]) => [k, l, price])].map(([k, l, price]) => { const owned = price === null || w.owned.includes(key + ':' + k); return `<button type="button" class="deco${price === null ? '' : ' premium'}" data-action="${owned ? 'me-set' : 'me-buy'}" data-key="${key}" data-value="${k}" data-name="${esc(l)}" data-price="${price ?? 0}" data-${key}="${k}" aria-pressed="${value === k}"><span class="deco-sample" aria-hidden="true">${key === 'frame' ? `<span class="me-av" style="--s:36px"><span class="avatar none" style="--s:36px"></span>${pendant(k)}</span>` : key === 'background' ? sceneArt(k) : ''}</span><span>${l}</span>${price === null ? '' : `<small class="deco-price">${owned ? '已拥有' : '¥' + price}</small>`}</button>`; }).join('')}${custom}</div>`;
+  }
+  const bubbleSets = () => api.getState().chat.bubbleSets || [];
+  /** What the previews of 自定义气泡 look like: this chat's background and avatars. */
+  function bubbleLook() {
+    const p = profile(), bg = p.backgroundPhoto ? 'none' : p.background;
+    return {bg, scene: chatScene(bg), me: myAvatar(34), them: avatar('TA', 'none', 34)};
+  }
+  /** Whose set is whose in a chat: mine (the user's bubbles here) and theirs(name); '' for none (the built-in looks). */
+  function bubbleSetsFor(t) {
+    const list = bubbleSets(), has = id => id && list.some(s => s.id === id) ? id : '', of = api.getState().chat.bubbleOf || {};
+    const worn = has(wornSet(profile().bubble)), own = name => has(of[ownKey(name)]);
+    return {mine: (t.type !== 'group' && own(t.members[0])) || worn, theirs: name => own(name) || worn};
   }
   const DECOS = {bubble: ['聊天气泡', BUBBLES], frame: ['头像挂件', FRAMES], background: ['聊天背景', BACKGROUNDS]};
-  const decoName = key => { const p = profile(), [, list] = DECOS[key]; if (key === 'background' && p.backgroundPhoto) return '相册里的照片'; return list[p[key]] || PREMIUM[key]?.[p[key]]?.[0] || p[key]; };
+  const decoName = key => { const p = profile(), [, list] = DECOS[key]; if (key === 'background' && p.backgroundPhoto) return '相册里的照片'; if (key === 'bubble' && wornSet(p.bubble)) return bubbleSets().find(s => s.id === wornSet(p.bubble))?.name || '默认'; return list[p[key]] || PREMIUM[key]?.[p[key]]?.[0] || p[key]; };
   /** 我: the card (tap the picture to change it), name and signature, and one row each for the rest. */
   function renderMe() {
     const p = profile(), w = api.wallet();
@@ -348,7 +378,7 @@ export function chatApp(ctx) {
       + groupTitle('钱包与商城')
       + `<div class="group"><button class="list-row" data-action="me-wallet">${icon('wallet')}<span><strong>钱包</strong><small>零钱 ¥${esc(yuan(w.balance))} · 明细和收到的礼物</small></span>${icon('next')}</button><button class="list-row" data-action="me-shop">${icon('shop')}<span><strong>商城</strong><small>更好看的气泡、挂件、背景，送给角色的礼物</small></span>${icon('next')}</button></div>`
       + groupTitle('个性装扮')
-      + `<div class="group">${Object.entries(DECOS).map(([key, [label]]) => `<button class="list-row" data-action="me-deco" data-key="${key}"><span><strong>${label}</strong><small>${esc(decoName(key))}</small></span>${icon('next')}</button>`).join('')}</div>`
+      + `<div class="group">${Object.entries(DECOS).map(([key, [label]]) => `<button class="list-row" data-action="me-deco" data-key="${key}"><span><strong>${label}</strong><small>${esc(decoName(key))}</small></span>${icon('next')}</button>`).join('')}${toggle('me-eggs', '关键词彩蛋', p.eggs !== false, '消息里有「生日快乐」「晚安」「想你」「新年快乐」这类话时，聊天里飘过一阵小表情，两秒左右就没了。只在消息刚发出、刚收到时有，系统开了「减少动态效果」就不飘。')}</div>`
       + groupTitle('聊天设置')
       + `<div class="group"><button class="list-row" data-action="me-voice">${icon('book')}<span><strong>语音消息</strong><small>转文字显示什么、要不要自动转</small></span>${icon('next')}</button><button class="list-row" data-action="me-calls">${icon('phone')}<span><strong>来电</strong><small>角色会不会自己打来、响铃多久</small></span>${icon('next')}</button><button class="list-row" data-action="me-presets">${icon('edit')}<span><strong>聊天预设</strong><small>怎么回消息、朋友圈怎么发、电话里怎么说</small></span>${icon('next')}</button></div>`);
   }
@@ -378,6 +408,7 @@ export function chatApp(ctx) {
           render(); ctx.notify('买下并换上了');
         }
         if (action === 'me-bg-photo') { d.close(); await pickBackground(); }
+        if (action === 'me-custom') { d.close(); bubbleSetsSheet(ctx, api, {look: bubbleLook(), changed: () => render()}); }
         if (action === 'me-bg-clear') { api.saveChatOptions({profile: {backgroundPhoto: ''}}); d.body.innerHTML = draw(); render(); }
       } catch (error) { ctx.notify(error.message, {error: true}); }
     });
@@ -393,7 +424,9 @@ export function chatApp(ctx) {
         : `<button class="chat-photo described" data-action="message" ${mid}><span class="ph-art">${icon('image')}</span><span class="ph-cap">${esc(m.text)}</span></button>${photoNote(m)}`;
       case 'file': return fileBody(m, mid);
       // A sticker: the picture without a bubble; its name when the picture cannot be loaded.
-      case 'sticker': return `<button class="chat-sticker" data-action="sticker" ${mid} aria-label="表情包：${esc(m.text)}" data-name="[${esc(m.text)}]">${m.url ? `<img src="${esc(m.url)}" alt="${esc(m.text)}" loading="lazy" referrerpolicy="no-referrer" draggable="false">` : ''}</button>`;
+      case 'sticker': return `<button class="chat-sticker" data-action="sticker" ${mid} aria-label="表情包：${esc(m.text)}" data-name="[${esc(m.text)}]">${m.photoId ? `<img data-sticker-photo="${esc(m.photoId)}"${photoURLs.get(m.photoId) ? ` src="${esc(photoURLs.get(m.photoId))}"` : ''} alt="${esc(m.text)}" draggable="false">` : m.url ? `<img src="${esc(m.url)}" alt="${esc(m.text)}" loading="lazy" referrerpolicy="no-referrer" draggable="false">` : ''}</button>`;
+      // 合并转发: the record as a card, its first lines on it; a tap opens all of it.
+      case 'forward': return `<button class="fwd-card" data-action="forward-open" ${mid}><strong>${esc(m.title)}</strong><span class="fwd-lines">${(m.items || []).slice(0, 4).map(i => `<span>${esc(i.from)}：${esc(i.text)}</span>`).join('')}</span><small>聊天记录 · ${(m.items || []).length} 条</small></button>`;
       case 'redpacket': {
         const opened = m.state === 'opened';
         return `<button class="packet${opened ? ' done' : ''}" data-action="packet" ${mid}><span class="pk-main"><span class="pk-ico" aria-hidden="true"></span><span class="pk-text"><strong>${esc(m.text || BLESSING)}</strong>${opened ? `<small>${m.openedBy === 'me' ? '你已领取' : esc(you(m.openedBy)) + ' 已领取'}</small>` : ''}</span></span><span class="pk-foot">红包</span></button>`;
@@ -413,6 +446,11 @@ export function chatApp(ctx) {
         return `<button class="dice-msg${fresh ? ' rolling' : ''}" data-action="message" ${mid} data-face="${esc(m.text)}" aria-label="骰子 ${esc(m.text)} 点">${Array.from({length: 9}, (_, i) => `<i${PIPS[m.text]?.includes(i) ? ' class="on"' : ''}></i>`).join('')}</button>`;
       }
       case 'song': return `<button class="song-card" data-action="song" ${mid} aria-label="播放 ${esc(m.song?.title || '')}"><span class="sg-disc" aria-hidden="true">${icon('music')}</span><span class="sg-text"><strong>${esc(m.song?.title || '')}</strong><small>${esc(m.song?.artist || '')}</small>${m.text ? `<em>${esc(m.text)}</em>` : ''}</span><span class="sg-play" aria-hidden="true">${icon(m.song?.draft ? 'edit' : 'play', !m.song?.draft)}</span></button>`;
+      case 'game': return gameHTML(m);
+      // 论坛 × 聊天 (0.9.35): a forum post as a card; a tap opens it on the forum.
+      case 'post': return `<button class="share-card post-card" data-action="post-open" ${mid}><span class="share-kind">${icon('bubble')}论坛帖子</span><strong>${esc(m.post?.title || '（没有标题）')}</strong>${m.post?.text ? `<small>${esc(m.post.text.slice(0, 80))}</small>` : ''}${m.post?.author ? `<em>${esc(m.post.author === 'me' ? '我' : shown(m.post.author))}</em>` : ''}</button>${m.post?.note ? `<span class="chat-bubble share-note">${esc(m.post.note)}</span>` : ''}`;
+      // 衣柜 × 聊天 (0.9.35): clothes shown, with a picture of one of the pieces when there is one.
+      case 'outfit': return `<button class="share-card outfit-card" data-action="outfit-open" ${mid}>${m.outfit?.photoId ? `<img data-chat-photo="${esc(m.outfit.photoId)}"${bubbleURLs.get(m.outfit.photoId) ? ` src="${esc(bubbleURLs.get(m.outfit.photoId))}"` : ''} alt="">` : `<span class="outfit-ico" aria-hidden="true">${icon('hanger')}</span>`}<span class="share-text"><span class="share-kind">${icon('hanger')}穿搭</span><strong>${esc(m.outfit?.name || '')}</strong><small>${esc(String(m.outfit?.text || '').slice(0, 90))}</small></span></button>`;
       case 'call': return `<button class="call-msg${m.state === 'answered' ? '' : ' missed'}" data-action="call-log" ${mid}>${icon('phone', true)}<span>${esc(callSummary(m))}</span></button>`;
       default: return `<button class="chat-bubble" data-action="message" ${mid}>${esc(m.text)}</button>`;
     }
@@ -424,8 +462,14 @@ export function chatApp(ctx) {
     if (m.kind === 'pat') return `<div class="note-line" ${mid}>${esc(patText(m))}</div>`;
     if (m.kind === 'notice') return `<div class="note-line" ${mid}>${/红包/.test(m.text) ? '<span class="pk-dot" aria-hidden="true"></span>' : ''}${esc(noticeText(m))}</div>`;
     const again = m.from === 'me' && recalled.has(m.id) ? btn('re-edit', '重新编辑', 'text-button', mid) : '';
+    if (m.said && m.from !== 'me') {
+      const open = peeked.has(m.id);
+      return `<div class="note-line recall-note" ${mid}>${m.id === pace.fresh ? `<span class="recall-ghost" aria-hidden="true">${esc(m.said)}</span>` : ''}<button type="button" class="recall-peek" data-action="peek" ${mid} aria-expanded="${open}" title="点一下偷看">${esc(you(m.from))} 撤回了一条消息${icon('eye')}</button>${open ? `<span class="recall-said">「${esc(m.said)}」</span>` : ''}</div>`;
+    }
     return `<div class="note-line" ${mid}>${esc(you(m.from))} 撤回了一条消息${again}</div>`;
   }
+  // The 自定义气泡 of the chat being drawn (bubbleSetsFor).
+  let bsets = {mine: '', theirs: () => ''};
   // 带进剧情 picks, like forwarding several messages in QQ: the picked ones sit between 从这里开始 and 到这里结束.
   // Dragging a bar takes in every message it passes (one untapped inside stays out); tapping a message toggles it.
   let edges = {};
@@ -447,18 +491,26 @@ export function chatApp(ctx) {
     if (LINE_KINDS.includes(m.kind)) return day + lineHTML(m);
     const me = m.from === 'me', group = thread.type === 'group', picked = selecting?.has(m.id);
     const quoted = m.quote ? `<span class="m-quote">${esc(you(m.quote.from))}：${esc(m.quote.text)}</span>` : '';
-    return day + (picked && m.id === edges.first ? rangeBar('start') : '') + `<div class="msg${me ? ' me' : ''}${m.id === pace.fresh ? ' fresh' : ''}" data-engine="${me ? 'none' : engine(m.from)}" data-kind="${m.kind}" data-mid="${esc(m.id)}"${picked ? ' data-picked' : ''}>${selecting ? '<span class="pick" aria-hidden="true"></span>' : ''}${me ? `<span class="me-side">${myAvatar(34)}</span>` : `<span class="pat-target" data-pat="${esc(m.from)}" title="双击拍一拍">${avatar(m.from, engine(m.from), 34)}</span>`}<div class="m-body">${group && !me ? `<span class="m-name">${esc(shown(m.from))}</span>` : ''}${bodyHTML(m)}${quoted}</div></div>` + (picked && m.id === edges.last ? rangeBar('end') : '');
+    const bset = me ? bsets.mine : bsets.theirs(m.from);
+    return day + (picked && m.id === edges.first ? rangeBar('start') : '') + `<div class="msg${me ? ' me' : ''}${m.id === pace.fresh ? ' fresh' : ''}" data-engine="${me ? 'none' : engine(m.from)}" data-kind="${m.kind}" data-mid="${esc(m.id)}"${bset ? ` data-bset="${esc(bset)}"` : ''}${picked ? ' data-picked' : ''}>${selecting ? '<span class="pick" aria-hidden="true"></span>' : ''}${me ? `<span class="me-side">${myAvatar(34)}</span>` : `<span class="pat-target" data-pat="${esc(m.from)}" title="双击拍一拍">${avatar(m.from, engine(m.from), 34)}</span>`}<div class="m-body">${group && !me ? `<span class="m-name">${esc(shown(m.from))}</span>` : ''}${bodyHTML(m)}${quoted}${reactsHTML(m)}</div></div>` + (picked && m.id === edges.last ? rangeBar('end') : '');
+  }
+  /** 消息回应 under a message: each emoji once, how many put it, the user's own marked; a tap puts the user's on or off. */
+  function reactsHTML(m) {
+    if (!m.reactions?.length) return '';
+    const by = new Map();
+    for (const r of m.reactions) by.set(r.emoji, [...(by.get(r.emoji) || []), r.from]);
+    return `<span class="m-reacts">${[...by].map(([emoji, who]) => `<button type="button" class="m-react${who.includes('me') ? ' mine' : ''}" data-action="react-chip" data-mid="${esc(m.id)}" data-emoji="${esc(emoji)}" title="${esc(who.map(n => n === 'me' ? myName() : shown(n)).join('、'))}" aria-label="${esc(emoji)} ${who.length}">${emoji}${who.length > 1 ? `<small>${who.length}</small>` : ''}</button>`).join('')}</span>`;
   }
   function toolsHTML() {
     const group = thread.type === 'group';
     const tools = [['photo', 'image', '照片'], ['emoji', 'smile', '表情'], ['redpacket', 'packet', '红包'], ...(group ? [] : [['transfer', 'swap', '转账'], ['gift', 'gift', '礼物']]),
-      ['file', 'file', '文件'], ['location', 'pin', '位置'], ['song', 'music', '分享歌'], ['write', 'edit', '写首歌'], ['pat', 'hand', '拍一拍'], ['dice', 'dice', '骰子']];
+      ['file', 'file', '文件'], ['location', 'pin', '位置'], ['song', 'music', '分享歌'], ['write', 'edit', '写首歌'], ['pat', 'hand', '拍一拍'], ['dice', 'dice', '骰子'], ...(group ? [['game', 'games', '群游戏']] : [['play', 'games', '小游戏']])];
     const tabs = `<div class="emoji-tabs" role="tablist">${[['emoji', '表情'], ['stickers', '表情包']].map(([k, t]) => `<button type="button" role="tab" data-action="panel-${k}" aria-selected="${panel === k}">${t}</button>`).join('')}</div>`;
     if (panel === 'stickers') {
       const list = api.getState().chat.stickers || [];
       return `<div class="chat-panel emoji-panel" role="group" aria-label="表情包">${tabs}
-        ${list.length ? `<div class="sticker-grid">${list.slice().reverse().map(s => `<button type="button" class="sticker-cell" data-action="sticker-send" data-name="${esc(s.name)}" aria-label="发表情包：${esc(s.name)}" title="${esc(s.name)}"><img src="${esc(s.url)}" alt="" loading="lazy" referrerpolicy="no-referrer" draggable="false"><small>${esc(s.name)}</small></button>`).join('')}</div>`
-          : '<p class="hint sticker-empty">还没有表情包。点「管理」，粘贴「名字+图片网址」就能导入一批；对方也会从里面挑着发。</p>'}
+        ${list.length ? `<div class="sticker-grid">${list.slice().reverse().map(s => `<button type="button" class="sticker-cell" data-action="sticker-send" data-name="${esc(s.name)}" aria-label="发表情包：${esc(s.name)}" title="${esc(s.name)}">${stickerImg(s)}<small>${esc(s.name)}</small></button>`).join('')}</div>`
+          : '<p class="hint sticker-empty">还没有表情包。点「管理」，从图片导入，或者粘贴「名字+图片网址」；对方也会从里面挑着发。</p>'}
         <div class="panel-foot">${btn('panel-tools', icon('back') + '更多功能', 'text-button')}${btn('stickers-manage', icon('sliders') + '管理', 'text-button')}</div></div>`;
     }
     if (panel === 'emoji') return `<div class="chat-panel emoji-panel" role="group" aria-label="表情">${tabs}
@@ -472,6 +524,11 @@ export function chatApp(ctx) {
       `<button class="tool" data-action="tool-${action}"><span class="tool-ico" data-tool="${action}">${icon(glyph)}</span><span>${label}</span></button>`).join('')}</div>`;
     return `<div class="chat-panel" role="group" aria-label="更多功能"><div class="tool-pages">${pages.map(page).join('')}</div>${pages.length > 1
       ? `<div class="tool-dots">${pages.map((_, i) => `<button type="button" data-action="tool-page" data-page="${i}" aria-label="第 ${i + 1} 页" aria-current="${i === 0}"></button>`).join('')}</div>` : ''}</div>`;
+  }
+  /** 旁观群 (0.9.35): no box to write in — the user is not in the group; they can be asked to talk a little. */
+  function watchBarHTML() {
+    const busy = typing();
+    return `<div class="watch-bar" role="status">${icon('eye')}<span>你不在这个群里，只能看</span>${live ? btn('watch-talk', busy ? '正在聊…' : '让他们聊几句', 'chip-button', busy ? 'disabled' : '') : ''}</div>`;
   }
   function composerHTML() {
     const group = thread.type === 'group';
@@ -515,7 +572,9 @@ export function chatApp(ctx) {
     if (thread.unread) api.markThreadRead(threadId).catch(() => {});
     const group = thread.type === 'group', contacts = api.chatContacts(true);
     const voiced = thread.members.filter(n => contacts.find(c => c.name === n)?.voice).length;
-    const sub = group ? `${thread.members.length} 人 · ${voiced} 人能发语音` : contacts.find(c => c.name === thread.members[0])?.source === 'manual' ? '手动联系人' : voiced ? '能发语音消息' : '还没有配音 · 只发文字';
+    // 旁观群 (0.9.35): the user is not in it. A private chat shows how the other one is now (状态, 0.9.35).
+    const sub = group ? (thread.watch ? `${thread.members.length} 人 · 你不在群里` : `${thread.members.length} 人 · ${voiced} 人能发语音`) : '';
+    const dmStatus = group ? null : contactStatus(api.getState().chat.statusOf?.[ownKey(thread.members[0])], {lastAt: thread.messages.findLast(m => m.from === thread.members[0])?.at || 0});
     const bring = pendingBring(), scroller = v.root.querySelector('.msgs'), atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
     const focused = ctx.doc.activeElement?.dataset?.field === 'draft' && v.root.contains(ctx.doc.activeElement);
     track(thread.messages);
@@ -547,27 +606,34 @@ export function chatApp(ctx) {
     const alts = thread.alts, round = alts ? lastRound(thread.messages) : null;
     const versions = alts?.versions?.length > 1 && round.after === alts.after && round.round.length && typer === null && !selecting ? alts : null;
     const why = typer === null ? failed.get(threadId) : '';
+    bsets = bubbleSetsFor(thread);
+    const custom = !!bsets.mine || thread.members.some(n => bsets.theirs(n));
+    if (custom) syncBubbleCss(ctx.doc, bubbleSets());
     const rowsWanted = [];
     if (drawn.from) rowsWanted.push({key: 'older', html: `<button type="button" class="chat-older" data-action="older">${icon('back')}更早的 ${drawn.from} 条消息</button>`});
     if (list.length) list.slice(drawn.from).forEach((m, j) => rowsWanted.push({key: 'm:' + m.id, html: messageHTML(m, drawn.from + j, list)}));
-    else rowsWanted.push({key: 'empty', html: `<p class="chat-empty">${live ? '发几条消息都行，发完点右下角的气泡按钮让对方回复；输入框空着时发送键就会变成它。也可以直接点它，让对方先开口。' : '在酒馆里打开小手机时，联系人才会回复。'}</p>`});
+    else rowsWanted.push({key: 'empty', html: `<p class="chat-empty">${thread.watch ? (live ? '群里还没人说话，点下面的「让他们聊几句」。' : '在酒馆里打开小手机时，他们才会聊。') : live ? '发几条消息都行，发完点右下角的气泡按钮让对方回复；输入框空着时发送键就会变成它。也可以直接点它，让对方先开口。' : '在酒馆里打开小手机时，联系人才会回复。'}</p>`});
     if (versions) rowsWanted.push({key: 'versions', html: `<div class="chat-versions" role="group" aria-label="这一轮回复的版本">${btn('version', '‹', 'icon-button', `data-to="${versions.shown - 1}" aria-label="上一个版本" ${versions.shown > 0 ? '' : 'disabled'}`)}<span>${versions.shown + 1} / ${versions.versions.length}</span>${btn('version', '›', 'icon-button', `data-to="${versions.shown + 1}" aria-label="下一个版本" ${versions.shown < versions.versions.length - 1 ? '' : 'disabled'}`)}</div>`});
     if (bring?.threadId === threadId) rowsWanted.push({key: 'bring', html: `<div class="sys">${icon('book')}${bring.count} 条消息会带进下一次正文 ${btn('cancel-bring', '取消', 'text-button')}</div>`});
     if (why) rowsWanted.push({key: 'failed', html: `<div class="sys chat-failed" role="alert">${icon('alert')}<span>没回复成功：${esc(why)}</span><small>点右下角的气泡再试一次</small></div>`});
     if (typer !== null) rowsWanted.push({key: 'typing', html: `<div class="msg typing-row" data-engine="${typer ? engine(typer) : 'none'}">${avatar(typer || '…', typer ? engine(typer) : 'none', 34)}<div class="m-body"><div class="chat-bubble typing" aria-label="对方正在输入"><i></i><i></i><i></i></div></div></div>`});
     const look = profile();
-    const bg = look.backgroundPhoto ? 'photo' : look.background, scene = chatScene(bg);
-    drawThread(`<div class="chat-thread${selecting ? ' selecting' : ''}" data-thread="${esc(threadId)}" data-bubble="${esc(look.bubble)}" data-bg="${esc(bg)}"${scene ? ` data-scene data-tone="${sceneDark(bg) ? 'dark' : 'light'}"` : ''}>
-      <div class="th-head" data-engine="${group ? 'none' : engine(thread.members[0])}">${threadAvatar(thread, 38)}<div class="th-title"><strong>${esc(group ? thread.name : shown(thread.members[0] || thread.name))}</strong><small>${esc(sub)}</small></div>
+    // 每个人的聊天背景: a private chat with someone who has one shows theirs.
+    const own = group ? '' : api.getState().chat.bgOf?.[ownKey(thread.members[0])] || '', ownPhoto = own.startsWith('photo:') ? own.slice(6) : '';
+    const bgPhoto = own ? ownPhoto : look.backgroundPhoto;
+    const bg = bgPhoto ? 'photo' : own || look.background, scene = chatScene(bg);
+    drawThread(`<div class="chat-thread${selecting ? ' selecting' : ''}" data-thread="${esc(threadId)}" data-bubble="${esc(bsets.mine ? 'custom' : look.bubble)}" data-bg="${esc(bg)}"${custom ? ' data-bsets' : ''}${scene ? ` data-scene data-tone="${sceneDark(bg) ? 'dark' : 'light'}"` : ''}>
+      <div class="th-head" data-engine="${group ? 'none' : engine(thread.members[0])}">${threadAvatar(thread, 38)}<div class="th-title"><strong>${esc(group ? thread.name : shown(thread.members[0] || thread.name))}</strong><small>${dmStatus ? statusDot(dmStatus) + (voiced ? '' : ' · 只发文字') : esc(sub)}</small></div>
         ${btn('bring', selecting ? '取消' : icon('book') + `<span class="bring-label">${thread.story ? '一直带着' : '带进剧情'}</span>`, 'chip-button', selecting ? '' : `aria-label="带进剧情" title="${thread.story ? '正文一直记得这段聊天' : '带进剧情'}"${thread.story ? ' data-on' : ''}`)}${!group && api.callDial && !thread.blocked ? btn('call', icon('phone'), 'round-button call-go', 'aria-label="语音通话"') : ''}${btn('thread-menu', icon('more'), 'round-button', 'aria-label="更多"')}</div>
       <div class="msgs-wrap" data-bg="${esc(bg)}">${scene}<div class="msgs" role="log" aria-live="polite" data-keep-scroll="msgs-${esc(threadId)}"></div>${jumpChips()}</div>
       ${!group && thread.friend ? `<div class="friend-cut" role="status">${icon('alert')}<span>${thread.friend.by === 'me' ? `你已删除了${esc(thread.members[0])}` : `${esc(thread.members[0])}已把你从好友里删除了`}</span>${thread.friend.by === 'me' ? btn('refriend', '加回好友', 'chip-button', `data-id="${esc(thread.id)}"`) : btn('ask-friend', '发送好友申请', 'chip-button')}</div>` : ''}
       ${!group && thread.blocked ? `<div class="friend-cut is-blocked" role="status">${icon('alert')}<span>你已把${esc(shown(thread.members[0]))}拉黑${thread.blocked.held?.length ? ` · 拦截了 ${thread.blocked.held.length} 条` : ''}</span>${thread.blocked.held?.length ? btn('held', '拦截记录', 'chip-button') : ''}${btn('unblock', '移出黑名单', 'chip-button', `data-id="${esc(thread.id)}"`)}</div>` : ''}
       ${selecting
         ? (pickFor === 'delete'
-          ? `<div class="bring-bar pick-delete"><span>${selecting.size ? pickedLabel(selecting.size) : '点一条消息开始，再拖上下的条条多选'}</span>${btn('pick-up', '到最早', 'text-button', selecting.size ? '' : 'disabled')}${btn('pick-down', '到最新', 'text-button', selecting.size ? '' : 'disabled')}${btn('delete-go', icon('trash') + '删除', 'danger', selecting.size ? '' : 'disabled')}</div>`
+          ? `<div class="select-bar chat-pick-bar pick-delete" role="toolbar" aria-label="选中的消息"><div class="select-head"><span>${selecting.size ? pickedLabel(selecting.size) : '点一条消息开始，再拖上下的条条多选'}</span><span class="pick-ends">${btn('pick-up', '到最早', 'text-button', selecting.size ? '' : 'disabled')}${btn('pick-down', '到最新', 'text-button', selecting.size ? '' : 'disabled')}</span></div>`
+            + `<div class="select-acts">${[['forward-go', 'share', '转发', ''], ['image-go', 'image', '长图', ''], ['delete-go', 'trash', '删除', ' select-danger']].map(([action, ic, label, more]) => `<button type="button" class="select-act${more}" data-action="${action}"${selecting.size ? '' : ' disabled'}>${icon(ic)}<span>${label}</span></button>`).join('')}</div></div>`
           : `<div class="bring-bar"><span>${selecting.size ? pickedLabel(selecting.size) : '点一条消息开始，再拖上下的条条多选'}</span>${btn('bring-go', '带进下一次正文', 'primary', selecting.size ? '' : 'disabled')}</div>`)
-        : !group && thread.blocked ? '' : composerHTML()}
+        : !group && thread.blocked ? '' : thread.watch ? watchBarHTML() : composerHTML()}
     </div>`, rowsWanted);
     const msgs = v.root.querySelector('.msgs');
     if (scene) syncMotion(v.root, ctx.win);
@@ -586,7 +652,18 @@ export function chatApp(ctx) {
     if (focused) v.root.querySelector('[data-field=draft]')?.focus({preventScroll: true});
     paintVoices();
     paintPhotos();
-    if (look.backgroundPhoto) photoURL(look.backgroundPhoto).then(url => { const box = v.root.querySelector('.msgs'); if (box && url) box.style.backgroundImage = `url("${url}")`; });
+    if (bgPhoto) photoURL(bgPhoto).then(url => { const box = v.root.querySelector('.msgs'); if (box && url) box.style.backgroundImage = `url("${url}")`; });
+    eggs(list);
+  }
+  // 关键词彩蛋: the messages shown since this chat was opened, the first one that calls for an egg plays it.
+  let eggSeen = {thread: null, ids: new Set()};
+  function eggs(list) {
+    if (eggSeen.thread !== threadId) { eggSeen = {thread: threadId, ids: new Set(list.map(m => m.id))}; return; }
+    const fresh = list.filter(m => !eggSeen.ids.has(m.id));
+    for (const m of fresh) eggSeen.ids.add(m.id);
+    if (!fresh.length || profile().eggs === false) return;
+    const egg = fresh.map(m => eggOf(m.kind === 'voice' ? m.translation || m.text : m.kind === 'text' ? m.text : '')).find(Boolean);
+    if (egg) playEgg(v.root.querySelector('.msgs-wrap'), egg, ctx.win);
   }
   /** The notes over the messages: 新消息 below (while scrolled up) and where the unread ones began (when opened). */
   function jumpChips() {
@@ -777,7 +854,12 @@ export function chatApp(ctx) {
     }
     return bubbleURLs.get(id);
   }
+  /** Stickers that are photos of the album: the picture itself (a GIF keeps moving), wherever they are drawn. */
+  function paintStickers(root = v.root) {
+    for (const img of root.querySelectorAll('img[data-sticker-photo]:not([src])')) photoURL(img.dataset.stickerPhoto).then(url => { if (url && img.isConnected) img.src = url; }).catch(() => {});
+  }
   async function paintPhotos() {
+    paintStickers();
     // A photo seen before comes with the page, in the place it had: scrolled back up a chat, a new message would otherwise throw the page out of where it was.
     for (const img of v.root.querySelectorAll('img[data-chat-photo]')) {
       const id = img.dataset.chatPhoto, url = await bubbleURL(id);
@@ -999,17 +1081,247 @@ export function chatApp(ctx) {
     });
   }
   const rollDice = () => post([{from: 'me', kind: 'dice', text: String(1 + Math.floor(Math.random() * 6))}]);
+  /** 给表情包起名: the ones just brought in, each with its name in a box; 保存 keeps all the names at once. */
+  function nameStickers(names) {
+    const all = () => api.getState().chat.stickers || [], fresh = names.map(n => all().find(s => s.name === n)).filter(Boolean);
+    if (!fresh.length) return;
+    const d = ctx.dialog('给表情包起名', `<p class="help-copy">对方按名字挑着发，写清楚是什么表情，比如「开心」「委屈巴巴」。</p>
+      <div class="sticker-names">${fresh.map((s, i) => `<label class="sticker-name">${stickerImg(s)}<input type="text" data-sticker-name="${i}" value="${esc(s.name)}" maxlength="20" aria-label="第 ${i + 1} 个的名字"></label>`).join('')}</div>
+      <div class="actions">${btn('sticker-names-save', '保存', 'primary')}</div>`);
+    paintStickers(d.body);
+    d.body.addEventListener('click', e => {
+      if (!e.target.closest('[data-action=sticker-names-save]')) return;
+      const next = new Map(fresh.map((s, i) => [s.photoId, stickerName(d.body.querySelector(`[data-sticker-name="${i}"]`).value) || s.name]));
+      const others = all().filter(s => !next.has(s.photoId)), taken = new Set(others.map(s => s.name)), renamed = [];
+      for (const s of fresh) { let name = next.get(s.photoId), n = 2; while (taken.has(name)) name = stickerName(`${next.get(s.photoId)}${n++}`); taken.add(name); renamed.push({name, photoId: s.photoId}); }
+      try { api.saveChatOptions({stickers: [...others, ...renamed]}); } catch (error) { ctx.notify(error.message, {error: true}); return; }
+      d.close();
+      if (panel === 'stickers') syncPanel();
+      ctx.notify(`导入了 ${renamed.length} 个表情包`);
+    });
+  }
+
+  // ---------- 群游戏 (0.9.34): cards in a group chat; the members play by the 群游戏 block of 系统提示词 ----------
+  function gameHTML(m) {
+    const g = m.game, mid = `data-mid="${esc(m.id)}"`, name = n => n === 'me' ? myName() : shown(n);
+    // 小游戏对战 (0.9.35): the board; the user's cells can be tapped on the user's turn.
+    if (BOARDS[g.type]) {
+      const size = BOARDS[g.type].size, cells = cellsOf(g), last = g.moves.at(-1)?.at, line = new Set(g.line || []), mark = who => who === g.first ? 'x' : 'o';
+      const mine = g.open && g.turn === 'me' && !typing();
+      const state = g.winner === 'draw' ? '平局' : g.resigned ? `${g.resigned === 'me' ? '你' : name(g.resigned)}认输了` : g.winner ? (g.winner === 'me' ? '你赢了 🎉' : `${name(g.winner)}赢了`) : g.turn === 'me' ? '轮到你了' : `${name(g.them)}在想……`;
+      return `<div class="game-card game-board" data-board="${esc(g.type)}"><span class="game-kind">${g.type === 'ttt' ? '⭕ 井字棋' : '⚫ 五子棋'}</span>`
+        + `<div class="board-grid" style="--n:${size}" role="group" aria-label="${BOARDS[g.type].name}的棋盘">${cells.map((who, i) => `<button type="button" class="board-cell" data-action="board-cell" ${mid} data-at="${i}"${who ? ` data-mark="${mark(who)}"` : ''}${i === last ? ' data-last' : ''}${line.has(i) ? ' data-win' : ''} aria-label="${cellName(i, size)}${who ? ' ' + esc(who === 'me' ? '你的' : name(who) + '的') : ''}"${mine && !who ? '' : ' disabled'}></button>`).join('')}</div>`
+        + `<span class="game-foot"><span>${esc(state)}</span>${g.open ? btn('board-resign', '认输', 'text-button', mid) : btn('board-again', '再来一局', 'text-button', mid)}</span></div>`;
+    }
+    if (g.type === 'vote') {
+      const total = g.votes.length, mine = g.votes.find(x => x.from === 'me')?.option;
+      return `<div class="game-card game-vote"><span class="game-kind">📊 投票</span><strong class="game-title">${esc(g.question)}</strong><div class="vote-opts">${g.options.map((o, i) => {
+        const who = g.votes.filter(x => x.option === i), pct = total ? Math.round(who.length / total * 100) : 0;
+        return `<button type="button" class="vote-opt" data-action="game-vote" ${mid} data-i="${i}" aria-pressed="${mine === i}"${g.open ? '' : ' disabled'} title="${esc(who.map(x => name(x.from) + (x.why ? '：' + x.why : '')).join('\n'))}"><i style="width:${pct}%"></i><span>${esc(o)}</span><small>${who.length} 票</small>${who.length ? `<em>${esc(who.map(x => name(x.from)).join('、'))}</em>` : ''}</button>`;
+      }).join('')}</div><span class="game-foot">${total} 人投了${g.open ? '' : ' · 投票结束了'}${g.open ? btn('game-end', '结束投票', 'text-button', mid) : ''}</span></div>`;
+    }
+    if (g.type === 'truth') {
+      // Just started (by its time, so the very first drawing of it already turns): the wheel turns once.
+      const turning = m.from === 'me' && Date.now() - (m.at || 0) < 1500, pool = g.pool.slice(0, 10);
+      return `<div class="game-card game-truth${turning ? ' spinning' : ''}"><span class="game-kind">🎲 真心话大冒险</span><span class="truth-wheel" aria-hidden="true" style="--n:${pool.length}">${pool.map((n, i) => `<i style="--i:${i}"${n === g.target ? ' class="hit"' : ''}>${esc(name(n).slice(0, 1))}</i>`).join('')}</span>`
+        + `<strong class="game-title">转到了 ${esc(g.target === 'me' ? '你' : name(g.target))}${g.choice ? `：${g.choice}` : ''}</strong>`
+        + (g.target === 'me' && !g.choice ? `<span class="game-acts">${btn('game-choice', '真心话', 'chip-button', `${mid} data-choice="真心话"`)}${btn('game-choice', '大冒险', 'chip-button', `${mid} data-choice="大冒险"`)}</span>` : '')
+        + `<span class="game-foot">${btn('game-again', '再转一次', 'text-button', mid)}</span></div>`;
+    }
+    const shownEntries = g.entries.slice(-10), cut = g.entries.length - shownEntries.length;
+    return `<div class="game-card game-chain"><span class="game-kind">🔗 ${CHAIN_MODES[g.mode]}</span>${cut ? `<small class="chain-more">前面还有 ${cut} 句</small>` : ''}<ol class="chain-list">${shownEntries.map(e => `<li><b>${esc(name(e.from))}</b><span>${esc(e.text)}</span></li>`).join('')}</ol>`
+      + (g.loser ? `<span class="game-foot">${esc(g.loser === 'me' ? '你' : name(g.loser))}认输了</span>` : '')
+      + (g.open ? `<span class="game-acts">${btn('game-chain', '接一句', 'chip-button', mid)}${btn('game-end', '结束', 'text-button', mid)}</span>` : g.loser ? '' : '<span class="game-foot">接龙结束了</span>') + '</div>';
+  }
+  /** 群游戏 from the + panel: which one. A card goes into the group and the group is asked to play (when it can answer). */
+  function gameSheet() {
+    const d = sheet('群游戏', `<div class="pick-list game-pick">
+      <button type="button" class="list-row" data-action="g-vote"><span class="game-ico" aria-hidden="true">📊</span><span><strong>投票</strong><small>一个问题，几个选项</small></span></button>
+      <button type="button" class="list-row" data-action="g-truth"><span class="game-ico" aria-hidden="true">🎲</span><span><strong>真心话大冒险</strong><small>转盘抽一个人，也可能是你</small></span></button>
+      <button type="button" class="list-row" data-action="g-chain"><span class="game-ico" aria-hidden="true">🔗</span><span><strong>接龙</strong><small>成语接龙或故事接龙</small></span></button></div>`, {
+      'g-vote': () => { d.close(); voteSheet(); },
+      'g-truth': async () => { d.close(); await spin(); },
+      'g-chain': () => { d.close(); chainSheet(); }
+    });
+  }
+  async function startGame(game) {
+    await post([{from: 'me', kind: 'game', game}]);
+    requestReply();
+  }
+  function voteSheet() {
+    let count = 2;
+    const optionsHTML = () => Array.from({length: count}, (_, i) => input('vote-opt-' + i, '', 'text', `maxlength="${GAME_LIMITS.option}" placeholder="选项 ${i + 1}" data-vote-opt`)).join('');
+    const d = sheet('发起投票', `${field('问题', input('vote-q', '', 'text', `maxlength="${GAME_LIMITS.question}" placeholder="比如：周末去哪玩？"`))}
+      <div class="field"><span>选项</span><div class="vote-inputs" data-vote-inputs>${optionsHTML()}</div></div>
+      <div class="actions">${btn('vote-more', icon('add') + '再加一个选项', 'text-button')}${btn('vote-go', '发起', 'primary')}</div>`, {
+      'vote-more': () => {
+        if (count >= GAME_LIMITS.options) { ctx.notify(`最多 ${GAME_LIMITS.options} 个选项`); return; }
+        const box = d.body.querySelector('[data-vote-inputs]'), kept = [...box.querySelectorAll('input')].map(x => x.value);
+        count++; box.innerHTML = optionsHTML();
+        [...box.querySelectorAll('input')].forEach((x, i) => { x.value = kept[i] || ''; });
+        box.querySelectorAll('input')[count - 1]?.focus();
+      },
+      'vote-go': async () => {
+        const question = value(d, 'vote-q'), options = [...d.body.querySelectorAll('[data-vote-opt]')].map(x => x.value.trim()).filter(Boolean);
+        if (!question) { ctx.notify('先写下要投什么'); return; }
+        if (new Set(options).size < 2) { ctx.notify('至少两个不一样的选项'); return; }
+        d.close();
+        await startGame({type: 'vote', question, options: [...new Set(options)], votes: [], open: true});
+      }
+    });
+  }
+  /** 真心话大冒险: the wheel lands on someone of the group, the user too. */
+  async function spin() {
+    if (thread?.type !== 'group') return;
+    const pool = [...thread.members, 'me'], target = pool[Math.floor(Math.random() * pool.length)];
+    await post([{from: 'me', kind: 'game', game: {type: 'truth', pool, target, choice: ''}}]);
+    requestReply();
+  }
+  function chainSheet() {
+    let mode = 'idiom';
+    const d = sheet('接龙', `<div class="segmented" role="group" aria-label="怎么接">${Object.entries(CHAIN_MODES).map(([k, t]) => `<button type="button" data-chain-mode="${k}" aria-pressed="${k === mode}">${t}</button>`).join('')}</div>
+      ${field('第一句', input('chain-first', '', 'text', `maxlength="${GAME_LIMITS.entry}" placeholder="比如：一马当先"`))}
+      <div class="actions">${btn('chain-go', '开始', 'primary')}</div>`, {
+      'chain-go': async () => {
+        const first = value(d, 'chain-first');
+        if (!first) { ctx.notify(mode === 'idiom' ? '先写一个成语' : '先写故事的第一句'); return; }
+        d.close();
+        await startGame({type: 'chain', mode, entries: [{from: 'me', text: first}], open: true});
+      }
+    });
+    d.body.addEventListener('click', e => {
+      const b = e.target.closest('[data-chain-mode]');
+      if (!b) return;
+      mode = b.dataset.chainMode;
+      for (const x of d.body.querySelectorAll('[data-chain-mode]')) x.setAttribute('aria-pressed', String(x === b));
+      d.body.querySelector('[data-field=chain-first]').placeholder = mode === 'idiom' ? '比如：一马当先' : '比如：那天放学，雨下得特别大';
+    });
+  }
+  /** 接一句: the user's line on the 接龙, then the group goes on. */
+  function chainLine(m) {
+    const g = m.game, last = g.entries.at(-1);
+    const d = sheet('接一句', `<p class="help-copy">接到：${esc(last.from === 'me' ? myName() : shown(last.from))}：${esc(last.text)}</p>${field(CHAIN_MODES[g.mode], input('chain-next', '', 'text', `maxlength="${GAME_LIMITS.entry}"`))}<div class="actions">${btn('chain-next-go', '接上', 'primary')}</div>`, {
+      'chain-next-go': async () => {
+        const text = value(d, 'chain-next');
+        if (!text) return;
+        d.close();
+        await api.updateChatMessage(threadId, m.id, {game: {entries: [...g.entries, {from: 'me', text}]}});
+        requestReply();
+      }
+    });
+  }
+
+  /** 小游戏对战 (0.9.35): 井字棋 or 五子棋 with the one of this private chat, and who goes first. */
+  function playSheet() {
+    if (thread?.type !== 'dm') return;
+    const them = thread.members[0];
+    let first = 'me';
+    const d = sheet('小游戏', `<div class="segmented" role="group" aria-label="谁先下">${[['me', '我先'], ['them', `${shown(them)}先`]].map(([k, t]) => `<button type="button" data-play-first="${k}" aria-pressed="${k === first}">${esc(t)}</button>`).join('')}</div>
+      <div class="pick-list game-pick">
+      <button type="button" class="list-row" data-action="p-ttt"><span class="game-ico" aria-hidden="true">⭕</span><span><strong>井字棋</strong><small>三个连成一线就赢</small></span></button>
+      <button type="button" class="list-row" data-action="p-gomoku"><span class="game-ico" aria-hidden="true">⚫</span><span><strong>五子棋</strong><small>九路棋盘，五个连成一线就赢</small></span></button></div>`, {
+      'p-ttt': async () => { d.close(); await startBoard('ttt', first === 'me' ? 'me' : them); },
+      'p-gomoku': async () => { d.close(); await startBoard('gomoku', first === 'me' ? 'me' : them); }
+    });
+    d.body.addEventListener('click', e => {
+      const b = e.target.closest('[data-play-first]');
+      if (!b) return;
+      first = b.dataset.playFirst;
+      for (const x of d.body.querySelectorAll('[data-play-first]')) x.setAttribute('aria-pressed', String(x === b));
+    });
+  }
+  async function startBoard(type, first) {
+    if (thread?.type !== 'dm') return;
+    await post([{from: 'me', kind: 'game', game: {type, them: thread.members[0], first, moves: []}}]);
+    if (first !== 'me') requestReply();
+  }
+  /** 衣柜 × 聊天 (0.9.35): clothes shown in a chat, all of it. */
+  function outfitSheet(m) {
+    const o = m.outfit || {}, owner = String(o.owner || '').replace(/^role:/, '');
+    const d = sheet(o.name || '穿搭', `${o.photoId ? '<img class="outfit-photo" alt="">' : ''}<p class="help-copy">${esc(o.text || '')}</p>${o.owner && o.owner !== 'me' ? `<p class="hint">给${esc(shown(owner))}搭的</p>` : ''}
+      <div class="actions">${btn('outfit-menu', '消息选项', 'secondary')}</div>`, {'outfit-menu': () => { d.close(); messageMenu(m); }});
+    if (o.photoId) bubbleURL(o.photoId).then(url => { const img = d.body.querySelector('.outfit-photo'); if (img && url) img.src = url; }).catch(() => {});
+  }
+
+  // ---------- 聊天装扮 of one person (0.9.34): their bubbles (a set of 自定义气泡) and their background ----------
+  const backgroundName = v => !v ? '' : v.startsWith('photo:') ? '相册照片' : BACKGROUNDS[v] || PREMIUM.background?.[v]?.[0] || v;
+  function lookLine(name) {
+    const chat = api.getState().chat, key = ownKey(name), set = bubbleSets().find(s => s.id === chat.bubbleOf?.[key]), bg = backgroundName(chat.bgOf?.[key]);
+    return set || bg ? [set && `气泡：${set.name}`, bg && `背景：${bg}`].filter(Boolean).join(' · ') : '跟我的一样';
+  }
+  function personLookSheet(name) {
+    const key = ownKey(name), look = bubbleLook();
+    const draw = () => {
+      const chat = api.getState().chat, sets = bubbleSets(), mine = chat.bubbleOf?.[key] || '', bg = chat.bgOf?.[key] || '', w = api.wallet();
+      syncBubbleCss(ctx.doc, sets);
+      const bgs = [...Object.entries(BACKGROUNDS), ...Object.entries(PREMIUM.background || {}).filter(([k]) => w.owned.includes('background:' + k)).map(([k, [l]]) => [k, l])];
+      return groupTitle('聊天气泡') + `<div class="group bubble-sets">${[`<button type="button" class="list-row bubble-set-main" data-look-bubble="" aria-pressed="${!mine}"><span class="bubble-set-name"><strong>跟我的一样</strong></span></button>`,
+        ...sets.map(s => `<button type="button" class="list-row bubble-set-main" data-look-bubble="${esc(s.id)}" aria-pressed="${mine === s.id}">${bubblePreview(s.id, look, {mini: true})}<span class="bubble-set-name"><strong>${esc(s.name)}</strong></span></button>`)].join('')}</div>`
+        + (sets.length ? '' : '<p class="hint">还没有自定义的气泡：在「我 → 个性装扮 → 聊天气泡 → 自定义」里做一套。</p>')
+        + groupTitle('聊天背景') + `<div class="deco-row"><button type="button" class="deco" data-look-bg="" data-background="" aria-pressed="${!bg}"><span class="deco-sample look-same" aria-hidden="true">${icon('person')}</span><span>跟我的一样</span></button>${bgs.map(([k, l]) => `<button type="button" class="deco" data-look-bg="${esc(k)}" data-background="${esc(k)}" aria-pressed="${bg === k}"><span class="deco-sample" aria-hidden="true">${sceneArt(k)}</span><span>${esc(l)}</span></button>`).join('')}<button type="button" class="deco" data-look-photo data-background="" aria-pressed="${bg.startsWith('photo:')}"><span class="deco-sample look-same" aria-hidden="true">${icon('image')}</span><span>相册照片</span></button></div>`;
+    };
+    const d = ctx.dialog(`和${shown(name)}聊天的装扮`, draw());
+    d.body.addEventListener('click', async e => {
+      const b = e.target.closest('[data-look-bubble], [data-look-bg], [data-look-photo]');
+      if (!b) return;
+      try {
+        if (b.hasAttribute('data-look-photo')) { d.close(); await pickPersonPhoto(name); return; }
+        if (b.hasAttribute('data-look-bubble')) api.saveChatOptions({bubbleOf: {[key]: b.dataset.lookBubble || null}});
+        else api.saveChatOptions({bgOf: {[key]: b.dataset.lookBg || null}});
+        d.body.innerHTML = draw();
+        render();
+      } catch (error) { ctx.notify(error.message, {error: true}); }
+    });
+  }
+  async function pickPersonPhoto(name) {
+    const rows = await api.listPhotos();
+    if (!rows.length) throw Error('相册里还没有照片，先在相册里导入一张');
+    const d = ctx.dialog(`选一张和${shown(name)}聊天的背景`, `<div class="photo-grid pick-photos">${rows.slice(0, 30).map(r => `<button data-bg-photo="${esc(r.id)}" aria-label="用 ${esc(r.name)} 当背景"><img data-chat-photo="${esc(r.id)}" alt="${esc(r.name)}"></button>`).join('')}</div>`);
+    pickerThumbs(d, rows);
+    d.body.addEventListener('click', e => {
+      const id = e.target.closest('[data-bg-photo]')?.dataset.bgPhoto;
+      if (!id) return;
+      d.close();
+      try { api.saveChatOptions({bgOf: {[ownKey(name)]: 'photo:' + id}}); render(); personLookSheet(name); } catch (error) { ctx.notify(error.message, {error: true}); }
+    });
+  }
+
   // ---------- 表情包 ----------
+  /** A sticker's picture: an address on the web, or a photo of the album (painted with paintStickers). */
+  const stickerImg = s => s.photoId ? `<img data-sticker-photo="${esc(s.photoId)}"${photoURLs.get(s.photoId) ? ` src="${esc(photoURLs.get(s.photoId))}"` : ''} alt="" draggable="false">` : `<img src="${esc(s.url)}" alt="" loading="lazy" referrerpolicy="no-referrer" draggable="false">`;
   /** Import (「名字URL, 名字URL」), look through, remove; the same text copies them out to share. */
   function manageStickers() {
     const list = () => api.getState().chat.stickers || [];
-    const rows = () => list().length ? `<div class="sticker-manage">${list().slice().reverse().map(s => `<div class="sticker-row"><img src="${esc(s.url)}" alt="" loading="lazy" referrerpolicy="no-referrer"><span><strong>${esc(s.name)}</strong><small>${esc(s.url)}</small></span>${btn('sticker-remove', icon('trash'), 'text-button', `data-name="${esc(s.name)}" aria-label="删除 ${esc(s.name)}"`)}</div>`).join('')}</div>` : '<p class="hint">还没有表情包。</p>';
+    const rows = () => list().length ? `<div class="sticker-manage">${list().slice().reverse().map(s => `<div class="sticker-row">${stickerImg(s)}<span><strong>${esc(s.name)}</strong><small>${esc(s.url || '从图片导入的，在相册「表情包」里')}</small></span>${btn('sticker-remove', icon('trash'), 'text-button', `data-name="${esc(s.name)}" aria-label="删除 ${esc(s.name)}"`)}</div>`).join('')}</div>` : '<p class="hint">还没有表情包。</p>';
     const d = ctx.dialog('表情包', `<p class="help-copy">粘贴「名字+图片网址」，一个一行或用逗号隔开，比如：<br><code>开心https://…/a.gif, 委屈https://…/b.png</code><br>名字中间别有空格；同名的会换成新的。对方也会按名字从里面挑着发。</p>
       ${field('导入', textArea('sticker-text', '', 'rows="4" placeholder="开心https://example.com/happy.gif, 生气https://example.com/angry.png"'))}
       <div class="actions">${btn('sticker-import', icon('import') + '导入', 'primary')}${btn('sticker-copy', icon('copy') + '复制全部', 'secondary')}</div>
+      <div class="actions sticker-files"><label class="secondary file-button">${icon('image')}<span>从图片导入</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple data-sticker-files hidden></label></div>
       ${groupTitle('已有', `<small data-sticker-count>${list().length}</small>`)}<div data-sticker-list>${rows()}</div>
       <div class="actions">${btn('sticker-clear', icon('trash') + '清空表情包', 'danger')}</div>`);
-    const redraw = () => { d.body.querySelector('[data-sticker-list]').innerHTML = rows(); d.body.querySelector('[data-sticker-count]').textContent = list().length; if (panel === 'stickers') syncPanel(); };
+    const redraw = () => { d.body.querySelector('[data-sticker-list]').innerHTML = rows(); d.body.querySelector('[data-sticker-count]').textContent = list().length; paintStickers(d.body); if (panel === 'stickers') syncPanel(); };
+    paintStickers(d.body);
+    // 从图片导入: into the album (相簿「表情包」), each named after its file; then one page to name them all.
+    d.body.addEventListener('change', e => {
+      const box = e.target.closest('[data-sticker-files]'), files = [...(box?.files || [])];
+      if (!files.length) return;
+      box.value = '';
+      (async () => {
+        if (files.length > 60) ctx.notify('一次最多导入 60 张，先导入前 60 张');
+        const taken = new Set(list().map(s => s.name)), made = [];
+        for (const [i, file] of files.slice(0, 60).entries()) {
+          let name = stickerName(file.name.replace(/\.[^.]+$/, '')) || '表情', n = 2;
+          while (taken.has(name)) name = stickerName(`${name.replace(/\d+$/, '')}${n++}`);
+          taken.add(name);
+          const ext = /gif/.test(file.type) ? 'gif' : /png/.test(file.type) ? 'png' : /webp/.test(file.type) ? 'webp' : 'jpg';
+          const photo = await api.addPhoto({name: `表情包-我-${Date.now()}${i ? '-' + i : ''}.${ext}`, blob: file});
+          made.push({name, photoId: photo.id});
+        }
+        api.saveChatOptions({stickers: [...list(), ...made]});
+        redraw();
+        nameStickers(made.map(s => s.name));
+      })().catch(error => ctx.notify(error.message, {error: true}));
+    });
     d.body.addEventListener('click', e => {
       const b = e.target.closest('[data-action]');
       if (!b) return;
@@ -1027,9 +1339,10 @@ export function chatApp(ctx) {
             break;
           }
           case 'sticker-copy': {
-            if (!list().length) { ctx.notify('还没有表情包'); break; }
-            await copyText(ctx.win, list().map(s => s.name + s.url).join(',\n'));
-            ctx.notify('已复制，可以发给别人导入');
+            const web = list().filter(s => s.url);
+            if (!web.length) { ctx.notify(list().length ? '从图片导入的表情包在相册里，没有网址可以复制' : '还没有表情包'); break; }
+            await copyText(ctx.win, web.map(s => s.name + s.url).join(',\n'));
+            ctx.notify(web.length < list().length ? `已复制 ${web.length} 个（从图片导入的在相册里，没有网址）` : '已复制，可以发给别人导入');
             break;
           }
           case 'sticker-remove': api.saveChatOptions({stickers: list().filter(s => s.name !== b.dataset.name)}); redraw(); break;
@@ -1183,6 +1496,167 @@ export function chatApp(ctx) {
     });
   }
 
+  // ---------- 角色专属表情包 (0.9.33): drawn for a role or picked from the album; only that role sends them ----------
+  const ownStickers = name => api.getState().chat.roleStickers?.[ownKey(name)] || [];
+  const keepStickers = (name, list) => api.saveChatOptions({roleStickers: {[ownKey(name)]: list}});
+  function roleStickersSheet(name) {
+    const draw = () => {
+      const list = ownStickers(name);
+      return (list.length ? `<div class="role-stickers">${list.map(s => `<button type="button" class="role-sticker" data-sticker="${esc(s.name)}" aria-label="${esc(s.name)}"><img data-chat-photo="${esc(s.photoId)}" alt="" draggable="false"><span>${esc(s.name)}</span></button>`).join('')}</div>`
+        : `<p class="hint">还没有。画好或挑好以后，和${esc(shown(name))}聊天时 TA 会自己发这些。</p>`)
+        + `<div class="actions">${btn('rs-draw', icon('paint') + '画一套', 'primary')}${btn('rs-album', icon('album') + '从相册加', 'secondary')}</div>`;
+    };
+    const d = ctx.dialog(`${shown(name)}的表情包`, draw());
+    const paint = () => { for (const img of d.body.querySelectorAll('img[data-chat-photo]')) bubbleURL(img.dataset.chatPhoto).then(url => { if (url && img.isConnected) img.src = url; }).catch(() => {}); };
+    paint();
+    d.body.addEventListener('click', async e => {
+      const tile = e.target.closest('[data-sticker]'), action = e.target.closest('[data-action]')?.dataset.action;
+      try {
+        if (action === 'rs-draw') { d.close(); await drawStickers(name); return; }
+        if (action === 'rs-album') { d.close(); await stickerFromAlbum(name); return; }
+        if (!tile) return;
+        const s = ownStickers(name).find(x => x.name === tile.dataset.sticker);
+        if (!s) return;
+        const key = await menu(ctx, s.name, [{key: 'rename', icon: 'edit', label: '改名'}, {key: 'remove', icon: 'trash', label: '拿掉', danger: true}]);
+        if (key === 'rename') await nameSticker(name, s.photoId, s.name);
+        else {
+          if (key === 'remove') { keepStickers(name, ownStickers(name).filter(x => x.name !== s.name)); ctx.notify('拿掉了，图片还在相册里'); }
+          roleStickersSheet(name);
+        }
+      } catch (error) { ctx.notify(error.message, {error: true}); }
+    });
+  }
+  /** 画一套: the moods picked (the first six they do not have yet), how they should look; one picture after another. */
+  async function drawStickers(name) {
+    if (api.drawReady && !api.drawReady()) { ctx.notify(api.drawMissing?.() || '还没有设置绘图引擎', {error: true}); return; }
+    if (!api.drawRoleSticker) { ctx.notify('在酒馆里打开小手机时才能画', {error: true}); return; }
+    const have = new Set(ownStickers(name).map(s => s.name)), chosen = new Set(STICKER_MOODS.map(m => m[0]).filter(m => !have.has(m)).slice(0, 6));
+    const d = ctx.dialog(`给${shown(name)}画表情包`, `<div class="deco-row rs-moods">${STICKER_MOODS.map(([m]) => `<button type="button" class="status-chip" data-mood="${esc(m)}" aria-pressed="${chosen.has(m)}">${esc(m)}${have.has(m) ? '<small>已有</small>' : ''}</button>`).join('')}</div>
+      ${field('画成什么样（选填）', input('rs-wish', '', 'text', 'maxlength="100" placeholder="比如：Q版、简笔画、厚涂"'))}
+      <p class="hint">按角色 App 里${esc(shown(name))}的外貌，用绘图引擎一张一张画。</p><div class="actions">${btn('rs-go', `开始画 ${chosen.size} 张`, 'primary', chosen.size ? '' : 'disabled')}</div>`);
+    const go = d.body.querySelector('[data-action=rs-go]');
+    d.body.addEventListener('click', e => {
+      const mood = e.target.closest('[data-mood]');
+      if (mood) {
+        if (chosen.has(mood.dataset.mood)) chosen.delete(mood.dataset.mood); else chosen.add(mood.dataset.mood);
+        mood.setAttribute('aria-pressed', String(chosen.has(mood.dataset.mood)));
+        go.disabled = !chosen.size; go.textContent = `开始画 ${chosen.size} 张`;
+        return;
+      }
+      if (!e.target.closest('[data-action=rs-go]') || !chosen.size) return;
+      // The sheet goes (a question about money would take its place anyway); how far it is shows on top.
+      const wish = d.body.querySelector('[data-field=rs-wish]').value.trim(), list = [...chosen];
+      d.close();
+      drawBatch(name, list, wish).catch(error => ctx.notify(error.message, {error: true}));
+    });
+  }
+  /** One picture after another; one that costs money only after a yes (asked once for them all). */
+  async function drawBatch(name, list, wish) {
+    let allowPaid = false, done = 0;
+    try {
+      for (const m of list) {
+        ctx.notify(`在画「${m}」（${done + 1}/${list.length}）…`);
+        for (;;) {
+          try { await api.drawRoleSticker({name, mood: m, wish, allowPaid}); break; }
+          catch (error) {
+            if (error.code !== 'PAID' || allowPaid) throw error;
+            const ask = api.paidPrompt();
+            if (!await ctx.confirm(ask.title, `${ask.text}\n这次画 ${list.length} 张。`)) { if (done) roleStickersSheet(name); return; }
+            allowPaid = true;
+          }
+        }
+        done++;
+      }
+      ctx.notify(`画好了 ${done} 张，${shown(name)}聊天时会自己发`);
+      roleStickersSheet(name);
+    } catch (error) {
+      ctx.notify(done ? `画好了 ${done} 张，后面的没画成：${error.message}` : error.message, {error: true});
+      if (done) roleStickersSheet(name);
+    }
+  }
+  /** 从相册加: a photo of the album as one of theirs, with a name the model writes. */
+  async function stickerFromAlbum(name) {
+    const rows = await api.listPhotos();
+    if (!rows.length) throw Error('相册里还没有照片，先在相册里导入一张');
+    const d = ctx.dialog(`选一张当${shown(name)}的表情包`, `<div class="photo-grid pick-photos">${rows.slice(0, 60).map(r => `<button data-sticker-photo="${esc(r.id)}" aria-label="用 ${esc(r.name)}"><img data-chat-photo="${esc(r.id)}" alt="${esc(r.name)}"></button>`).join('')}</div>`);
+    pickerThumbs(d, rows);
+    d.body.addEventListener('click', e => {
+      const id = e.target.closest('[data-sticker-photo]')?.dataset.stickerPhoto;
+      if (!id) return;
+      d.close();
+      nameSticker(name, id, '').catch(error => ctx.notify(error.message, {error: true}));
+    });
+  }
+  /** Its name: what the model writes to send it (short; one of the same name is replaced). */
+  async function nameSticker(name, photoId, old) {
+    const d = ctx.dialog(old ? '改名' : '起个名字', `${field('名字', input('rs-name', old, 'text', 'maxlength="20" placeholder="比如：开心、晚安、比心"'))}<p class="hint">聊天时模型按这个名字发它，写清楚是什么表情。</p><div class="actions">${btn('rs-save', '保存', 'primary')}</div>`);
+    d.body.addEventListener('click', e => {
+      if (!e.target.closest('[data-action=rs-save]')) return;
+      const label = stickerName(d.body.querySelector('[data-field=rs-name]').value);
+      if (!label) { ctx.notify('写个名字', {error: true}); return; }
+      const rest = ownStickers(name).filter(x => x.name !== old && x.name !== label);
+      if (!old && rest.length >= ROLE_STICKER_LIMIT) { ctx.notify(`一个人最多 ${ROLE_STICKER_LIMIT} 个表情包`, {error: true}); return; }
+      keepStickers(name, [...rest, {name: label, photoId}]);
+      d.close();
+      ctx.notify(old ? '改好了' : `加好了：「${label}」`);
+      roleStickersSheet(name);
+    });
+  }
+
+  // ---------- 合并转发 and 聊天长图 (0.9.33): what the multi-select does with the messages picked ----------
+  const pickedMessages = () => thread.messages.filter(m => selecting?.has(m.id) && !LINE_KINDS.includes(m.kind));
+  const chatTitle = t => t.type === 'group' ? `群聊「${t.name}」` : `${myName()}和${shown(t.members[0])}`;
+  /** 转发: to a chat in use or someone without one yet; it arrives there as one record, from the user. */
+  async function forwardPicked() {
+    const picked = pickedMessages();
+    if (!picked.length) return;
+    const threads = await api.listThreads(), away = new Set(threads.filter(t => t.type === 'dm' && (t.friend?.by === 'me' || t.blocked)).map(t => t.members[0]));
+    const recent = threads.filter(t => t.id !== threadId && currentWindow(threads, t)?.id === t.id && !(t.type === 'dm' && away.has(t.members[0])));
+    const others = api.chatContacts().filter(c => !away.has(c.name) && !threads.some(t => t.type === 'dm' && t.members[0] === c.name));
+    const row = (key, face, name, sub) => `<button type="button" class="list-row" data-forward="${esc(key)}">${face}<span><strong>${esc(name)}</strong>${sub ? `<small>${esc(sub)}</small>` : ''}</span></button>`;
+    const d = ctx.dialog(`转发 ${picked.length} 条消息`, (recent.length ? groupTitle('最近聊天') + `<div class="group">${recent.map(t => row('t:' + t.id, threadAvatar(t, 38), t.type === 'group' ? t.name : shown(t.members[0]), t.type === 'group' ? `${t.members.length} 人的群` : '')).join('')}</div>` : '')
+      + (others.length ? groupTitle('联系人') + `<div class="group">${others.map(c => row('c:' + c.name, avatar(c.name, c.engine, 38), shown(c.name), '')).join('')}</div>` : '')
+      + (recent.length || others.length ? '' : '<p class="hint">还没有别的聊天可以转发。</p>'));
+    d.body.addEventListener('click', async e => {
+      const key = e.target.closest('[data-forward]')?.dataset.forward;
+      if (!key) return;
+      d.close();
+      try {
+        const name = key.startsWith('c:') ? key.slice(2) : '', to = name ? (currentDm(await api.listThreads(), name) || await api.createThread({type: 'dm', members: [name]})) : threads.find(t => t.id === key.slice(2));
+        if (!to) return;
+        const toName = to.type === 'group' ? to.name : shown(to.members[0]);
+        if (!await ctx.confirm(`转发给${toName}？`, `${picked.length} 条消息会作为一条聊天记录发过去，${to.type === 'group' ? '群里的人' : 'TA'}能看到里面写了什么。`)) return;
+        const items = picked.map(m => ({from: m.from === 'me' ? myName() : shown(m.from), text: forwardLine(m)})).filter(i => i.text.trim());
+        await api.appendChat(to.id, [{from: 'me', kind: 'forward', title: `${chatTitle(thread)}的聊天记录`, items}], {read: true});
+        selecting = null;
+        render();
+        ctx.notify(`转发给了${toName}，点这里去看看`, {tap: () => open(to.id)});
+      } catch (error) { ctx.notify(error.message, {error: true}); }
+    });
+  }
+  /** A record forwarded here: every line of it. */
+  function forwardSheet(m) {
+    const d = sheet(m.title, `<div class="fwd-record">${(m.items || []).map(i => `<div class="fwd-item"><strong>${esc(i.from)}</strong><p>${esc(i.text)}</p></div>`).join('')}</div>
+      <div class="actions">${btn('fwd-menu', '消息选项', 'secondary')}</div>`, {'fwd-menu': () => { d.close(); messageMenu(m); }});
+  }
+  /** 长图: the picked messages as one picture of this chat as it looks; then to the album, shared or downloaded. */
+  async function longImage() {
+    const rows = [...v.root.querySelectorAll('.msgs > .msg[data-picked]')];
+    if (!rows.length) return;
+    const blob = await chatLongImage(ctx.doc, {thread: v.root.querySelector('.chat-thread'), rows, title: chatTitle(thread)});
+    selecting = null;
+    render();
+    const url = ctx.win.URL.createObjectURL(blob), stamp = new Date(), pad = n => String(n).padStart(2, '0');
+    const name = `聊天长图-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.png`;
+    const d = sheet('聊天长图', `<div class="shot-view"><img src="${esc(url)}" alt="聊天长图"></div>
+      <div class="actions">${btn('shot-album', icon('album') + '存到相册', 'primary')}${canShareFiles(ctx.win) ? btn('shot-share', icon('share') + '分享', 'secondary') : btn('shot-save', icon('download') + '下载', 'secondary')}</div>`, {
+      'shot-album': async () => { await api.addPhoto({name, blob}); d.close(); ctx.notify('存到相册了'); },
+      'shot-share': async () => { await shareFile(ctx.doc, blob, name); },
+      'shot-save': async () => { ctx.notify('已下载 ' + await saveFile(ctx.doc, blob, name)); }
+    });
+    d.onClose(() => ctx.win.URL.revokeObjectURL(url));
+  }
+
   // ---------- Menus ----------
   function messageMenu(m) {
     const contact = m.from !== 'me', last = contact && thread.messages.at(-1)?.id === m.id;
@@ -1190,11 +1664,13 @@ export function chatApp(ctx) {
     const canRecall = !contact && !['redpacket', 'transfer', 'gift'].includes(m.kind);
     const shown = m.kind === 'voice' ? (m.translation || m.text) : m.kind === 'dice' ? `骰子 ${m.text} 点` : ['redpacket', 'transfer', 'gift'].includes(m.kind) ? preview(m) : quoteText(m);
     const voice = m.kind === 'voice', open = voice && (voiceText().auto || transcribed.has(m.id));
-    const d = sheet('消息', `${voice ? '' : `<p class="help-copy">${esc(shown)}</p>`}
-      ${voice ? `<div class="actions">${btn('transcribe', icon('book') + (open ? '收起文字' : '转文字'), 'primary')}${btn('download', icon('download') + '下载语音', 'secondary')}${canShareFiles(ctx.win) ? btn('share', icon('share') + '分享', 'secondary') : ''}</div>` : ''}
-      <div class="actions">${quotable(m) ? btn('quote', icon('reply') + '引用', 'secondary') : ''}${copyable ? btn('copy', icon('copy') + '复制', 'secondary') : ''}${EDITABLE_KINDS.includes(m.kind) ? btn('edit', icon('edit') + '编辑', 'secondary') : ''}</div>
-      <div class="actions">${canRecall ? btn('recall', icon('undo') + '撤回', 'secondary') : ''}${btn('pick-delete', icon('check') + '多选删除', 'secondary')}${btn('delete', icon('trash') + '删除', 'danger')}</div>
-      ${last && live ? `<div class="actions">${btn('reroll', icon('refresh') + '重新回复这一轮', 'secondary')}</div>` : ''}`, {
+    const mine = m.reactions?.find(r => r.from === 'me')?.emoji || '';
+    const d = sheet('消息', `${thread.watch ? '' : `<div class="react-row" role="group" aria-label="回应">${REACTIONS.map(e => `<button type="button" data-action="react" data-emoji="${e}" aria-pressed="${mine === e}" aria-label="回应 ${e}">${e}</button>`).join('')}</div>`}${voice ? '' : `<p class="help-copy">${esc(shown)}</p>`}
+      ${voice ? `<div class="actions">${btn('transcribe', icon('book') + (open ? '收起文字' : '转文字'), 'primary')}${btn('download', icon('download') + '下载语音', 'secondary')}${ctx.routeFor(m.from)?.voice ? btn('retake', icon('refresh') + '重新配音', 'secondary') : ''}${canShareFiles(ctx.win) ? btn('share', icon('share') + '分享', 'secondary') : ''}</div>` : ''}
+      <div class="actions">${quotable(m) && !thread.watch ? btn('quote', icon('reply') + '引用', 'secondary') : ''}${copyable ? btn('copy', icon('copy') + '复制', 'secondary') : ''}${EDITABLE_KINDS.includes(m.kind) ? btn('edit', icon('edit') + '编辑', 'secondary') : ''}</div>
+      <div class="actions">${canRecall ? btn('recall', icon('undo') + '撤回', 'secondary') : ''}${btn('pick-delete', icon('check') + '多选', 'secondary')}${btn('delete', icon('trash') + '删除', 'danger')}</div>
+      ${last && live && !thread.watch ? `<div class="actions">${btn('reroll', icon('refresh') + '重新回复这一轮', 'secondary')}</div>` : ''}`, {
+      react: async b => { d.close(); await api.updateChatMessage(threadId, m.id, {react: {from: 'me', emoji: b.dataset.emoji}}); },
       transcribe: () => {
         d.close();
         if (open && voiceText().auto) { ctx.notify('语音自动转文字开着，可以在右上角「⋯ → 语音消息」里关掉'); return; }
@@ -1202,6 +1678,8 @@ export function chatApp(ctx) {
         render();
       },
       download: async () => { d.close(); const {blob, name} = await api.audioFile({line: lineOf(m)}); ctx.notify('已下载 ' + await saveFile(ctx.doc, blob, name)); },
+      // 重新配音: this message's audio made anew (and played), the rest of the reply as it was.
+      retake: async () => { d.close(); await api.retakeVoice(lineOf(m)); },
       share: async () => { d.close(); const {blob, name} = await api.audioFile({line: lineOf(m)}); await shareFile(ctx.doc, blob, name); },
       quote: () => { d.close(); quote = {from: m.from, text: quoteText(m).slice(0, 200)}; panel = null; render(); },
       edit: () => { d.close(); editMessage(m); },
@@ -1242,9 +1720,10 @@ export function chatApp(ctx) {
     requestReply();
   }
   /** 发起私聊: one row per contact; 发起群聊 (group): tick who comes in, a name if wanted. */
-  function newChat(group = false) {
+  /** watch (0.9.35): a 旁观群 — the user picks who is in it and only looks on; they start talking at once. */
+  function newChat(group = false, watch = false) {
     const contacts = api.chatContacts();
-    const d = ctx.dialog(group ? '发起群聊' : '发起私聊', !contacts.length
+    const d = ctx.dialog(watch ? '拉一个旁观群' : group ? '发起群聊' : '发起私聊', !contacts.length
       ? `<p class="help-copy">还没有联系人。在角色 App 里新增角色，或者手动添加一个联系人。</p><div class="actions">${btn('manage-contacts', icon('add') + '添加联系人', 'primary')}</div>`
       : group
       ? `<div class="pick-list">${contacts.map(c => `<label class="setting-row"><span>${avatar(c.name, c.engine, 28)}${esc(shown(c.name))}</span><input class="switch" type="checkbox" data-member="${esc(c.name)}" aria-label="拉 ${esc(c.name)} 进群"></label>`).join('')}</div>
@@ -1261,8 +1740,9 @@ export function chatApp(ctx) {
         }
         if (b.dataset.action === 'create-group') {
           const members = [...d.body.querySelectorAll('[data-member]:checked')].map(x => x.dataset.member);
-          const t = await api.createThread({type: 'group', members, name: d.body.querySelector('[data-field=group-name]').value});
+          const t = await api.createThread({type: 'group', members, name: d.body.querySelector('[data-field=group-name]').value, ...(watch ? {watch: true} : {})});
           d.close(); open(t.id);
+          if (watch) requestReply(t.id);
         }
         if (b.dataset.action === 'manage-contacts') { d.close(); mode = 'list'; tab = 'contacts'; contactDraft = null; render(); }
       }).catch(error => ctx.notify(error.message));
@@ -1372,12 +1852,13 @@ export function chatApp(ctx) {
     const draw = () => `<div class="setting-row"><span>角色自己打来${help('角色可以给你打语音电话：接通后用 TA 的音色说话，你打字回。打开这里后，每隔几条正文回复，角色可能会自己打来；不打开时，聊天里角色偶尔也会直接打过来（聊天预设的「打电话」规则）。每句话都要调用一次模型并生成语音。')}</span><input class="switch" type="checkbox" data-field="call-auto" aria-label="角色自己打来" ${o().auto ? 'checked' : ''}></div>
       <div class="field"><span>每几条正文回复可能打来一次</span><input data-field="call-every" type="number" min="1" max="100" value="${o().every}"></div>
       <div class="field"><span>每天最多</span><input data-field="call-dailyMax" type="number" min="1" max="10" value="${o().dailyMax}"></div>
-      <div class="field"><span>响铃多久算未接（秒）</span><input data-field="call-ring" type="number" min="15" max="60" value="${o().ring}"></div>`;
+      <div class="field"><span>响铃多久算未接（秒）</span><input data-field="call-ring" type="number" min="15" max="60" value="${o().ring}"></div>
+      <div class="setting-row"><span class="switch-label">通话声音像听筒${help('打开时，通话里的声音过一遍电话的窄频，像从听筒里传出来；关掉就是原本的声音，和语音缓存里的一样。')}</span><input class="switch" type="checkbox" data-field="call-effect" aria-label="通话声音像听筒" ${o().effect !== false ? 'checked' : ''}></div>`;
     const d = sheet('来电', `<div class="calls-body">${draw()}</div>`, {});
     d.body.addEventListener('change', e => {
       const key = e.target.dataset.field?.replace(/^call-/, '');
       if (!key) return;
-      try { api.saveCalls({[key]: key === 'auto' ? e.target.checked : Number(e.target.value)}); d.body.querySelector('.calls-body').innerHTML = draw(); } catch (error) { ctx.notify(error.message); }
+      try { api.saveCalls({[key]: key === 'auto' || key === 'effect' ? e.target.checked : Number(e.target.value)}); d.body.querySelector('.calls-body').innerHTML = draw(); } catch (error) { ctx.notify(error.message); }
     });
   }
   /** 主动发消息: characters text the user from the story, and (if wanted) now and then on their own. */
@@ -1417,13 +1898,13 @@ export function chatApp(ctx) {
   function plusMenu() {
     const d = ctx.dialog('发起', `<div class="pick-list">
       <button class="list-row" data-menu="chat">${icon('chat')}<span><strong>发起私聊</strong></span></button>
-      ${api.chatContacts().length > 1 ? `<button class="list-row" data-menu="group">${icon('group')}<span><strong>发起群聊</strong></span></button>` : ''}
+      ${api.chatContacts().length > 1 ? `<button class="list-row" data-menu="group">${icon('group')}<span><strong>发起群聊</strong></span></button><button class="list-row" data-menu="watch">${icon('eye')}<span><strong>拉一个旁观群</strong><small>你不在群里，只看他们聊</small></span></button>` : ''}
       <button class="list-row" data-menu="contact">${icon('person')}<span><strong>添加联系人</strong><small>剧情之外的人，写上人设就能聊</small></span></button></div>`);
     d.body.addEventListener('click', e => {
       const action = e.target.closest('[data-menu]')?.dataset.menu;
       if (!action) return;
       d.close();
-      if (action === 'chat' || action === 'group') newChat(action === 'group');
+      if (action === 'chat' || action === 'group' || action === 'watch') newChat(action !== 'chat', action === 'watch');
       if (action === 'contact') { contactDraft = {name: '', persona: ''}; mode = 'contact-edit'; render(); }
     });
   }
@@ -1450,7 +1931,7 @@ export function chatApp(ctx) {
   function threadMenu() {
     const group = thread.type === 'group';
     const d = ctx.dialog(thread.name, `<div class="pick-list">
-      ${live ? `<button class="list-row" data-menu="reroll">${icon('refresh')}<span><strong>重新回复最后一轮</strong></span></button>` : ''}
+      ${live && !thread.watch ? `<button class="list-row" data-menu="reroll">${icon('refresh')}<span><strong>重新回复最后一轮</strong></span></button>` : ''}
       ${group ? `<button class="list-row" data-menu="rename">${icon('edit')}<span><strong>改群名</strong></span></button><button class="list-row" data-menu="group-avatar">${icon('image')}<span><strong>换群头像</strong><small>从相册选一张或上传，也可以换回成员拼的头像</small></span></button>` : ''}
       <button class="list-row" data-menu="windows">${icon('layers')}<span><strong>聊天窗口</strong><small>${group ? '这个群' : '和' + esc(shown(thread.members[0]))}开好几个聊天，切换、新开、删除</small></span></button>
       <button class="list-row" data-menu="memory">${icon('book')}<span><strong>记忆</strong><small>更早的聊天整理成的摘要和总结，可以改</small></span></button>
@@ -1514,7 +1995,7 @@ export function chatApp(ctx) {
   });
   v.on('change', '[data-field^=me-]', el => {
     const key = el.dataset.field.slice(3);
-    try { api.saveChatOptions({profile: {[key]: el.value}}); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
+    try { api.saveChatOptions({profile: {[key]: el.type === 'checkbox' ? el.checked : el.value}}); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
   });
   // Long-press (or right-click) a conversation for 置顶 and 免打扰.
   let convPress = null, convPressedAt = 0;
@@ -1618,11 +2099,13 @@ export function chatApp(ctx) {
     if (action === 'open' && el.dataset.conv && Date.now() - convPressedAt < 700) return;
     // The click that ends a long-press only closes the press, it does not play or open anything.
     if (Date.now() - pressedAt < 700 && el.closest('.msg')) return;
-    if (selecting && ['message', 'voice', 'photo', 'packet', 'transfer', 'gift'].includes(action)) return;
+    if (selecting && ['message', 'voice', 'photo', 'packet', 'transfer', 'gift', 'react-chip', 'peek', 'forward-open', 'game-vote', 'game-end', 'game-choice', 'game-again', 'game-chain'].includes(action)) return;
     const find = () => thread.messages.find(x => x.id === el.dataset.mid);
     switch (action) {
       case 'tab': {
         if (tab !== el.dataset.tab) { v.root.dataset.switching = el.dataset.tab; ctx.win.clearTimeout(switchTimer); switchTimer = ctx.win.setTimeout(() => delete v.root.dataset.switching, 420); }
+        // The tab lights up at once; the page follows when it is read.
+        for (const b of v.root.querySelectorAll('.qq-tabs [data-tab]')) b.setAttribute('aria-pressed', String(b === el));
         tab = el.dataset.tab; search = ''; if (tab === 'moments') moments.only(''); v.root.scrollTop = 0; render(); break;
       }
       case 'open-hit': await open(el.dataset.id, el.dataset.mid); break;
@@ -1733,6 +2216,9 @@ export function chatApp(ctx) {
         render();
         break;
       }
+      case 'role-stickers': roleStickersSheet(profileOf); break;
+      // 聊天气泡 of this person: a set of 自定义气泡, or as the user's.
+      case 'person-look': personLookSheet(profileOf); break;
       case 'send': await send(); break;
       case 'stop-reply': api.chatCancel?.(threadId); break;
       // Another version of the last round: it shows at once (no typing dots for words already written).
@@ -1750,7 +2236,7 @@ export function chatApp(ctx) {
       case 'panel-stickers': panel = 'stickers'; syncPanel(); break;
       case 'sticker-send': {
         const s = (api.getState().chat.stickers || []).find(x => x.name === el.dataset.name);
-        if (s) await post([{from: 'me', kind: 'sticker', text: s.name, url: s.url}]);
+        if (s) await post([{from: 'me', kind: 'sticker', text: s.name, ...(s.photoId ? {photoId: s.photoId} : {url: s.url})}]);
         break;
       }
       case 'stickers-manage': manageStickers(); break;
@@ -1772,6 +2258,43 @@ export function chatApp(ctx) {
       case 'tool-page': { const box = el.closest('.chat-panel')?.querySelector('.tool-pages'); box?.scrollTo({left: Number(el.dataset.page) * box.clientWidth, behavior: 'smooth'}); break; }
       case 'tool-pat': panel = null; syncPanel(); await choosePat(); break;
       case 'tool-dice': panel = null; syncPanel(); await rollDice(); break;
+      case 'tool-game': panel = null; syncPanel(); gameSheet(); break;
+      case 'tool-play': panel = null; syncPanel(); playSheet(); break;
+      // 消息回应 chips: the user's own on or off.
+      case 'react-chip': await api.updateChatMessage(threadId, el.dataset.mid, {react: {from: 'me', emoji: el.dataset.emoji}}); break;
+      // A contact's recall: peeked at here (they never know).
+      case 'peek': { const id = el.dataset.mid; if (peeked.has(id)) peeked.delete(id); else peeked.add(id); render(); break; }
+      case 'game-vote': {
+        const m = find(), g = m?.game;
+        if (!g?.open) break;
+        const i = Number(el.dataset.i), mine = g.votes.find(x => x.from === 'me')?.option;
+        await api.updateChatMessage(threadId, m.id, {game: {votes: [...g.votes.filter(x => x.from !== 'me'), ...(mine === i ? [] : [{from: 'me', option: i}])]}});
+        break;
+      }
+      case 'game-end': { const m = find(); if (m?.game?.open) await api.updateChatMessage(threadId, m.id, {game: {open: false}}); break; }
+      case 'game-choice': {
+        const m = find();
+        if (!m || m.game?.choice) break;
+        await api.updateChatMessage(threadId, m.id, {game: {choice: el.dataset.choice}});
+        await post([{from: 'me', kind: 'text', text: `我选${el.dataset.choice}！`}]);
+        requestReply();
+        break;
+      }
+      case 'game-again': await spin(); break;
+      case 'game-chain': { const m = find(); if (m?.game?.open) chainLine(m); break; }
+      // 小游戏对战 (0.9.35): the user's move, then the other one answers (and moves).
+      case 'board-cell': {
+        const m = find(), g = m?.game, at = Number(el.dataset.at);
+        if (!g?.open || g.turn !== 'me' || typing() || cellsOf(g)[at]) break;
+        await api.updateChatMessage(threadId, m.id, {game: {moves: [...g.moves, {by: 'me', at}]}});
+        requestReply();
+        break;
+      }
+      case 'board-resign': { const m = find(); if (m?.game?.open && await ctx.confirm('认输？', '这一盘算你输。')) { await api.updateChatMessage(threadId, m.id, {game: {resigned: 'me'}}); requestReply(); } break; }
+      case 'board-again': { const g = find()?.game; if (g && BOARDS[g.type]) await startBoard(g.type, g.first === 'me' ? g.them : 'me'); break; }
+      case 'post-open': { const m = find(); if (m?.post?.id) ctx.openForumPost?.(m.post.id); else if (m) messageMenu(m); break; }
+      case 'outfit-open': { const m = find(); if (m) outfitSheet(m); break; }
+      case 'watch-talk': requestReply(); break;
       case 'quote-off': quote = null; render(); break;
       case 're-edit': {
         const text = recalled.get(el.dataset.mid) || '';
@@ -1828,6 +2351,9 @@ export function chatApp(ctx) {
         render();
         break;
       }
+      case 'forward-go': await forwardPicked(); break;
+      case 'image-go': await v.busy(el, longImage); break;
+      case 'forward-open': { const m = find(); if (m) forwardSheet(m); break; }
       case 'delete-go': {
         const picked = thread.messages.map((m, i) => selecting.has(m.id) ? i : -1).filter(i => i >= 0);
         if (!picked.length) break;

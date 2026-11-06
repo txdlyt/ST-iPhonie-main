@@ -57,7 +57,8 @@ import { makeThumb, makePreview, packPicture } from './thumbnail.js';
 import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js';
 import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
-import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive } from './chat.js';
+import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
+import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked } from './chat.js';
 import { ChatStore, money, currentDm, searchThreads } from './chats.js';
 import { DrawQueue } from './draw-queue.js';
 import { CloudQueue, KeyHashQueue, newRoomCode, validRoom, sha256Hex } from './cloud-queue.js';
@@ -1885,8 +1886,65 @@ export class TTSBackend {
             for (const [name, other] of Object.entries(patch[key])) { if (other) merged[name] = other; else delete merged[name]; }
             next.chat[key] = normalizeNames(merged, key === 'remarks' ? 20 : 30);
         }
+        // bubbleOf: {person: set id | null} — whose 自定义气泡 is whose (null: as the user's).
+        if (patch?.bubbleOf && typeof patch.bubbleOf === 'object') {
+            const merged = { ...next.chat.bubbleOf };
+            for (const [who, id] of Object.entries(patch.bubbleOf)) { if (id && next.chat.bubbleSets.some(s => s.id === id)) merged[who] = id; else delete merged[who]; }
+            next.chat.bubbleOf = normalizeBubbleOf(merged);
+        }
+        // bgOf: {person's own key: background | 'photo:<id>' | null} — 每个人的聊天背景 (a shop one only once bought).
+        if (patch?.bgOf && typeof patch.bgOf === 'object') {
+            const merged = { ...next.chat.bgOf };
+            for (const [who, bg] of Object.entries(patch.bgOf)) {
+                if (!bg) { delete merged[who]; continue; }
+                if (premiumOf('background', bg) && !next.chat.wallet.owned.includes(decorKey('background', bg))) throw Error('这件装扮还没买：先在商城里买下');
+                merged[who] = bg;
+            }
+            next.chat.bgOf = normalizeBgOf(merged);
+        }
+        // roleStickers: {role's own key: [{name, photoId}] | null} — 角色专属表情包.
+        if (patch?.roleStickers && typeof patch.roleStickers === 'object') {
+            const merged = { ...next.chat.roleStickers };
+            for (const [who, list] of Object.entries(patch.roleStickers)) { if (Array.isArray(list) && list.length) merged[who] = list; else delete merged[who]; }
+            next.chat.roleStickers = normalizeRoleStickers(merged);
+        }
+        // statusOf (0.9.35, 状态和签名): {person's own key: {status, text} | {signature} | null} — what they set (with when),
+        // merged into what they had; null takes it all away.
+        if (patch?.statusOf && typeof patch.statusOf === 'object') {
+            const merged = { ...next.chat.statusOf }, now = Date.now();
+            for (const [who, s] of Object.entries(patch.statusOf)) {
+                if (!s) { delete merged[who]; continue; }
+                const had = merged[who] || {};
+                merged[who] = { ...had, ...('status' in s ? { status: s.status, text: s.text || '', at: now } : {}), ...('signature' in s ? { signature: s.signature, signAt: now } : {}) };
+            }
+            next.chat.statusOf = normalizeStatusOf(merged);
+        }
+        // peeked (0.9.35, 查手机 × 聊天): {person's own key: {at, what} | null}.
+        if (patch?.peeked && typeof patch.peeked === 'object') {
+            const merged = { ...next.chat.peeked };
+            for (const [who, v] of Object.entries(patch.peeked)) { if (v) merged[who] = v; else delete merged[who]; }
+            next.chat.peeked = normalizePeeked(merged);
+        }
         // avatars: {name: choice | null}; null goes back to the tavern's avatar (or the first letter).
         if (patch?.avatars && typeof patch.avatars === 'object') { const merged = { ...next.chat.avatars }; for (const [name, a] of Object.entries(patch.avatars)) { if (a) merged[name] = a; else delete merged[name]; } next.chat.avatars = normalizeAvatars(merged); }
+        return this.save(next).chat;
+    }
+    /** 自定义气泡: a set new or changed (by its id); answers it as kept. */
+    saveBubbleSet(set) {
+        if (!set || typeof set !== 'object') throw Error('气泡格式无效');
+        const next = this.getState(), list = next.chat.bubbleSets, at = list.findIndex(s => s.id === set.id);
+        if (at < 0 && list.length >= BUBBLE_LIMITS.sets) throw Error(`最多存 ${BUBBLE_LIMITS.sets} 套气泡`);
+        const kept = normalizeBubbleSet({ ...(at >= 0 ? list[at] : {}), ...set, ...(at >= 0 ? {} : { id: set.id }) });
+        next.chat.bubbleSets = normalizeBubbleSets(at >= 0 ? list.map((s, i) => i === at ? kept : s) : [...list, kept]);
+        if (!next.chat.bubbleSets.some(s => s.id === kept.id)) throw Error('气泡太多太长了：删掉几套再存');
+        return clone(this.save(next).chat.bubbleSets.find(s => s.id === kept.id));
+    }
+    /** A set taken away: whoever wore it goes back to the default (the user) or to the user's (a person). */
+    deleteBubbleSet(id) {
+        const next = this.getState();
+        next.chat.bubbleSets = next.chat.bubbleSets.filter(s => s.id !== id);
+        next.chat.bubbleOf = Object.fromEntries(Object.entries(next.chat.bubbleOf).filter(([, v]) => v !== id));
+        if (next.chat.profile.bubble === 'custom:' + id) next.chat.profile = normalizeProfile({ ...next.chat.profile, bubble: 'default' });
         return this.save(next).chat;
     }
     deleteContact(id) {
@@ -1920,7 +1978,7 @@ export class TTSBackend {
     }
     /** 来电 options: {auto, every, dailyMax, ring}. */
     saveCalls(patch) {
-        const next = this.getState(), allowed = ['auto', 'every', 'dailyMax', 'ring'];
+        const next = this.getState(), allowed = ['auto', 'every', 'dailyMax', 'ring', 'effect'];
         next.calls = normalizeCalls({ ...next.calls, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
         return this.save(next).calls;
     }
@@ -3333,6 +3391,13 @@ export class TTSBackend {
         this.emit('chat', { threadId: id });
         return saved;
     }
+    /** 重新配音 of a voice message: its kept audio is let go (core/player.js retake), then it plays, made anew. */
+    async retakeVoice(line) {
+        const one = { role: line?.role, emotion: line?.emotion || 'calm', text: line?.text, translation: line?.translation || '' };
+        if (!one.role || !one.text) throw Error('这条语音没有内容');
+        await this.player.retake(one);
+        return this.speak(one);
+    }
     /** Plays one voice message through the normal player (cache, favourites and the island all work). */
     speak(line) {
         const lines = (Array.isArray(line) ? line : [line]).filter(l => l?.role && l.text);
@@ -3826,12 +3891,15 @@ export class TTSBackend {
             // 查手机: the open card's snapshot of a person, else the shared one from before 分区.
             listPeeks: async () => { const here = this.here(); return (await this.apps.list('peek')).filter(p => inSpace(p, here)); },
             getPeek: async name => (await this.apps.get(peekId(name, this.spaceKey()))) || (this.spaceKey() ? this.apps.get(peekId(name)) : null),
+            /** 查手机 × 聊天 (0.9.35): the user looked into this one's phone (what: the parts opened); the next private chat is told. */
+            markPeeked: (name, what = '') => { const who = String(name || '').trim(); if (!who) return false; this.saveChatOptions({ peeked: { [roleStore(findRoute(this.seen.routes, who)) || who]: { at: Date.now(), what: String(what || '').slice(0, 60) } } }); this.emit('peeked', { name: who }); return true; },
             deletePeek: name => this.appsMutate('peek', async () => { await this.apps.remove(peekId(name, this.spaceKey())); if (this.spaceKey()) await this.apps.remove(peekId(name)); this.noteGone('peek', [peekId(name, this.spaceKey()), peekId(name)]); return true; }),
             /** 分区: the card open now ({key, name}) and whether 分区 is on. */
             phoneSpace: () => ({ ...clone(this.space), on: !!this.here() }),
             saveChatPreset: preset => this.saveChatPreset(preset), deleteChatPreset: id => this.deleteChatPreset(id), selectChatPreset: id => this.selectChatPreset(id),
             previewChatPrompt: preset => this.previewChatPrompt(preset), validateChatPreset: preset => { try { validateChatPreset(normalizeChatPreset(clone(preset))); return ''; } catch (error) { return message(error); } },
             saveChatOptions: patch => this.saveChatOptions(clone(patch)),
+            saveBubbleSet: set => this.saveBubbleSet(clone(set)), deleteBubbleSet: id => this.deleteBubbleSet(String(id || '')),
             wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
             sendPaid: (threadId, message) => this.sendPaid(threadId, message), takeSent: (threadId, messageId, accept) => this.takeSent(threadId, messageId, accept !== false),
             shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.seen) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
@@ -3858,7 +3926,7 @@ export class TTSBackend {
             updateChatMessage: (id, messageId, patch) => this.chatMutate(id, () => this.chats.updateMessage(id, messageId, clone(patch || {}))),
             markThreadRead: id => this.chatMutate(id, () => this.chats.markRead(id)),
             chatShowVersion: (id, index) => this.chatShowVersion(id, index),
-            speak: line => this.speak(clone(line)), voiceFormat: () => this.voiceFormat(),
+            speak: line => this.speak(clone(line)), retakeVoice: line => this.retakeVoice(clone(line)), voiceFormat: () => this.voiceFormat(),
         };
         return Object.freeze({ apiVersion: BACKEND_API_VERSION, defaultPrompt: DEFAULT_PROMPT, defaultFormat: DEFAULT_FORMAT,
             picTagFormat: PIC_TAG_FORMAT, defaultDrawRule: DEFAULT_DRAW_RULE, drawCountMax: DRAW_COUNT_MAX, defaultChatPreset: Object.freeze((({ id, ...rest }) => rest)(defaultChat().presets[0])),

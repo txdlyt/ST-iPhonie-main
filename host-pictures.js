@@ -316,7 +316,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
         }
       }
       if (!voiced && !pictured && wantPictures && !wantVoice && noneOk(s.draw) && !force) { notice('这条回复没有值得画的画面'); return {voiced: 0, pictured: 0}; }
-      if (!voiced && !pictured) throw Error(wantVoice ? '这次没有配上音，可以在小手机的「设置 → 正文 → 正文语音」里点「给最新回复配音」再试一次' : '这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
+      if (!voiced && !pictured) throw Error(wantVoice ? '这次没有配上音，可以点这层楼右边的小手机工具按钮「给这层楼配音」再试一次' : '这次没有挑出画面（试了两次），可以点这层楼右边的小手机工具按钮「给这层楼生图」再试；模型具体回了什么可以在小手机的「日志」App 里看');
       message.mes = text;
       if (Array.isArray(message.swipes)) message.swipes[message.swipe_id ?? 0] = text;
       await ctx.saveChat();
@@ -325,7 +325,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (sent) phone.deliver(id).catch(() => {});
       // The lines are in now: 提前生成 can make them.
       if (voiced) lined(id);
-      if (wantVoice && !voiced) notice('画面挑好了，台词这次没配上，可以在「设置 → 正文 → 正文语音」里点「给最新回复配音」');
+      if (wantVoice && !voiced) notice('画面挑好了，台词这次没配上，可以点这层楼右边的小手机工具按钮「给这层楼配音」');
       if (wantPictures && !pictured && !(noneOk(s.draw) && !force)) notice('台词配好了，画面这次没挑出来，可以在「设置 → 正文 → 正文出图」里点「给最新回复配图」');
       return {voiced, pictured};
     } finally { planning.delete(id); }
@@ -692,30 +692,25 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     }
     throw Error('聊天里还没有角色的回复');
   }
-  /** The newest reply from a character: voice its lines again (回复后单独配音), replacing the ones there. */
+  /** A reply from a character (给这层楼配音): voice its lines again with 回复后单独配音's request, replacing the ones there. */
+  async function voiceMessage(id) {
+    const m = context().chat[id];
+    if (!m || m.is_user || m.is_system) throw Error('这层楼不是角色的回复');
+    if (!voice) throw Error('配音没有开');
+    const was = m.mes;
+    if (voice.has(m.mes)) m.mes = voice.strip(m.mes);
+    // The lines go back as they were when nothing new could be put in.
+    try { const {voiced} = await planReply(id, {voiced: true, pictured: false}); return voiced; } catch (error) { if (context().chat[id] === m) m.mes = was; throw error; }
+  }
+  /** The newest reply from a character: voice its lines again (设置 → 正文 → 正文语音 → 给最新回复配音). */
   async function voiceLatest() {
     const chat = context().chat;
     for (let id = chat.length - 1; id >= 0; id--) {
       const m = chat[id];
       if (!m || m.is_user || m.is_system) continue;
-      if (!voice) throw Error('配音没有开');
-      const was = m.mes;
-      if (voice.has(m.mes)) m.mes = voice.strip(m.mes);
-      // The lines go back as they were when nothing new could be put in.
-      try { const {voiced} = await planReply(id, {voiced: true, pictured: false}); return voiced; } catch (error) { if (context().chat[id] === m) m.mes = was; throw error; }
+      return voiceMessage(id);
     }
     throw Error('聊天里还没有角色的回复');
-  }
-
-  /** 给这层楼配音: one floor's reply voiced (回复后单独配音), the lines there replaced; it works for any floor, not only the newest. */
-  async function voiceMessage(id) {
-    const m = context().chat[id];
-    if (!storyReply(m)) throw Error('找不到这层楼的回复');
-    if (!voice) throw Error('配音没有开');
-    const was = m.mes;
-    if (voice.has(m.mes)) m.mes = voice.strip(m.mes);
-    // The lines go back as they were when nothing new could be put in.
-    try { const {voiced} = await planReply(id, {voiced: true, pictured: false}); notice(voiced ? '已给这层楼配好音' : '这层楼没有可配音的台词'); return voiced; } catch (error) { if (context().chat[id] === m) m.mes = was; throw error; }
   }
 
   async function drawMessage(id) {
@@ -729,5 +724,5 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const permission = await allowed(true); if (!permission) return;
     for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {drawFor, tagText, drawMessage, voiceMessage, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {drawFor, tagText, drawMessage, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }
