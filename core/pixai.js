@@ -18,6 +18,9 @@ export function normalizePixai(value) {
 }
 
 /** The NovelAI client of this engine: no NovelAI host, and no key is fine (the bridge may not ask for one). */
+/** What a proxy or gateway in front of the bridge says when it gives up waiting: the bridge may still be drawing, and have drawn it. */
+export const PIXAI_CUT = new Set([408, 502, 503, 504, 520, 521, 522, 523, 524]);
+
 export class PixaiClient extends NovelAIClient {
   get configured() { return !!this.relay; }
   headers() {
@@ -31,6 +34,7 @@ export class PixaiClient extends NovelAIClient {
     catch (error) {
       // 410: asked to only fetch a picture (bridge_batch.recover) the bridge no longer has: it was not drawn again.
       if (error?.status === 410) throw Object.assign(Error('PixAI 反代里已经没有这张图了（超过 10 分钟，或反代重启过）。点「重试」会重新画一张，会再扣一次积分'), {status: 410, code: 'PIXAI_EXPIRED'});
+      if (PIXAI_CUT.has(error?.status)) throw Object.assign(Error(`连接在 PixAI 出图途中被切断了（${error.status}，多半是反代前面的 nginx / Cloudflare / 酒馆转发等得太久）。图可能已经画好了：点「重新获取」取回，不会重画`), {status: error.status, cut: true});
       // The client is NovelAI's: what it says about "NovelAI" is about this engine here.
       if (error && typeof error.message === 'string') error.message = error.message.replace(/NovelAI/g, PIXAI_NAME);
       throw error;

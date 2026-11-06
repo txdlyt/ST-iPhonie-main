@@ -1733,7 +1733,7 @@ export class TTSBackend {
                 catch (error) {
                     // Kept only when no answer came (cut, reloaded, unreadable): the bridge may have drawn it. An answer that
                     // says no, a stop, or "no longer here" means asking again must draw anew.
-                    if (engine === 'pixai' && (error?.cancelled || error?.status > 0 || error?.code === 'PIXAI_EXPIRED')) this.#pixaiDrop(key);
+                    if (engine === 'pixai' && (error?.cancelled || (error?.status > 0 && !error.cut) || error?.code === 'PIXAI_EXPIRED')) this.#pixaiDrop(key);
                     throw error;
                 }
                 if (engine === 'pixai') this.#pixaiDrop(key);
