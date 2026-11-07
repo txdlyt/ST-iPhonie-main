@@ -104,7 +104,8 @@ export function drawApp(ctx) {
   }
   function costChip(q) {
     const e = eng();
-    if (!api.drawReady()) return `<span class="chip" data-engine="none">${e === 'comfy' || e === 'pixai' ? '未填地址' : '未填密钥'}</span>`;
+    // (The banner above already says the key or address is missing: no chip repeating it, 0.9.39.)
+    if (!api.drawReady()) return '';
     if (e === 'gpt') return `<span class="chip${q.free === false ? ' warn' : ''}">${icon('alert')}每张都要花钱${q.free === false ? '' : ' · 不先问'}</span>`;
     if (e === 'comfy') return `<span class="chip">ComfyUI</span>`;
     if (e === 'pixai') {

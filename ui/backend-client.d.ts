@@ -377,7 +377,7 @@ export interface CallState { id: number; name: string; dir: 'in' | 'out'; state:
     ended: { state: 'answered' | 'missed' | 'declined' | 'cancelled'; by: string; duration: number } | null; }
 export interface CallsSettings { auto: boolean; every: number; dailyMax: number; ring: number; }
 /** 音效: volumes 0..1; vary: each playing a little different; generate: missing sounds made by ElevenLabs, at most `versions` of a name. */
-export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; }
+export interface SoundSettings { anchors?: boolean; enabled: boolean; ambienceVolume: number; sfxVolume: number; vary: boolean; generate: boolean; versions: number; /** 自带音效包 in use */ pack: boolean; /** shipped sounds taken out */ packHidden: string[]; /** 「ElevenLabs 做一个声音」 as last used (0.9.37) */ make: { model: 'v3' | 'v2'; loop: boolean; seconds: number; influence: number; rewrite: boolean; count: number; format: 'mp3' | 'mp3hq' | 'wav' }; }
 /** A sound in the library (no audio): an ambience is a 底子 (bed, loops) or a 点缀 (dot, now and then). */
 export interface TaggerSettings { url: string; threshold: number; }
 export interface TagResult { model?: string; threshold: number; english_tags: string; tags: Array<{ tag: string; category: 'general' | 'character' | 'rating' | 'other'; confidence: number; zh: string }>; }
@@ -1032,6 +1032,10 @@ export interface BackendFacade {
     dismissMissing(type: 'sfx' | 'ambience', name: string): Promise<void>;
     /** ElevenLabs makes the sound from an English description and it is kept. */
     generateSound(input: { name: string; type: 'sfx' | 'ambience'; describe: string }): Promise<SoundRow>;
+    /** 「ElevenLabs 做一个声音」 (0.9.37): one take, not kept. model 'v3' | 'v2'; seconds 0: automatic; format 'mp3' | 'mp3hq' | 'wav'. */
+    makeSoundTake(input: { text: string; model?: 'v3' | 'v2'; loop?: boolean; seconds?: number; influence?: number; format?: 'mp3' | 'mp3hq' | 'wav' }): Promise<{ blob: Blob; cost: number | null; text: string }>;
+    /** A take kept: into the library as an ElevenLabs sound. */
+    keepSoundTake(input: { name: string; type?: 'sfx' | 'ambience'; layer?: 'bed' | 'dot'; describe?: string; blob: Blob }): Promise<SoundRow>;
     /** 音效包 (JSON) of these sounds, all when none. */
     exportSounds(ids?: string[] | null, name?: string): Promise<Blob>;
     importSounds(file: Blob | string, options?: { source?: 'pack' | 'mine' | 'eleven' }): Promise<{ added: number; skipped: number; name: string }>;
@@ -1115,6 +1119,8 @@ export interface BackendFacade {
     /** 钱包 and 商城. */
     wallet(): Wallet;
     /** Buys a decoration once (paid from the wallet; too little left: an error with code 'BROKE'). */
+    /** 宠物 (0.9.36): food from the 商城 paid with 零钱 (1–10 at a time); answers the pets as they are after. */
+    buyPetFood(key: string, count?: number): unknown;
     buyDecoration(kind: 'bubble' | 'frame' | 'background', key: string): Wallet;
     saveGift(gift: Partial<ShopGift>): ShopGift;
     deleteGift(id: string): Wallet;
@@ -1128,6 +1134,7 @@ export interface BackendFacade {
         /** 角色专属表情包: a role's own key → their stickers (null or []: none) */ roleStickers?: Record<string, { name: string; photoId: string }[] | null>;
         /** 状态和签名 (0.9.35): a person's own key → what they set (merged; null takes it away) */ statusOf?: Record<string, { status?: string; text?: string; signature?: string } | null>;
         /** 查手机 × 聊天 (0.9.35): a person's own key → when the user looked into their phone (null: told) */ peeked?: Record<string, { at: number; what?: string } | null>;
+        /** 0.9.36: 自动回复; 拍一拍后缀 by a person's own key (null: none); the pets as a whole */ autoReply?: boolean; patOf?: Record<string, string | null>; pets?: unknown;
         proactive?: { on?: boolean; every?: number; dailyMax?: number; /** 按现实时间主动找你 */ clock?: boolean } }): ChatSettings;
     /** 自定义气泡: a set new or changed (by id); a set taken away takes back whoever wore it. */
     saveBubbleSet(set: Partial<BubbleSet> & { me?: string; them?: string }): BubbleSet;
@@ -1363,7 +1370,18 @@ export interface BackendAPI extends BackendFacade {
     peekDraw(name: string, index: number | 'wallpaper', allowPaid?: boolean): Promise<string>;
     /** The World Info books turned on now (global, character, chat, persona) with their entries that are on, for picking
      *  what the phone leaves out. Entry ids are "book#uid". */
-    loreBooks(): Promise<Array<{ name: string; from: string[]; entries: Array<{ id: string; title: string; keys: string[]; constant: boolean; preview: string }> }>>;
+    /** extra: books the phone alone reads (listed with from 只给手机 when the tavern has them off). */
+    loreBooks(options?: { extra?: string[] }): Promise<Array<{ name: string; from: string[]; entries: Array<{ id: string; title: string; keys: string[]; constant: boolean; preview: string }> }>>;
+    /** Every book the tavern has (for picking ones the phone alone reads). */
+    loreNames(): Promise<string[]>;
+    /** 试一句: what the phone's scan takes for a chat (as its next reply would scan it) and a line more, or for a line alone;
+     *  preset: the chat preset being edited (what it leaves out). Each entry not taken says why. */
+    loreTry(input?: { threadId?: string; text?: string; preset?: Partial<ChatPreset> }): Promise<{
+        depth: number; scanned: string[]; budget: { tokens: number; size: number; percent: number; cap: number };
+        kept: Array<{ book: string; title: string; why: string; chars: number }>;
+        over: Array<{ book: string; title: string; why: string; chars: number }>;
+        others: Array<{ book: string; title: string; why: string }>;
+    }>;
     /** On a computer the phone is a floating window beside the story (false when it is full screen). */
     panelFloating(): boolean;
     /** Moves the floating phone by its top bar, in screen coordinates; 'reset' puts it back at the right edge. */

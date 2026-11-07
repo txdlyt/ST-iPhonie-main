@@ -35,6 +35,13 @@ const LOADERS = {
   generator: () => import('./generator.js').then(m => m.generatorApp)
 };
 const FACTORIES = {}, loading = {};
+// After this long without its module, the phone says the tavern is slow (once a page, per app).
+export const SLOW_APP_MS = 8000;
+/** Says once, after ms, that what is waited for is still coming, if check() says it still is. Returns a cancel. */
+export function waitNote(win, ms, check, say) {
+  const timer = win.setTimeout(() => { if (check()) say(); }, ms);
+  return () => win.clearTimeout(timer);
+}
 /** An app's module, once (a load that failed is tried again next time). */
 function loadApp(name) {
   return loading[name] ||= LOADERS[name]().then(factory => (FACTORIES[name] = factory), error => { delete loading[name]; throw error; });
@@ -69,6 +76,8 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   let today = null;
   const media = win.matchMedia('(prefers-color-scheme: dark)'), motion = win.matchMedia('(prefers-reduced-motion: reduce)');
   let panelVisible = true, active = null, locked = false, sheet = null, disposed = false, wanted = null;
+  // Apps whose slow load was already said (once a page).
+  const slowSaid = new Set();
   let clearIcons = new Set(), lastPhase = '', preferences = null, appearanceKey = '', appearanceEpoch = 0, toastTimer, animation, openTimer, unread = 0, unreadTimer, fresh = 0, freshTimer;
   let playback = api.status();
 
@@ -114,8 +123,17 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
     const move = toastMove;
     move.finished.then(() => { if (toastMove !== move) return; el.hidden = true; move.cancel(); toastMove = null; }, () => {});
   }
-  function notify(text, {error = false, tap = null} = {}) {
+  // A message from the JavaScript engine itself (a slip in the phone's code, never anything the player did): said in
+  // words, with the engine's own line kept in the 日志 App, where a tap on the note goes (0.9.39).
+  const INTERNAL = /^(?:[A-Z]\w*Error: )?(?:Cannot (?:read|set|access|convert|destructure|redefine|assign)|[\w.$[\]'"]+ is not (?:a function|defined|iterable|a constructor|an object)|(?:undefined|null) is not|Unexpected (?:token|end|identifier)|Maximum call stack|Failed to execute|Invalid (?:array length|regular expression)|Illegal invocation|Assignment to constant|The (?:provided|object))/;
+  const internalLike = text => typeof text === 'string' && !/[㐀-鿿]/.test(text) && INTERNAL.test(text.trim());
+  const INTERNAL_NOTE = '小手机这里出了点问题，原话记在「日志」App 里了，点一下去看';
+  function notify(text, {error = false, tap = null, logged = false} = {}) {
     if (disposed) return;
+    if (internalLike(text)) {
+      if (!logged) api.reportDiagnostic?.('小手机界面', {message: text});
+      text = INTERNAL_NOTE; tap = () => open('logs'); error = true;
+    }
     if (error) api.noteError?.(text || '操作未完成');
     const el = $('.toast');
     el.innerHTML = `<span class="toast-text">${esc(text || '操作未完成')}</span>${error ? `<button type="button" class="toast-close" data-toast-close aria-label="关闭提示">${icon('close')}</button>` : ''}`;
@@ -141,7 +159,7 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   const fail = error => {
     api.reportDiagnostic?.('小手机界面', error);
     if (error?.code === 'STORAGE_LOST') { const now = Date.now(); if (now - lostAt < 20000) return; lostAt = now; }
-    notify(error?.message, {error: true});
+    notify(error?.message, {error: true, logged: true});
   };
   /** Something brought up to date behind what the user is doing: its failing goes in the log, not over what they just did (a 画风 that saved fine). */
   const quietly = fn => { try { const result = fn(); result?.catch?.(error => api.reportDiagnostic?.('小手机界面', error)); } catch (error) { api.reportDiagnostic?.('小手机界面', error); } };
@@ -355,13 +373,18 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   function open(name, roleId, from = null) {
     if (!LOADERS[name]) return;
     if (!FACTORIES[name]) {
-      // Its module has not come yet (a tap in the first moment after the phone opened): it comes, then the app opens,
-      // unless another was asked for meanwhile. The icon breathes until then.
+      // Its module has not come yet (a tap in the first moment after the phone opened, or a tavern that answers slowly):
+      // it comes, then the app opens, unless another was asked for meanwhile. The icon breathes until then; past a few
+      // seconds the phone says why (a tavern held back by a phone's power saving answers every file slowly).
       wanted = name;
       const mark = from || iconOf(name);
       mark?.setAttribute?.('data-loading', '');
-      loadApp(name).then(() => { mark?.removeAttribute?.('data-loading'); if (wanted !== name || disposed) return; wanted = null; open(name, roleId, from); },
-        error => { mark?.removeAttribute?.('data-loading'); if (wanted !== name || disposed) return; wanted = null; notify('这个 App 没有打开：' + (error?.message || '加载失败'), {error: true}); });
+      const said = slowSaid.has(name) ? () => {} : waitNote(win, SLOW_APP_MS, () => wanted === name && !FACTORIES[name] && !disposed, () => {
+        slowSaid.add(name);
+        notify(`「${APPS[name]?.name || name}」还在下载：酒馆这会儿回得很慢（手机开了省电模式、酒馆在后台被限制时常见）。下载好了会自己打开。`);
+      });
+      loadApp(name).then(() => { said(); mark?.removeAttribute?.('data-loading'); if (wanted !== name || disposed) return; wanted = null; open(name, roleId, from); },
+        error => { said(); mark?.removeAttribute?.('data-loading'); if (wanted !== name || disposed) return; wanted = null; notify('这个 App 没有打开：' + (error?.message || '加载失败'), {error: true}); });
       return;
     }
     wanted = null;
@@ -493,6 +516,8 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
     const idle = fn => win.requestIdleCallback ? win.requestIdleCallback(fn, {timeout: 3000}) : win.setTimeout(fn, 150);
     let i = 0;
     const next = () => {
+      // An app the user is waiting for goes first: on a slow tavern the files queue behind one another.
+      if (wanted && LOADERS[wanted] && !FACTORIES[wanted] && !disposed) { loadApp(wanted).catch(() => {}).finally(() => idle(next)); return; }
       while (i < order.length && FACTORIES[order[i]]) i++;
       if (disposed || i >= order.length) return;
       loadApp(order[i++]).catch(() => {}).finally(() => idle(next));
@@ -1012,8 +1037,10 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   mount.addEventListener('touchmove', e => { const t = e.touches[0]; if (t && gesture && gestureMove(t.clientX, t.clientY) && e.cancelable) e.preventDefault(); }, {signal, passive: false});
   mount.addEventListener('touchend', e => { const t = e.changedTouches[0]; if (t) gestureEnd(t.clientX, t.clientY); }, {signal});
   mount.addEventListener('touchcancel', () => gestureEnd(0, 0, true), {signal});
+  // Words typed into a box are not getting around by keys (a phone's own keyboard sends keys too): animations stay.
+  const typing = el => el?.isContentEditable || el?.tagName === 'TEXTAREA' || (el?.tagName === 'INPUT' && /^(text|search|url|email|tel|password|number)$/.test(el.type));
   doc.addEventListener('keydown', e => {
-    doc.documentElement.dataset.keyboard = 'true';
+    if (!typing(e.target) || e.key === 'Tab' || e.key === 'Escape') doc.documentElement.dataset.keyboard = 'true';
     if (e.key === 'Escape') {
       e.preventDefault();
       if (sheet || locked || active) back(); else api.close();

@@ -21,7 +21,7 @@ import { bookId, emptyBook, cleanBook, removeNode, pruneBook } from './memory.js
 import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer.js';
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
-import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS } from './sounds.js';
+import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS, normalizeSfx, SFX_MODELS, SFX_FORMATS, SFX_LIMITS } from './sounds.js';
 import { gatherCardRoles } from './role-groups.js';
 import { normalizeTagger, reachableFromHttps } from './tagger.js';
 import { decodeMono, encodeWav } from './audio-join.js';
@@ -59,6 +59,7 @@ import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, N
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked } from './chat.js';
+import { normalizePets, PET_FOODS, PET_LIMITS } from './pets.js';
 import { ChatStore, money, currentDm, searchThreads } from './chats.js';
 import { DrawQueue } from './draw-queue.js';
 import { CloudQueue, KeyHashQueue, newRoomCode, validRoom, sha256Hex } from './cloud-queue.js';
@@ -868,6 +869,19 @@ export class TTSBackend {
         this.save(next);
         this.emit('wallet', { balance: this.settings.chat.wallet.balance });
         return this.wallet();
+    }
+    /** 宠物 (0.9.36): food from the 商城, paid with 零钱; it goes into the pets' larder. */
+    buyPetFood(key, count = 1) {
+        const food = PET_FOODS[key], n = Math.max(1, Math.min(10, Math.round(Number(count)) || 1));
+        if (!food) throw Error('商城里没有这种吃的');
+        const have = this.settings.chat.pets.food[key] || 0;
+        if (have + n > PET_LIMITS.food) throw Error(`${food.name}最多存 ${PET_LIMITS.food} 份`);
+        this.walletMove(-food.price * n, { kind: 'shop', note: `宠物零食 · ${food.name} ×${n}` });
+        const next = this.getState();
+        next.chat.pets = normalizePets({ ...next.chat.pets, food: { ...next.chat.pets.food, [key]: (next.chat.pets.food[key] || 0) + n } });
+        this.save(next);
+        this.emit('wallet', {});
+        return clone(this.settings.chat.pets);
     }
     /** Buys a decoration once; it can then be put on in 个性装扮. */
     buyDecoration(kind, key) {
@@ -1724,7 +1738,7 @@ export class TTSBackend {
                 else { pixaiBatch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, pixaiBatch); }
             }
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
-            const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
+            const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), free: !!(pixaiBatch && pixaiBatch.index > 0 && pixaiBatch.size > 1), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
@@ -1919,6 +1933,14 @@ export class TTSBackend {
             }
             next.chat.statusOf = normalizeStatusOf(merged);
         }
+        // 0.9.36: autoReply (自动回复); patOf — 拍一拍后缀 {person's own key: words | '' | null}; pets — the whole of them.
+        if (patch?.autoReply !== undefined) next.chat.autoReply = patch.autoReply === true;
+        if (patch?.patOf && typeof patch.patOf === 'object') {
+            const merged = { ...next.chat.patOf };
+            for (const [who, words] of Object.entries(patch.patOf)) { if (words) merged[who] = words; else delete merged[who]; }
+            next.chat.patOf = normalizeNames(merged, 20);
+        }
+        if (patch?.pets && typeof patch.pets === 'object') next.chat.pets = normalizePets(patch.pets);
         // peeked (0.9.35, 查手机 × 聊天): {person's own key: {at, what} | null}.
         if (patch?.peeked && typeof patch.peeked === 'object') {
             const merged = { ...next.chat.peeked };
@@ -2443,7 +2465,7 @@ export class TTSBackend {
         return found ? { origin: 'source', source: found.source, songId: found.id, title: found.title, artist: found.artist, ...(match ? {} : { standIn: true }) } : null;
     }
     saveSounds(patch) {
-        const next = this.getState(), allowed = ['enabled', 'ambienceVolume', 'sfxVolume', 'vary', 'tapOnly', 'generate', 'versions', 'pack', 'packHidden', 'anchors'];
+        const next = this.getState(), allowed = ['enabled', 'ambienceVolume', 'sfxVolume', 'vary', 'tapOnly', 'generate', 'versions', 'pack', 'packHidden', 'anchors', 'make'];
         next.sounds = normalizeSounds({ ...next.sounds, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
         return this.save(next).sounds;
     }
@@ -2629,10 +2651,32 @@ export class TTSBackend {
         if (!this.providers.currentKey('eleven')) throw Error('要先在引擎 App 里填 ElevenLabs 的密钥，才能生成音效');
         const text = String(describe || '').trim();
         if (!/[a-z]/i.test(text)) throw Error('写一句英文描述（比如 heavy wooden door knock），ElevenLabs 才知道做什么声音');
-        const ambience = type === 'ambience';
-        const blob = await this.providers.soundEffect({ text, loop: ambience, seconds: ambience ? 22 : 0 }, signal);
+        const ambience = type === 'ambience', o = normalizeSfx(this.settings.sounds.make);
+        // (A loop is never WAV: an ambience made this way is MP3 at the quality chosen, or plain MP3.)
+        const format = ambience && SFX_FORMATS[o.format].noLoop ? SFX_FORMATS.mp3.id : SFX_FORMATS[o.format].id;
+        const blob = await this.providers.soundEffect({ text, loop: ambience, seconds: ambience ? 22 : 0, model: SFX_MODELS[o.model], influence: o.influence, format }, signal);
         this.ledger.sfx();
         const [row] = await this.addSounds([{ name, type, layer: 'bed', source: 'eleven', describe: text, blob }]);
+        return row;
+    }
+    /**
+     * 「ElevenLabs 做一个声音」 (0.9.37): one take with the page's options, not kept until the user keeps it.
+     * text: the English prompt (the page has the text model write it when 改写 is on). Answers {blob, cost, text}.
+     */
+    async makeSoundTake({ text = '', model, loop, seconds, influence, format } = {}, signal) {
+        this.assertOpen();
+        if (!this.providers.currentKey('eleven')) throw Error('要先在引擎 App 里填 ElevenLabs 的密钥，才能生成音效');
+        const prompt = String(text || '').trim().slice(0, SFX_LIMITS.text);
+        if (!/[a-z]/i.test(prompt)) throw Error('要一句英文描述：写英文，或者打开「改写」让小手机的文字模型翻成英文');
+        const o = normalizeSfx({ model, loop, seconds, influence, format });
+        const take = await this.providers.soundEffectTake({ text: prompt, model: SFX_MODELS[o.model], loop: o.loop, seconds: o.seconds, influence: o.influence, format: SFX_FORMATS[o.format].id }, signal);
+        this.ledger.sfx();
+        return { blob: take.blob, cost: take.cost, text: prompt };
+    }
+    /** A take the user keeps: into the library as an ElevenLabs sound, under its name and kind. */
+    async keepSoundTake({ name, type = 'sfx', layer = 'bed', describe = '', blob } = {}) {
+        if (!(blob instanceof Blob) && typeof blob?.arrayBuffer !== 'function') throw Error('这个版本已经不在了');
+        const [row] = await this.addSounds([{ name, type, layer: type === 'ambience' && layer === 'dot' ? 'dot' : 'bed', source: 'eleven', describe: String(describe || '').slice(0, SFX_LIMITS.text), blob }]);
         return row;
     }
     /** 导出音效包: the chosen sounds (all when none are named) in one file to share. */
@@ -3869,7 +3913,7 @@ export class TTSBackend {
             addSongsTo: (id, list) => this.addSongsTo(String(id), list), addSongFiles: (list, options) => this.addSongFiles(list, clone(options || {})), addLyrics: list => this.addLyrics(clone(list || [])), listPlaylists: () => this.listPlaylists(), savePlaylist: value => this.savePlaylist(clone(value || {})), deletePlaylist: (id, options) => this.deletePlaylist(String(id), clone(options || {})),
             addToPlaylist: (id, ids) => this.addToPlaylist(String(id), [...(ids || [])]), removeFromPlaylist: (id, ids) => this.removeFromPlaylist(String(id), [...(ids || [])]),
             saveSounds: patch => this.saveSounds(clone(patch)), listSounds: () => this.listSounds(), soundBlob: id => this.soundBlob(id), addSounds: list => this.addSounds(list), updateSound: (id, patch) => this.updateSound(id, clone(patch || {})), deleteSounds: ids => this.deleteSounds([...(ids || [])]),
-            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')), saveTagger: patch => this.saveTagger(clone(patch)), taggerTest: () => this.taggerTest(), tagImage: (blob, options) => this.tagImage(blob, clone(options || {})), linkCacheInfo: () => this.linkCacheInfo(), clearLinkCache: () => this.clearLinkCache(),
+            packInfo: () => this.packInfo(), soundMissing: () => this.soundMissing(), dismissMissing: (type, name) => this.dismissMissing(type, name), generateSound: input => this.generateSound(clone(input || {})), makeSoundTake: input => this.makeSoundTake(clone(input || {})), keepSoundTake: input => this.keepSoundTake({ ...(input || {}) }), exportSounds: (ids, name) => this.exportSounds(ids ? [...ids] : null, name), importSounds: (file, options) => this.importSounds(file, clone(options || {})), importSoundLinks: text => this.importSoundLinks(String(text ?? '')), saveTagger: patch => this.saveTagger(clone(patch)), taggerTest: () => this.taggerTest(), tagImage: (blob, options) => this.tagImage(blob, clone(options || {})), linkCacheInfo: () => this.linkCacheInfo(), clearLinkCache: () => this.clearLinkCache(),
             saveText: patch => this.saveText(clone(patch)), setTextKey: (id, key) => this.setTextKey(id, key), clearTextKey: id => this.clearTextKey(id), textKeyHint: id => this.textKeyHint(id), textModels: draft => this.textModels(clone(draft || {})),
             syncStatus: () => this.syncStatus(), saveSync: patch => this.saveSync(clone(patch)), syncNow: () => this.syncNow().then(() => this.syncStatus()), clearSyncFiles: () => this.clearSyncFiles(),
             listMoments: async () => { const here = this.here(); return (await this.moments.list()).filter(p => inSpace(p, here)); }, getMoment: id => this.moments.get(id),
@@ -3900,7 +3944,7 @@ export class TTSBackend {
             previewChatPrompt: preset => this.previewChatPrompt(preset), validateChatPreset: preset => { try { validateChatPreset(normalizeChatPreset(clone(preset))); return ''; } catch (error) { return message(error); } },
             saveChatOptions: patch => this.saveChatOptions(clone(patch)),
             saveBubbleSet: set => this.saveBubbleSet(clone(set)), deleteBubbleSet: id => this.deleteBubbleSet(String(id || '')),
-            wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
+            wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), buyPetFood: (key, count) => this.buyPetFood(String(key || ''), count), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
             sendPaid: (threadId, message) => this.sendPaid(threadId, message), takeSent: (threadId, messageId, accept) => this.takeSent(threadId, messageId, accept !== false),
             shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.seen) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
             searchChatMessages: (query, options) => this.searchChatMessages(String(query ?? ''), clone(options || {})),

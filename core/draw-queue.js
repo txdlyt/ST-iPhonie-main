@@ -41,10 +41,10 @@ export class DrawQueue {
     this.running = false;
   }
   /** Adds a job; the same key joins the job already in line. task(signal) makes the request. */
-  add({key = crypto.randomUUID(), label = '', task}) {
+  add({key = crypto.randomUUID(), label = '', task, free = false}) {
     const existing = this.jobs.find(j => j.key === key);
     if (existing) return existing.promise;
-    const job = {key, label, task, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
+    const job = {key, label, task, free, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     this.jobs.push(job);
     this.changed();
@@ -102,7 +102,8 @@ export class DrawQueue {
     const signal = job.controller.signal;
     try {
       for (let attempt = 0; ; attempt++) {
-        const readyAt = this.storage.get() + this.gap();
+        // free: answered from a cache that is already there (PixAI's 2nd–4th picture of one task), so no gap is kept.
+        const readyAt = job.free && attempt === 0 ? 0 : this.storage.get() + this.gap();
         if (readyAt > this.now()) {
           job.state = 'spacing'; job.until = readyAt; this.changed();
           await this.wait(readyAt - this.now(), signal);
@@ -111,7 +112,7 @@ export class DrawQueue {
         job.state = 'running'; job.attempt = attempt; job.until = 0; job.cloud = null; this.changed();
         try {
           const result = await job.task(signal);
-          this.storage.set(this.now());
+          if (!job.free) this.storage.set(this.now());
           lease?.release('done');
           job.settled = true;
           job.resolve(result);

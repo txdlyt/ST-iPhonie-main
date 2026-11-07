@@ -7,6 +7,7 @@ import {swipeRow, mountSwipeList} from './swipe-list.js';
 import {icon} from './icons.js';
 import {saveFile} from '../download.js';
 import {KIND_NAMES, SOUND_SOURCES, soundName} from '../core/sounds.js';
+import {sfxMakeSheet} from './sounds-make.js';
 
 const KINDS = [['sfx', '音效'], ['ambience|bed', '氛围音 · 底子'], ['ambience|dot', '氛围音 · 点缀']];
 const STRENGTH_CHOICES = [['', '不分轻重'], ['轻', '轻'], ['重', '重']];
@@ -193,25 +194,9 @@ export function soundsApp(ctx) {
   }
 
   // ---------- ElevenLabs ----------
+  // 「ElevenLabs 做一个声音」: its own page (ui/sounds-make.js, 0.9.37); the library is drawn again when it shuts.
   function makeSheet({type = 'sfx', name = '', describe = ''} = {}) {
-    const d = ctx.dialog('ElevenLabs 做一个声音', `${field('名字', input('name', name, 'text', 'maxlength="20" placeholder="比如：敲门"'))}${field('种类', select('type', type, [['sfx', '音效（一次）'], ['ambience', '氛围音（循环约 22 秒）']]))}
-      ${field('英文描述', input('describe', describe, 'text', 'maxlength="200" placeholder="heavy wooden door knock, three times"'), '用英文写清楚是什么声音、在什么环境里。越具体越像。')}
-      <p class="hint">会用掉 ElevenLabs 的额度。</p><div class="actions">${btn('make', icon('star') + '生成', 'primary')}</div>`);
-    d.body.addEventListener('click', e => {
-      const b = e.target.closest('[data-action="make"]');
-      if (!b) return;
-      e.preventDefault();
-      v.busy(b, async () => {
-        const get = f => d.body.querySelector(`[data-field="${f}"]`).value;
-        const n = soundName(get('name'));
-        if (!n) throw Error('给声音起个名字');
-        b.textContent = '正在生成……';
-        const row = await api.generateSound({name: n, type: get('type'), describe: get('describe')});
-        d.close(); await render();
-        ctx.notify(`做好了「${row.name}」`);
-        api.soundListen?.(row.id)?.catch?.(() => {});
-      }).catch(error => { if (b.isConnected) b.innerHTML = icon('star') + '生成'; ctx.notify(error.message, {error: true}); });
-    });
+    sfxMakeSheet(ctx, {type, name, describe, onClose: () => { render().catch(() => {}); }});
   }
 
   // ---------- 音效包 ----------
@@ -258,6 +243,9 @@ export function soundsApp(ctx) {
     if (!['enabled', 'vary', 'tapOnly', 'generate', 'versions', 'pack', 'anchors'].includes(key)) return;
     api.saveSounds({[key]: key === 'versions' ? Number(value) : value});
     if (key === 'enabled' && value) ctx.notify('音效开了：之后的回复里会有氛围音和音效');
+    // A switch that changes nothing else on the page leaves it as it is (0.9.39: drawing the hundreds of names again
+    // for one switch stuttered on phones); 正文音效, ElevenLabs and the pack show or hide their own rows.
+    if (['vary', 'tapOnly', 'versions'].includes(key)) return;
     await render();
   });
   // Finding a sound: the names that do not match are hidden in place (the box keeps its focus).
@@ -290,6 +278,6 @@ export function soundsApp(ctx) {
   const off = api.subscribe?.(event => { if ((event.type === 'sounds' || event.type === 'sound-state') && ctx.visible('sounds')) render(); });
   const dispose = v.dispose;
   v.dispose = () => { off?.(); dispose(); };
-  render().catch(error => ctx.notify(error.message));
+  render().catch(error => ctx.notify(error.message, {error: true}));
   return v;
 }
