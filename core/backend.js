@@ -1630,6 +1630,31 @@ export class TTSBackend {
         const r = info?.resolution;
         if (Number.isInteger(r?.width) && Number.isInteger(r?.height)) this.pixaiWeb = { width: r.width, height: r.height };
     }
+    /**
+     * PixAI 反代: change what the PixAI page is set to — {ratio: '9:16', size: 'M', swap: true, count: 1|4}, any of them —
+     * and read the page back (like pixaiStatus). The bridge applies count, ratio, size, then swap, in that order.
+     */
+    async pixaiSetPage(patch = {}) {
+        this.assertOpen();
+        const url = this.settings.draw.pixai.url;
+        if (!url) throw Error('还没有填写 PixAI 反代地址');
+        const body = {};
+        if (patch.count !== undefined) { body.count = Number(patch.count); if (body.count !== 1 && body.count !== 4) throw Error('PixAI 一次只能出 1 张或 4 张'); }
+        if (patch.ratio !== undefined) { body.ratio = String(patch.ratio).trim(); if (!/^\d+:\d+$/.test(body.ratio)) throw Error('比例要写成 9:16 这样'); }
+        if (patch.size !== undefined) { body.size = String(patch.size).trim().toUpperCase(); if (!/^[A-Z]{1,3}$/.test(body.size)) throw Error('尺寸档位不对'); }
+        if (patch.swap === true) body.swap = true;
+        if (!Object.keys(body).length) throw Error('没有要切换的内容');
+        this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
+        let response;
+        try {
+            response = await this.pixai.call('/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify(body) });
+        } catch (error) {
+            throw Error(error?.status === 409 ? '反代正在出图，画完再切' : error?.status === 502 ? '没能在 PixAI 网页上切换（尺寸被锁或网页没变过去），检查反代的日志' : error?.status === 404 || error?.status === 405 || error?.status === 400 ? '反代版本太旧，不支持切比例、尺寸或横竖，需要更新反代的 server.js' : error.message);
+        }
+        const info = await response.json().catch(() => ({}));
+        this.pixaiRemember(info);
+        return info;
+    }
     /** PixAI 反代: switch the PixAI page to draw `count` pictures per task (1 or 4: the page has no other); answers like pixaiStatus. */
     async pixaiSetCount(count) {
         this.assertOpen();
@@ -3962,6 +3987,7 @@ export class TTSBackend {
             pixaiHealth: () => this.pixaiHealth(),
             pixaiStatus: () => this.pixaiStatus(),
             pixaiSetCount: count => this.pixaiSetCount(count),
+            pixaiSetPage: patch => this.pixaiSetPage(patch),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
             wardrobe: owner => this.wardrobe(String(owner || '')), saveWardrobeItem: item => this.saveWardrobeItem(clone(item)), saveWardrobeSet: set => this.saveWardrobeSet(clone(set)), deleteWardrobe: ids => this.deleteWardrobe([...(ids || [])]), setWardrobeWear: wear => this.setWardrobeWear(clone(wear || {})), clearWardrobeWear: owner => this.clearWardrobeWear(String(owner || '')), theaters: () => this.theaters(), saveTheater: doc => this.saveTheater(clone(doc)), deleteTheater: ids => this.deleteTheater([...(ids || [])]),

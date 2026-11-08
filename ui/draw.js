@@ -112,7 +112,7 @@ export function drawApp(ctx) {
       // What the bridge reads off the PixAI page (size, pictures per task, points per task): the page decides these, not this plugin.
       if (pixaiInfo === undefined) return `<span class="chip">读取反代状态……</span>`;
       const i = pixaiInfo || {}, r = i.resolution || {};
-      const bits = [r.width && r.height ? `${r.width}×${r.height}` : '', Number.isInteger(i.count) ? `一次 ${i.count} 张` : '', Number.isFinite(i.cost) ? `消耗 ${pxNum(i.cost)}` : ''].filter(Boolean);
+      const bits = Number.isFinite(i.balance) ? [`积分 ${pxNum(i.balance)}`] : [];
       return `<button type="button" class="chip as-button${!pixaiInfo || pixaiInfo.stale ? ' warn' : ''}" data-action="pixai-refresh" title="和网页重新同步">${bits.length ? esc(bits.join(' · ') + (pixaiInfo?.stale ? ' · 未同步' : '')) : 'PixAI 反代 · 读不到状态，点一下重试'}</button>`;
     }
     if (q.free === true) return q.v5 ? `<button type="button" class="chip as-button" data-action="usage-info">${icon(q.guard ? 'lock' : 'unlock')}V5 免费额度 ${q.usage.percent}%</button>` : `<span class="chip">${icon(q.guard ? 'lock' : 'unlock')}免费档 · 0 Anlas</span>`;
@@ -192,7 +192,7 @@ export function drawApp(ctx) {
         ${shown && e === 'nai' && keyed ? toolsHTML() : ''}
         <div class="segmented draw-tabs">${tabs.map(([k, l]) => `<button data-action="tab" data-tab="${k}" aria-pressed="${k === tab}">${l}</button>`).join('')}</div>
         ${body}
-        <div class="savebar"><div class="draw-count" role="group" aria-label="一次画几张">${[1, 2, 3, 4].map(k => { const off = e === 'pixai' && (k === 2 || k === 3); return `<button type="button" data-action="count" data-count="${k}" aria-pressed="${k === count}" aria-label="一次画 ${k} 张"${off ? ' disabled title="PixAI 一次只能出 1 张或 4 张"' : ''}>${k}</button>`; }).join('')}<small>张</small></div>${btn('generate', busy ? '正在画……' : (q.free === false ? icon('alert') : icon('paint')) + (count > 1 ? `画 ${count} 张` : '生成') + (q.free === false ? (e === 'gpt' ? '（要花钱）' : '（会扣 Anlas）') : ''), 'primary', busy || !keyed || comfy?.missing ? 'disabled' : '')}</div>`);
+        <div class="savebar"><div class="draw-count" role="group" aria-label="一次画几张">${[1, 2, 3, 4].map(k => { const off = e === 'pixai' && (k === 2 || k === 3); return `<button type="button" data-action="count" data-count="${k}" aria-pressed="${k === count}" aria-label="一次画 ${k} 张"${off ? ' disabled title="PixAI 一次只能出 1 张或 4 张"' : ''}>${k}</button>`; }).join('')}<small>张</small></div>${btn('generate', busy ? '正在画……' : (q.free === false ? icon('alert') : icon('paint')) + (count > 1 ? `画 ${count} 张` : '生成') + (e === 'pixai' && pixaiPlan()?.total != null ? ` · ${pxNum(pixaiPlan().total)} 积分` : '') + (q.free === false ? (e === 'gpt' ? '（要花钱）' : '（会扣 Anlas）') : ''), 'primary', busy || !keyed || comfy?.missing ? 'disabled' : '')}</div>`);
     // A new picture goes on top of the column: show it.
     if (newest) { newest = false; const side = v.root.querySelector('.canvas-side'); if (side) side.scrollTop = 0; }
     meters();
@@ -230,14 +230,19 @@ export function drawApp(ctx) {
     const k = r.width && r.height ? 30 / Math.max(r.width, r.height) : 0;
     const shape = k ? `<i style="width:${Math.max(6, Math.round(r.width * k))}px;height:${Math.max(6, Math.round(r.height * k))}px"></i>` : '';
     const resolution = r.width && r.height ? shape + esc(r.label || `${r.width}×${r.height}`) : '—';
+    // Ratio, size tier and portrait/landscape are the page's own buttons: a tap switches the page (the bridge clicks them) and the page is read back.
+    const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.generating || !!i.stale;
+    const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
+    const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
+    const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}${i.canSwap ? `<button type="button" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}</div>${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
     const perTask = Number.isInteger(i.count) ? i.count : null;
     const lines = [];
     if (plan && plan.total !== null) {
       lines.push(`<p class="px-plan${plan.left !== null && plan.left < 0 ? ' short' : ''}">这次画 ${count} 张 · ${plan.tasks} 次任务 · 共 ${pxNum(plan.total)} 积分${plan.left !== null ? ` · 画完剩 ${pxNum(plan.left)}` : ''}</p>`);
     }
     if (plan?.mismatch) lines.push(`<p class="hint" style="padding:0">网页现在是一次 ${perTask} 张；画的时候会先切成 ${count} 张，单次消耗也会跟着变。</p>`);
-    lines.push(`<p class="hint" style="padding:0">分辨率、张数、模型和 LoRA 在 PixAI 网页里改，这里每 10 秒自动跟着变；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
-    return `<div class="group pad px-sync">${foot}<div class="px-grid">${cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}${cell('剩余积分', pxNum(i.balance))}</div>${lines.join('')}</div>`;
+    lines.push(`<p class="hint" style="padding:0">比例、尺寸和横竖点上面的按钮就会去切网页；张数点下面的 1 / 4；模型和 LoRA 在 PixAI 网页里改，这里每 10 秒自动跟着变；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
+    return `<div class="group pad px-sync">${foot}<div class="px-grid">${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}${cell('剩余积分', pxNum(i.balance))}</div>${lines.join('')}</div>`;
   }
   function naiParams(d, size) {
     const p = d.params, f = naiFeatures(p.model), medium = p.effort === 'medium', guard = d.guard, schedules = schedulesFor(p.model, p.sampler);
@@ -354,7 +359,7 @@ export function drawApp(ctx) {
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing]);
+  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
   const pixaiSize = () => { const r = eng() === 'pixai' ? pixaiInfo?.resolution : null; return Number.isInteger(r?.width) && Number.isInteger(r?.height) ? {width: r.width, height: r.height} : {}; };
   /** What `n` pictures cost now: the page's pictures-per-task decides how many tasks, and a task costs what the page's button says. */
@@ -406,6 +411,20 @@ export function drawApp(ctx) {
     } catch (error) {
       if (!quiet && !v.disposed) ctx.notify(error.message, {error: true});
       return false;
+    } finally {
+      if (!v.disposed && ticket === pixaiSetting) refreshPixai();
+    }
+  }
+
+  /** Taps on a ratio, a size tier or 反转: the PixAI page is switched and what it then shows (size, cost) is read back. */
+  async function setPixaiPage(patch) {
+    const ticket = ++pixaiSetting;
+    if (pixaiInfo) { pixaiInfo = {...pixaiInfo, syncing: true}; render(); }
+    try {
+      const info = await api.pixaiSetPage(patch);
+      if (!v.disposed && ticket === pixaiSetting && eng() === 'pixai') takePixai(info);
+    } catch (error) {
+      if (!v.disposed) ctx.notify(error.message, {error: true});
     } finally {
       if (!v.disposed && ticket === pixaiSetting) refreshPixai();
     }
@@ -556,6 +575,9 @@ export function drawApp(ctx) {
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
       case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; } render(); refreshSubscription(); refreshPixai(); break;
+      case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
+      case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
+      case 'pixai-swap': await setPixaiPage({swap: true}); break;
       case 'pixai-refresh': pixaiInfo = pixaiInfo ? {...pixaiInfo, syncing: true} : undefined; render(); await refreshPixai(); break;
       case 'gpt-quality': api.saveDraw({gpt: {quality: el.dataset.value}}); render(); break;
       case 'gpt-orientation': api.saveDraw({gpt: {orientation: el.dataset.value}}); render(); break;

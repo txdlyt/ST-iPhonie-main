@@ -735,9 +735,11 @@ export interface BackendFacade {
     /** PixAI 反代: the bridge's /health for the saved address. Rejects with why when it cannot be reached. */
     pixaiHealth(): Promise<{ status?: string; page?: string; generating?: boolean }>;
     /** PixAI 反代: the bridge's /ai/status for the saved address (what the PixAI page is set to, read live). A field it cannot read is null. */
-    pixaiStatus(): Promise<{ ok?: boolean; generating?: boolean; count?: number | null; countLabel?: string | null; resolution?: { ratio: string | null; size: string | null; width: number | null; height: number | null; label: string | null }; cost?: number | null; balance?: number | null; updatedAt?: string }>;
+    pixaiStatus(): Promise<{ ok?: boolean; generating?: boolean; count?: number | null; countLabel?: string | null; resolution?: { ratio: string | null; size: string | null; width: number | null; height: number | null; label: string | null; ratios?: Array<{ ratio: string; on: boolean; locked: boolean }>; sizes?: Array<{ size: string; width: number; height: number; label: string; on: boolean; locked: boolean }> }; canSwap?: boolean; cost?: number | null; balance?: number | null; updatedAt?: string }>;
     /** PixAI 反代: switch the PixAI page to draw 1 or 4 pictures per task; answers like pixaiStatus. */
     pixaiSetCount(count: 1 | 4): ReturnType<BackendFacade['pixaiStatus']>;
+    /** PixAI 反代: switch the PixAI page's ratio ('9:16'), size tier ('M'), portrait/landscape (swap) and/or pictures per task; answers like pixaiStatus. */
+    pixaiSetPage(patch: { ratio?: string; size?: string; swap?: boolean; count?: 1 | 4 }): ReturnType<BackendFacade['pixaiStatus']>;
     /** ComfyUI through the tavern: connection check and what it offers. url: an address not saved yet. */
     comfyCatalog(url?: string): Promise<{ models: Array<{ value: string; text: string; loader: 'checkpoint' | 'unet' | 'gguf' }>; samplers: string[]; schedulers: string[]; vaes: string[] }>;
     /** CLIPLoader's files and types (for a model loaded on its own), read like the LoRA list. */

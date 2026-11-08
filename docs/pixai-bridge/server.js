@@ -133,7 +133,7 @@ async function openGeneratorPage() {
 
   await dismissDailyReward(page);
   await selectModel(page, CONFIG.model).catch(error => console.error('自动选模型失败，请人工检查：', error.message));
-  await setRatio(page, CONFIG.ratio).catch(error => console.warn('自动选比例失败：', error.message));
+  if (!pagePicked) await setRatio(page, CONFIG.ratio).catch(error => console.warn('自动选比例失败：', error.message));
   return page;
 }
 
@@ -544,6 +544,66 @@ async function setRatio(page, ratio) {
 }
 
 let settingLock = Promise.resolve();
+// 酒馆插件选过比例/尺寸/横竖之后，就以它选的为准，不再按 PIXAI_RATIO 每次切回去（反代重启后清零，回到 PIXAI_RATIO 默认）。
+let pagePicked = false;
+
+/** 切到「设定」标签页（比例/尺寸/张数按钮都在这一页）。已经在就不动。 */
+async function openSettingsTab(page) {
+  const there = () => page.evaluate(() => Array.from(document.querySelectorAll('button')).some(el => (el.offsetWidth || el.offsetHeight) && /^\d+:\d+$/.test((el.innerText || '').trim())));
+  if (await there()) return true;
+  const tab = page.getByRole('tab', { name: /^\s*(設定|设置|設置)\s*$/ }).first();
+  if (await tab.count()) { await tab.click({ timeout: 5000 }).catch(() => {}); await sleep(600); }
+  return await there();
+}
+
+/** 选尺寸档位：label 是档位字母（M / L …），点页面上以它开头的尺寸按钮。被锁（disabled）的不点。 */
+async function setSize(page, label) {
+  const want = String(label || '').trim().toUpperCase();
+  if (!want) return false;
+  if (!(await openSettingsTab(page))) { console.warn('没找到设定页，没有切换尺寸'); return false; }
+  const state = () => page.evaluate(want => {
+    const visible = el => !!(el.offsetWidth || el.offsetHeight);
+    const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const buttons = Array.from(document.querySelectorAll('button, [role="radio"]')).filter(visible).filter(el => /^[A-Z]{1,3}\s*\d+\s*[×x]\s*\d+$/i.test(text(el)));
+    const on = el => /(^|\s)ring-neutral-700(\s|$)/.test(String(el.className || '')) || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true';
+    const target = buttons.find(el => text(el).toUpperCase().startsWith(want + ' ') || text(el).toUpperCase().startsWith(want));
+    const locked = el => el.disabled || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('data-disabled');
+    return { found: !!target, selected: !!target && on(target), locked: !!target && locked(target), others: buttons.map(text) };
+  }, want);
+  let now = await state();
+  if (!now.found) { console.warn(`网页上没找到尺寸「${want}」（现有：${now.others.join(' ') || '无'}），没有切换`); return false; }
+  if (now.selected) return true;
+  if (now.locked) { console.warn(`尺寸「${want}」被锁住了（可能要会员），没有切换`); return false; }
+  const target = page.locator('button, [role="radio"]').filter({ hasText: new RegExp(`^\\s*${escapeRegExp(want)}\\s*\\d+\\s*[×x]\\s*\\d+\\s*$`, 'i') }).first();
+  await target.click({ timeout: 10000 });
+  for (let i = 0; i < 20; i++) {
+    await sleep(150);
+    now = await state();
+    if (now.selected) { console.log(`已把尺寸切到 ${want}`); return true; }
+  }
+  console.warn(`点了尺寸「${want}」，但网页上没有变过去`);
+  return false;
+}
+
+/** 点网页自带的「切換橫豎」，横竖互换。以比例按钮或尺寸按钮的文字有没有变来判断点上了。 */
+async function swapOrientation(page) {
+  if (!(await openSettingsTab(page))) { console.warn('没找到设定页，没有横竖切换'); return false; }
+  const sig = () => page.evaluate(() => {
+    const visible = el => !!(el.offsetWidth || el.offsetHeight);
+    return Array.from(document.querySelectorAll('button')).filter(visible).map(el => (el.innerText || '').replace(/\s+/g, ' ').trim())
+      .filter(t => /^\d+:\d+$/.test(t) || /^[A-Z]{1,3}\s*\d+\s*[×x]\s*\d+$/i.test(t)).join('|');
+  });
+  const before = await sig();
+  const button = page.locator('button[aria-label="切換橫豎"]').first();
+  if (!(await button.count())) { console.warn('网页上没找到「切換橫豎」按钮'); return false; }
+  await button.click({ timeout: 10000 });
+  for (let i = 0; i < 20; i++) {
+    await sleep(150);
+    if ((await sig()) !== before) { console.log('已切換橫豎'); return true; }
+  }
+  console.warn('点了「切換橫豎」，但网页上没有变化');
+  return false;
+}
 
 async function generateBatch(prompt, count) {
   await settingLock;
@@ -559,7 +619,7 @@ async function generateBatch(prompt, count) {
 
     const switched = await setQuantity(page, count);
     const needed = switched ? count : CONFIG.pageCount;
-    await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
+    if (!pagePicked) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
 
     const editor = page.locator('div[contenteditable="true"].tiptap.ProseMirror');
     await editor.waitFor({ state: 'visible', timeout: 30000 });
@@ -739,10 +799,15 @@ async function readPageStatus(page, debug = false) {
     const costSpan = gen ? Array.from(gen.querySelectorAll('span')).find(el => !el.children.length && /^\d[\d,]*$/.test((el.textContent || '').trim())) : null;
     const cost = costSpan ? toNum(costSpan.textContent) : null;
 
+    const lockedEl = el => !!(el.disabled || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('data-disabled'));
+    const sizeOf = el => { const m = /([A-Z]{1,3})\s*(\d+)\s*[×x]\s*(\d+)/i.exec(text(el)); return m ? { size: m[1].toUpperCase(), width: Number(m[2]), height: Number(m[3]), label: text(el), on: marked(el), locked: lockedEl(el) } : null; };
     const out = {
       count,
       countLabel,
+      canSwap: !!document.querySelector('button[aria-label="切換橫豎"]'),
       resolution: {
+        ratios: ratios.map(el => ({ ratio: text(el), on: marked(el), locked: lockedEl(el) })),
+        sizes: sizes.map(sizeOf).filter(Boolean),
         ratio: ratioEl ? text(ratioEl) : null,
         size: sm ? sm[1].toUpperCase() : null,
         width: sm ? Number(sm[2]) : null,
@@ -791,27 +856,45 @@ app.get('/ai/status', async (req, res) => {
 });
 
 // 调试：导出顶栏（积分）、提示词框（生成按钮）、设置区（张数/比例/尺寸）的 HTML，用来校准选择器：curl http://127.0.0.1:3188/debug/dom
-// 给酒馆插件切网页参数：POST /ai/settings  {"count": 1 | 4}，把网页「一次出几张」切过去，回的内容和 /ai/status 一样
+// 给酒馆插件切网页参数：POST /ai/settings  {"count": 1|4, "ratio": "9:16", "size": "M", "swap": true}，都可以不带，带哪个切哪个
+// （顺序：张数 → 比例 → 尺寸 → 横竖互换）。回的内容和 /ai/status 一样。选过比例/尺寸/横竖之后，出图前不再按 PIXAI_RATIO 切回去。
 app.post('/ai/settings', async (req, res) => {
-  const count = Number(req.body?.count);
-  if (!CONFIG.counts.includes(count)) {
-    return res.status(400).json({ ok: false, message: `张数只能是 ${CONFIG.counts.join(' 或 ')}` });
+  const body = req.body || {};
+  const want = {};
+  if (body.count !== undefined) {
+    want.count = Number(body.count);
+    if (!CONFIG.counts.includes(want.count)) return res.status(400).json({ ok: false, message: `张数只能是 ${CONFIG.counts.join(' 或 ')}` });
   }
+  if (body.ratio !== undefined) {
+    want.ratio = String(body.ratio).trim();
+    if (!/^\d+:\d+$/.test(want.ratio)) return res.status(400).json({ ok: false, message: '比例要写成 9:16 这样' });
+  }
+  if (body.size !== undefined) {
+    want.size = String(body.size).trim().toUpperCase();
+    if (!/^[A-Z]{1,3}$/.test(want.size)) return res.status(400).json({ ok: false, message: '尺寸要写档位字母，如 M、L' });
+  }
+  if (body.swap === true) want.swap = true;
+  if (!Object.keys(want).length) return res.status(400).json({ ok: false, message: '没有要切的内容（count / ratio / size / swap）' });
   if (generating) {
-    return res.status(409).json({ ok: false, generating: true, message: '反代正在出图，画完再切张数' });
+    return res.status(409).json({ ok: false, generating: true, message: '反代正在出图，画完再切' });
   }
   const run = async () => {
     const page = await getPixAIPage();
-    const switched = await setQuantity(page, count);
+    const failed = [];
+    if (want.count !== undefined && !(await setQuantity(page, want.count))) failed.push('张数');
+    if (want.ratio !== undefined) { pagePicked = true; if (!(await setRatio(page, want.ratio))) failed.push('比例'); }
+    if (want.size !== undefined) { pagePicked = true; if (!(await setSize(page, want.size))) failed.push('尺寸'); }
+    if (want.swap) { pagePicked = true; if (!(await swapOrientation(page))) failed.push('横竖'); }
+    await sleep(400);
     const status = await readPageStatus(page);
-    return { switched, status };
+    return { failed, status };
   };
   const job = settingLock.then(run);
   settingLock = job.catch(() => {});
   try {
-    const { switched, status } = await job;
-    if (!switched || status.count !== count) {
-      return res.status(502).json({ ok: false, generating, ...status, message: '没能在 PixAI 网页上切换张数' });
+    const { failed, status } = await job;
+    if (failed.length) {
+      return res.status(502).json({ ok: false, generating, ...status, failed, message: `没能在 PixAI 网页上切换：${failed.join('、')}` });
     }
     res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
   } catch (error) {

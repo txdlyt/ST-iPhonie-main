@@ -40,3 +40,16 @@
 ## 重新获取（bridge_batch.recover）
 
 页面刷新或网络中断后，插件拿不到已经画好的图时，会带着原来的 `bridge_batch`（同一个 run、index、size）再请求一次，并加上 `"recover": true`。反代还留着这张图（约 10 分钟内，且没有重启）就直接返回同一张，不重画、不再扣积分；已经没有了就返回 410，不会去重画。不带 `recover` 的请求行为不变。
+
+## 切比例 / 尺寸 / 横竖（/ai/settings）
+
+`POST /ai/settings`，下面几项都可以不带，带哪个切哪个（顺序：张数 → 比例 → 尺寸 → 横竖互换）：
+
+```json
+{"count": 4, "ratio": "9:16", "size": "M", "swap": true}
+```
+
+- `size` 写档位字母（M、L……），被锁住（要会员）的档位不会点，返回 502。
+- `swap` 点网页自带的「切換橫豎」。
+- `/ai/status` 的 `resolution.ratios` / `resolution.sizes` 列出页面上现有的比例和尺寸按钮（含是否选中、是否被锁），`canSwap` 表示有没有横竖按钮。
+- 酒馆插件选过比例、尺寸或横竖之后，出图前不再按 `PIXAI_RATIO` 切回去；反代重启后清零，回到 `PIXAI_RATIO` 默认。
