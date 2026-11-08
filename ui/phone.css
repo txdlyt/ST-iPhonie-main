@@ -3130,7 +3130,9 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .px-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .px-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .px-cell{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:16px;background:var(--card);box-shadow:inset 0 0 0 2px var(--line);min-width:0}
-.px-wide{grid-column:1/-1;gap:6px}
+.px-wide{grid-column:1/-1;gap:6px;position:relative}
+.px-swap{position:absolute;top:8px;right:10px}
+.px-swap[disabled]{opacity:.45}
 .px-wide em{font-style:normal;font-size:11px;color:var(--ink2)}
 .px-pick{margin-top:2px}
 .px-pick button[disabled]{opacity:.45}
