@@ -49,6 +49,7 @@ import { Providers, buildRequest } from './providers.js';
 import { AudioCache } from './cache.js';
 import { installDrawSettings, sweepRoleRefs } from './backend-draw.js';
 import { installSongs, songFacade } from './backend-song.js';
+import {BookshelfStore} from './bookshelf.js';
 import { SONG_KEYS } from './song-engines.js';
 import { createStorageBudget } from './storage-budget.js';
 import { DialoguePlayer } from './player.js';
@@ -58,8 +59,8 @@ import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js
 import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
-import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked } from './chat.js';
-import { normalizePets, PET_FOODS, PET_LIMITS } from './pets.js';
+import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked, normalizeQuickReactions } from './chat.js';
+import { normalizePets } from './pets.js';
 import { ChatStore, money, currentDm, searchThreads } from './chats.js';
 import { DrawQueue } from './draw-queue.js';
 import { CloudQueue, KeyHashQueue, newRoomCode, validRoom, sha256Hex } from './cloud-queue.js';
@@ -190,6 +191,7 @@ export class TTSBackend {
         // 音效 (core/sounds.js): the sound library and the names the story asked for that it has none of. Its own database: big.
         this.sounds = new AppStore(this.settings.scope, { indexedDB, database: 'st-iphonie-sounds-v1' });
         this.music = new AppStore(this.settings.scope, { indexedDB, database: 'st-iphonie-music-v1' });
+        this.bookshelf = new BookshelfStore(this.settings.scope, {indexedDB});
         // 画画的作品: the phone draws in them; here they are only read and put back (backups, 保存到酒馆).
         this.paintWorks = paintStore({ indexedDB });
         this.ledger = new Ledger({ store: this.apps, device: () => this.#device() });
@@ -256,6 +258,11 @@ export class TTSBackend {
     // ---------- The apps' own rows in a backup and in 保存到酒馆 ----------
     partStore(part) { return part === 'music' ? this.music : part === 'sounds' ? this.sounds : this.apps; }
     async partRows(part) {
+        if (part === 'bookshelf') {
+            const out = [];
+            for (const row of await this.bookshelf.list()) { const file = await this.bookshelf.files.get(row.id); if (file?.blob) out.push({...row, blob: file.blob, cover: file.cover}); }
+            return out;
+        }
         if (part === 'paint') return this.paintWorks.all();
         if (part === 'ledger') await this.ledger.flush();
         if (part === 'ledger' || part === 'peek' || part === 'looks' || part === 'albums' || part === 'wardrobe' || part === 'theater') return this.apps.listFrom(part + ':');
@@ -267,6 +274,16 @@ export class TTSBackend {
      * what the app needs to show them. replace: this part's rows now are only these; merge: makes the list when it is written.
      */
     async putPartRows(part, rows, { replace = false, merge } = {}) {
+        if (part === 'bookshelf') {
+            const clean = rows.filter(r => r?.kind === 'reading' && typeof r.id === 'string' && r.id.startsWith('reading:') && Array.isArray(r.chapters) && typeof r.blob?.arrayBuffer === 'function');
+            for (const row of clean) {
+                const {blob, cover, ...meta} = row;
+                await this.bookshelf.files.put([{id: row.id, kind: 'reading-file', at: row.at, blob, cover}]);
+                await this.bookshelf.meta.put([meta]);
+            }
+            if (replace) for (const row of await this.bookshelf.list()) if (!clean.some(r => r.id === row.id)) await this.bookshelf.remove(row.id);
+            return clean.length;
+        }
         if (part === 'paint') return this.paintWorks.importWorks(rows.filter(row => row && typeof row.id === 'string' && Array.isArray(row.layers)), { replace });
         const kinds = PART_KINDS[part], fileBacked = row => row.kind === 'sound' || row.kind === 'look' || (row.kind === 'song' && row.origin !== 'source');
         const clean = rows.filter(row => row && typeof row.id === 'string' && kinds.includes(row.kind) && (merge || !fileBacked(row) || typeof row.blob?.arrayBuffer === 'function')), ids = new Set(clean.map(row => row.id));
@@ -416,7 +433,7 @@ export class TTSBackend {
         for (const part of ROW_PARTS) {
             if (!want.has(part === 'albums' ? 'photos' : part) || !backup.rows[part]) continue;
             done[part] = await this.putPartRows(part, backup.rows[part], { replace });
-            this.reviveSync(part, backup.rows[part].map(row => String(row?.id)));
+            if (part !== 'bookshelf') this.reviveSync(part, backup.rows[part].map(row => String(row?.id)));
             this.partsChanged(part);
         }
         if (keys) { let count = 0; for (const [engine, key] of Object.entries(keys)) { try { this.setKey(engine, key); count++; } catch { /* an engine this version does not know */ } } done.keys = count; }
@@ -870,19 +887,6 @@ export class TTSBackend {
         this.emit('wallet', { balance: this.settings.chat.wallet.balance });
         return this.wallet();
     }
-    /** 宠物 (0.9.36): food from the 商城, paid with 零钱; it goes into the pets' larder. */
-    buyPetFood(key, count = 1) {
-        const food = PET_FOODS[key], n = Math.max(1, Math.min(10, Math.round(Number(count)) || 1));
-        if (!food) throw Error('商城里没有这种吃的');
-        const have = this.settings.chat.pets.food[key] || 0;
-        if (have + n > PET_LIMITS.food) throw Error(`${food.name}最多存 ${PET_LIMITS.food} 份`);
-        this.walletMove(-food.price * n, { kind: 'shop', note: `宠物零食 · ${food.name} ×${n}` });
-        const next = this.getState();
-        next.chat.pets = normalizePets({ ...next.chat.pets, food: { ...next.chat.pets.food, [key]: (next.chat.pets.food[key] || 0) + n } });
-        this.save(next);
-        this.emit('wallet', {});
-        return clone(this.settings.chat.pets);
-    }
     /** Buys a decoration once; it can then be put on in 个性装扮. */
     buyDecoration(kind, key) {
         const item = premiumOf(kind, key);
@@ -1116,19 +1120,20 @@ export class TTSBackend {
      */
     /** signal: the request is let go (停止回复). Kept out of the request log, which keeps copies of the request. */
     async generateText(context, { use = 'other', signal, ...request }) {
-        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request, signal));
+        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request, signal, use === 'chat'));
         // A model that never answers must not keep a reply "being voiced / drawn" for ever: after this long the request is given up
         // (the state is freed and the floor can be tried again).
-        let timer, answer;
+        let timer, result;
         const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(Error('模型太久没有回应，已放弃这次请求，可以再试一次')), 240000); });
         job.catch(() => {});
-        try { answer = await Promise.race([job, limit]); } finally { clearTimeout(timer); }
+        try { result = await Promise.race([job, limit]); } finally { clearTimeout(timer); }
+        const answer = typeof result === 'object' && result !== null ? String(result.text || '').trimEnd() + (/^(length|max_tokens|MAX_TOKENS)$/.test(result.meta?.finish || '') ? '（回复达到长度上限，末句可能未写完）' : '') : result;
         this.ledger.text(use, request.prompt, answer);
         return answer;
     }
-    async generateTextRaw(context, request, signal) {
+    async generateTextRaw(context, request, signal, details = false) {
         const text = activeText(this.settings.text);
-        if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch, signal });
+        if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch, signal, details });
         if (!context?.generateRaw) throw Error('当前酒馆版本不支持后台生成');
         // The chat-completion request the tavern builds is kept, so an empty answer can be asked again as a stream:
         // "假流式" channels only answer streamed requests, and the tavern's background generation never streams.
@@ -1915,6 +1920,9 @@ export class TTSBackend {
         }
         if (Array.isArray(patch?.starred)) next.chat.starred = patch.starred;
         if (patch?.pace !== undefined) next.chat.pace = patch.pace !== false;
+        // 0.9.47: 常用回应, and how 网名 look on 论坛 (a picture of one's own goes in avatars as 'net:' + 网名).
+        if (Array.isArray(patch?.quickReactions)) next.chat.quickReactions = normalizeQuickReactions(patch.quickReactions);
+        if (patch?.netFace !== undefined) { if (!['initial', 'own', 'role'].includes(patch.netFace)) throw Error('网名头像的样子无效'); next.chat.netFace = patch.netFace; }
         // 主动发消息: {on, every, dailyMax}.
         if (patch?.proactive && typeof patch.proactive === 'object') next.chat.proactive = normalizeProactive({ ...next.chat.proactive, ...patch.proactive });
         if (Array.isArray(patch?.stickers)) next.chat.stickers = normalizeStickers(patch.stickers);
@@ -3848,6 +3856,15 @@ export class TTSBackend {
     }
     api() {
         const methods = {
+            listReadingBooks: () => this.bookshelf.list(),
+            getReadingBook: id => this.bookshelf.get(String(id)),
+            readingBookFile: id => this.bookshelf.files.get(String(id)),
+            addReadingBook: (data, blob, cover) => this.bookshelf.add(clone(data), blob, cover),
+            updateReadingBook: (id, patch) => this.bookshelf.update(String(id), clone(patch)),
+            deleteReadingBook: id => this.bookshelf.remove(String(id)),
+            // 多选 (0.9.52): the same on several books — a category, or taking them off the shelf for good.
+            updateReadingBooks: (ids, patch) => this.bookshelf.updateMany(Array.isArray(ids) ? ids.map(String) : [], clone(patch || {})),
+            deleteReadingBooks: ids => this.bookshelf.removeMany(Array.isArray(ids) ? ids.map(String) : []),
             reportDiagnostic: (source, detail, level) => this.reportDiagnostic(source, detail, level),
             backupCounts: () => this.backupCounts(), paintChanged: gone => this.paintChanged(clone(gone || [])),
             ledgerDays: (from, to) => this.ledger.days(from, to), clearLedger: async () => { this.noteGone('ledger', await this.ledger.clear()); },
@@ -3969,13 +3986,16 @@ export class TTSBackend {
             previewChatPrompt: preset => this.previewChatPrompt(preset), validateChatPreset: preset => { try { validateChatPreset(normalizeChatPreset(clone(preset))); return ''; } catch (error) { return message(error); } },
             saveChatOptions: patch => this.saveChatOptions(clone(patch)),
             saveBubbleSet: set => this.saveBubbleSet(clone(set)), deleteBubbleSet: id => this.deleteBubbleSet(String(id || '')),
-            wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), buyPetFood: (key, count) => this.buyPetFood(String(key || ''), count), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
+            wallet: () => this.wallet(), buyDecoration: (kind, key) => this.buyDecoration(kind, key), saveGift: gift => this.saveGift(gift), deleteGift: id => this.deleteGift(id),
             sendPaid: (threadId, message) => this.sendPaid(threadId, message), takeSent: (threadId, messageId, accept) => this.takeSent(threadId, messageId, accept !== false),
             shopCatalog: () => clone({ premium: PREMIUM, kinds: DECOR_KINDS, gifts: shopGifts(this.settings.chat.wallet), ledgerKinds: LEDGER_KINDS }), saveContact: contact => this.saveContact(contact), deleteContact: id => this.deleteContact(id), chatContacts: all => clone(all ? chatContacts(this.seen) : this.contacts()), addRoleContact: name => this.addRoleContact(name),
             searchChatMessages: (query, options) => this.searchChatMessages(String(query ?? ''), clone(options || {})),
             listThreads: () => this.threads(), getThread: id => this.chats.get(id), chatUnread: async () => (await this.threads()).reduce((n, t) => n + (t.muted ? 0 : t.unread), 0),
             createThread: value => this.chatMutate(null, () => this.chats.create({ ...clone(value), ...this.spaceTag() })),
-            updateThread: (id, patch) => this.chatMutate(id, () => this.chats.update(id, clone(patch))),
+            updateThread: (id, patch) => this.chatMutate(id, () => {
+                if (patch.manage?.action === 'invite' && patch.manage.names?.some(n => !this.contacts().some(c => c.name === n))) throw Error('只能邀请联系人里的好友');
+                return this.chats.update(id, clone(patch));
+            }),
             deleteThread: id => this.chatMutate(id, async () => { const done = await this.chats.remove(id); this.noteGone('chats', [id]); await this.memoryForget(id).catch(() => {}); return done; }),
             // 记忆: what a chat remembers; a summary can be corrected or deleted (what it covered is used again).
             memoryBook: threadId => this.memoryBook(threadId),
@@ -4019,6 +4039,7 @@ export class TTSBackend {
         this.sounds.close();
         this.stopSongs();
         this.music.close();
+        this.bookshelf.close();
         this.drawQueue.cancelAll();
         // The 账本 writes what is waiting first: it keeps its numbers with the apps.
         this.closing = Promise.all([this.ledger.close().finally(() => this.apps.close()), this.player.close(), this.cache.close(), this.library.close(), Promise.resolve(this.keyStore.flush?.()).then(() => this.keyStore.close?.())]);

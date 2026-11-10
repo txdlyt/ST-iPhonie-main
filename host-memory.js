@@ -154,7 +154,9 @@ export function createMemoryHost({context, settings, backend, notice = () => {}}
             if (kept.length && size + line.length > budget) break;
             kept.unshift(fresh[i]); size += line.length;
           }
-          if (o.enabled && kept.length < fresh.length) tidy(thread.id, {force: true}).catch(() => {});
+          // (Not forced: forcing here wrote a summary of whatever few messages there were before every story reply,
+          // so the book filled with 4- and 8-message 摘要 whatever 「每次整理多少条」 said. 0.9.46.)
+          if (o.enabled && kept.length < fresh.length) tidy(thread.id).catch(() => {});
           const recent = kept.length ? `【${user}和${group ? `群聊「${name}」` : name}在手机上${text ? '后来' : ''}的聊天${kept.length < fresh.length ? `（最近 ${kept.length} 条）` : ''}】\n${transcript(kept, user)}` : '';
           if (text || recent) parts.push([text, recent].filter(Boolean).join('\n'));
         }
@@ -199,12 +201,12 @@ export function createMemoryHost({context, settings, backend, notice = () => {}}
   const unsubscribe = backend.subscribe?.(event => { if (event.type === 'chat' && !event.typing || event.type === 'memory' && event.reset) refreshStory(); });
 
   /** 更早的剧情: what the picked memory plugins put into the tavern's extension prompts. */
-  function storyMemory() { return storyMemoryText(context()?.extensionPrompts, options().storyKeys); }
+  function storyMemory() { if (activeChatPreset(settings().chat).storyMode === 'off') return ''; return storyMemoryText(context()?.extensionPrompts, options().storyKeys); }
   /** Every extension prompt there is now (not the phone's own), for picking which hold story memory. */
   function storySources() {
     const prompts = context()?.extensionPrompts || {}, picked = new Set(options().storyKeys);
     const found = Object.entries(prompts).filter(([key, p]) => !key.startsWith('sttts.') && typeof p?.value === 'string' && p.value.trim())
-      .map(([key, p]) => ({key, name: STORY_MEMORY[key] || '', chars: p.value.trim().length, preview: p.value.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 90), picked: picked.has(key)}));
+      .map(([key, p]) => ({key, name: STORY_MEMORY[key] || '', chars: p.value.trim().length, text: p.value, position: p.position, depth: p.depth, role: p.role, preview: p.value.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 90), picked: picked.has(key)}));
     // Picked keys that have nothing in them right now are listed too, so they can be unpicked.
     for (const key of picked) if (!found.some(x => x.key === key)) found.push({key, name: STORY_MEMORY[key] || '', chars: 0, preview: '', picked: true});
     return found;

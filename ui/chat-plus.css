@@ -124,6 +124,8 @@
 .chat-egg span{position:absolute;top:-36px;font-size:var(--s);line-height:1;opacity:0;will-change:transform,opacity;animation:egg-fall 2.1s cubic-bezier(.3,.6,.4,1) var(--d) forwards}
 .chat-egg[data-way=rise] span{top:auto;bottom:-36px;animation-name:egg-rise}
 .chat-egg[data-way=drift] span{animation-name:egg-drift;animation-duration:2.3s}
+.chat-egg[data-effect=fireworks] span{top:25%;animation-name:egg-burst}
+@keyframes egg-burst{0%{opacity:0;transform:translateY(60px) scale(.1)}25%{opacity:1;transform:translateY(0) scale(.5)}65%{opacity:1;transform:translateY(-15px) scale(1.8)}100%{opacity:0;transform:translateY(10px) scale(2.5)}}
 @keyframes egg-fall{0%{opacity:0;transform:translateY(0) rotate(0)}12%{opacity:1}80%{opacity:1}100%{opacity:0;transform:translateY(var(--h)) rotate(var(--r))}}
 @keyframes egg-rise{0%{opacity:0;transform:translateY(0) scale(.6)}15%{opacity:1}75%{opacity:1}100%{opacity:0;transform:translateY(calc(var(--h) * -.85)) scale(1.1)}}
 @keyframes egg-drift{0%{opacity:0;transform:translate(0,0) rotate(0)}20%{opacity:1}80%{opacity:.9}100%{opacity:0;transform:translate(26px,calc(var(--h) * .55)) rotate(var(--r))}}
@@ -241,25 +243,16 @@
 @keyframes pet-bump{40%{transform:translateY(2px) scaleY(.97)}}
 @media (prefers-reduced-motion:reduce){.pet-sprite,.pet-body,.pet-stars,.pet-say.show{animation:none!important}.pet-say.show{opacity:1;transform:translate(-50%,0)}}
 /* 宠物 in their sheets */
-.pet-face{display:inline-block;flex:none;width:var(--s);height:var(--s);background-repeat:no-repeat;background-size:calc(var(--s) * 14) var(--s);background-position:0 0;image-rendering:pixelated}
+.pet-face{display:inline-block;flex:none;width:var(--s);height:var(--s);background-repeat:no-repeat;background-size:calc(var(--s) * 16) var(--s);background-position:0 0;image-rendering:pixelated}
 .pet-row .pet-face{margin-right:2px}
 /* A row's own spans grow (flex:1): the face is one frame of the strip, never wider. */
 .list-row>span.pet-face:not(.avatar):not(.plate){flex:none;width:var(--s);min-width:var(--s)}
-.pet-bars{display:grid;gap:3px;margin-top:5px}
-.pet-bars>span{display:grid;grid-template-columns:30px 1fr;align-items:center;gap:6px}
-.pet-bars small{font-size:10.5px;color:var(--ink2)}
-.pet-bars i{display:block;height:6px;border-radius:99px;background:linear-gradient(90deg,var(--accent) var(--v),var(--card2) var(--v))}
-.pet-bars i[data-low=true]{background:linear-gradient(90deg,#f0794f var(--v),var(--card2) var(--v))}
 .pet-kinds{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px}
 .pet-kind{display:grid;justify-items:center;gap:2px;padding:10px 6px;border-radius:16px;background:var(--card);box-shadow:inset 0 0 0 1.5px var(--line)}
 .pet-kind[aria-pressed=true]{box-shadow:inset 0 0 0 2px var(--accent);background:var(--accent-soft)}
 .pet-kind span{font-weight:800;font-size:13.5px}
 .pet-kind small{font-size:11px;color:var(--ink2)}
 .pet-card{display:grid;justify-items:center;gap:6px;text-align:center;margin-bottom:6px}
-.pet-card .pet-bars{width:min(240px,100%)}
-.pet-foods{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
-.pet-food{display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border-radius:99px;background:var(--card);box-shadow:inset 0 0 0 1.5px var(--line);font-size:13px;font-weight:700;color:var(--ink)}
-.pet-food small{color:var(--ink2)}
 /* 慢递信件: an envelope in the chat, the letter on paper */
 .letter-card{display:grid;grid-template-columns:52px 1fr;align-items:center;gap:10px;width:220px;max-width:100%;padding:10px 12px;border-radius:16px;background:var(--card);box-shadow:inset 0 0 0 1.5px var(--line),0 3px 0 var(--line);text-align:left;color:var(--ink)}
 .lc-env{position:relative;width:52px;height:36px;border-radius:5px;background:#fbf3e4;box-shadow:inset 0 0 0 1.5px #d9c7a6;overflow:hidden}
@@ -288,3 +281,84 @@
 .chat-bubble .at{font-weight:800;color:var(--accent-ink)}
 .msg.me .chat-bubble .at{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .chat-bubble .at-me{padding:0 3px;border-radius:5px;background:rgba(255,190,60,.35)}
+
+/* Finite companion actions share the existing sprite, without layout animation. */
+.pet[data-action=stretch] .pet-sprite{animation:pet-stretch 1.8s ease-in-out}
+.pet[data-action=roll] .pet-sprite,.pet[data-action=flip] .pet-sprite{animation:pet-roll 1.2s ease-in-out;transform-origin:50% 50%}
+.pet[data-action=tail] .pet-sprite{animation:pet-tail .55s ease-in-out 3;transform-origin:50% 60%}
+.pet[data-action=scratch] .pet-sprite{animation:pet-struggle .15s steps(2) 10}
+.pet[data-action=tilt] .pet-sprite,.pet[data-action=look] .pet-sprite{animation:pet-tilt 1.8s ease-in-out}
+.pet[data-action=belly] .pet-sprite{animation:pet-belly 1.8s ease-in-out;transform-origin:50% 55%}
+.pet[data-action=jump] .pet-sprite{animation:pet-jump .6s ease-in-out}
+.pet[data-action=rub] .pet-sprite,.pet[data-action=cuddle] .pet-sprite,.pet[data-action=groom] .pet-sprite{animation:pet-rub .6s ease-in-out 4}
+.pet[data-action=lounge] .pet-sprite{transform:scaleY(.8) scaleX(1.1)}
+.pet-ball{position:absolute;width:12px;height:12px;pointer-events:none;animation:pet-ball 1s ease-out forwards}
+.pet-ball svg{display:block;width:100%;height:100%}
+@keyframes pet-stretch{50%{transform:scaleX(1.3) scaleY(.75) translateY(-2px)}}
+@keyframes pet-roll{50%{transform:translateY(-14px) rotate(180deg)}100%{transform:rotate(360deg)}}
+@keyframes pet-tail{50%{transform:scaleX(-1) rotate(25deg)}}
+@keyframes pet-tilt{35%{transform:rotate(-15deg)}70%{transform:rotate(12deg)}}
+@keyframes pet-belly{25%,75%{transform:rotate(180deg)}}
+@keyframes pet-rub{50%{transform:scaleY(.92) rotate(5deg)}}
+@keyframes pet-ball{to{transform:translateX(var(--roll)) rotate(360deg)}}
+.pet-layer[data-paused] *{animation-play-state:paused!important}
+@media (prefers-reduced-motion:reduce){.pet-layer *{animation:none!important}}
+
+/* 0.9.47 · a message's menu like QQ's: a dark card over the bubble, 回应 on top, the actions as icons with a word. */
+.overlay.msg-pop{display:block;padding:0;background:rgba(10,20,40,.14);animation:fade .16s}
+.msg-pop .sheet{position:absolute;width:min(304px,calc(100% - 16px));max-height:none;padding:6px 6px 4px;border-radius:16px;background:#26272d;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.3),0 0 0 .5px rgba(255,255,255,.06) inset;animation:none}
+.msg-pop .sheet-header,.msg-pop .sheet::before{display:none}
+.msg-pop .sheet-body{padding:0;overflow:visible;line-height:1.3}
+.msg-pop .sheet[data-arrow]:not([data-arrow=""])::after{content:"";position:absolute;left:calc(var(--ax) - 7px);width:14px;height:14px;background:#26272d;transform:rotate(45deg);border-radius:3px;pointer-events:none}
+.msg-pop .sheet[data-arrow=down]::after{bottom:-5px}
+.msg-pop .sheet[data-arrow=up]::after{top:-5px}
+.msg-pop .react-row{gap:0;margin:0 0 4px;padding:0 0 6px;border-bottom:1px solid rgba(255,255,255,.1)}
+.msg-pop .react-row button{height:38px;border-radius:10px;font-size:22px;background:transparent;box-shadow:none}
+.msg-pop .react-row button[aria-pressed=true]{background:rgba(255,255,255,.16);box-shadow:none}
+.react-row .react-more{display:grid;place-items:center;color:var(--ink2)}
+.msg-pop .react-row .react-more{color:rgba(255,255,255,.75)}
+.react-more svg{width:20px;height:20px}
+.mp-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px}
+.mp-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-height:0;padding:9px 0 7px;border-radius:10px;background:transparent;box-shadow:none;color:var(--ink);font-size:11px;font-weight:700;white-space:nowrap;transition:background .15s,transform .18s cubic-bezier(.3,1.6,.5,1)}
+.mp-item:active{transform:scale(.92);background:var(--card2)}
+.mp-ico{display:grid;place-items:center;height:22px}
+.mp-ico svg{width:21px;height:21px}
+.mp-item.danger{color:var(--danger,#d6455d)}
+.msg-pop .mp-item{color:rgba(255,255,255,.92)}
+.msg-pop .mp-item:active{background:rgba(255,255,255,.12)}
+.msg-pop .mp-item.danger{color:#ff8f9c}
+.mp-label{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+
+/* 0.9.47 · the whole emoji set and the 颜文字: sections that scroll, a bar of categories under them. */
+.ep{display:flex;flex-direction:column;height:248px;margin-top:4px}
+.ep-sheet .ep{height:min(56vh,420px)}
+.ep-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;scroll-behavior:smooth}
+.ep-scroll::-webkit-scrollbar{display:none}
+.ep-sec h4{margin:0;padding:8px 4px 2px;font-size:11px;font-weight:800;letter-spacing:.04em;color:var(--ink2);opacity:.75}
+.ep-grid.emo{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));content-visibility:auto;contain-intrinsic-size:auto 200px}
+.ep-grid.emo button{height:40px;min-height:0;padding:0;border-radius:10px;background:transparent;box-shadow:none;font-size:25px;line-height:1;font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;transition:transform .16s cubic-bezier(.3,1.6,.5,1)}
+.ep-grid.emo button:active{transform:scale(1.25);background:var(--card2)}
+.ep-grid.kao{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 4px}
+.ep-grid.kao button{height:36px;min-height:0;padding:0 4px;border-radius:10px;background:transparent;box-shadow:none;font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ep-grid.kao button:active{background:var(--card2)}
+.ep-cats{display:flex;gap:2px;padding:6px 0 0;border-top:1px solid var(--line,rgba(127,127,127,.15));overflow-x:auto;scrollbar-width:none}
+.ep-cats::-webkit-scrollbar{display:none}
+.ep-cats button{flex:1 0 auto;min-width:34px;height:32px;min-height:0;padding:0 6px;border-radius:9px;background:transparent;box-shadow:none;font-size:18px;opacity:.55;filter:grayscale(.6);transition:opacity .2s,filter .2s,background .2s}
+.ep-cats.kao button{font-size:12px;font-weight:800;color:var(--ink2);filter:none}
+.ep-cats button[aria-current=true]{opacity:1;filter:none;background:var(--accent-soft);color:var(--accent-ink)}
+/* 0.9.47 · 论坛 → 网名: a picture beside each name when 「自己设」. */
+.net-row{display:flex;align-items:flex-end;gap:10px}
+.net-row .field{flex:1;min-width:0}
+.net-face{display:flex;flex-direction:column;align-items:center;gap:2px;flex:none;margin-bottom:14px;padding:0;min-height:0;background:transparent;box-shadow:none;color:var(--ink2);font-size:10px;font-weight:800}
+.net-face .avatar,.net-face img{width:36px;height:36px}
+/* 0.9.47 · 全部明细 by month. */
+.ledger-month{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:16px 4px 6px}
+.ledger-month:first-child{margin-top:4px}
+.ledger-month h3{margin:0;font-size:15px;font-weight:900}
+.ledger-month small{font-size:11px;color:var(--ink2)}
+/* 0.9.49 · bubbles: a long press is the menu, never a text selection (复制 is in the menu); 左滑引用 like QQ. */
+.msg[data-mid] .m-body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:pan-y;transition:transform .32s cubic-bezier(.25,1.45,.45,1)}
+.msg[data-mid]{position:relative}
+.msg[data-swiping] .m-body{transform:translateX(var(--swipe,0px));transition:none}
+.msg[data-swiping]::after{content:"";position:absolute;right:10px;top:50%;width:30px;height:30px;margin-top:-15px;border-radius:50%;background:var(--accent-soft) no-repeat center/16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232f6fd6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14 4 9l5-5'/%3E%3Cpath d='M4 9h10a6 6 0 0 1 6 6v4'/%3E%3C/svg%3E");opacity:var(--swipe-p,0);transform:scale(.7);transition:transform .2s cubic-bezier(.3,1.6,.5,1)}
+.msg[data-swipe-ready]::after{transform:scale(1.08)}

@@ -106,18 +106,33 @@ export function parseMoments(reply, {names, user = '我', mode = 'posts'}) {
 // long reply stopped mid-sentence), and the newest come first until `total` is used up.
 export const STORY_LIMITS = Object.freeze({each: 4000, total: 20000});
 // limit: how many replies, or a chat preset (its context, storyEach and storyTotal; 0 there is no limit).
-export function storyLines(chat, limit, user, {each = STORY_LIMITS.each, total = STORY_LIMITS.total} = {}) {
-  if (limit && typeof limit === 'object') { const p = limit; limit = p.context; each = p.storyEach ?? each; total = p.storyTotal ?? total; }
+export function storyLines(chat, limit, user, {each = STORY_LIMITS.each, total = STORY_LIMITS.total, regex = text => text} = {}) {
+  const tags = typeof limit === 'object' ? limit?.cleanTags : [];
+  const bounded = limit && typeof limit === 'object' && !['recent', 'off'].includes(limit.storyMode) && (limit.storyMode || Number(limit.context) !== 0);
+  if (limit && typeof limit === 'object') { const p = limit; limit = (p.storyMode || (Number(p.context) === 0 ? 'off' : 'tavern')) === 'off' ? 0 : p.storyMode === 'recent' ? p.context : Infinity; each = p.storyEach ?? each; total = p.storyTotal ?? total; }
   each = each || Infinity; total = total || Infinity;
   const out = [];
-  let used = 0;
-  for (let i = (chat?.length || 0) - 1; i >= 0 && out.length < limit; i--) {
+  const lastStory = !bounded && limit > 0 ? (chat || []).findLastIndex(m => m && !m.is_system && !m.is_user && plainStory(m.mes, tags)) : -1;
+  let used = 0, depth = 0;
+  for (let i = (chat?.length || 0) - 1; i >= 0 && (out.length < limit || i >= lastStory && lastStory >= 0); i--) {
+    if (out.length >= limit && i !== lastStory) { if (chat[i] && !chat[i].is_system) depth++; continue; }
     const m = chat[i];
     if (!m || m.is_system) continue;
-    let said = plainStory(m.mes);
+    let processed = m.mes;
+    try { processed = regex(String(m.mes || ''), {user: !!m.is_user, depth}); } catch { /* unavailable host regex: keep the original */ }
+    depth++;
+    let said = plainStory(processed, tags);
     if (!said) continue;
+    if (bounded) {
+      const room = total - used;
+      if (room <= 0) break;
+      said = said.slice(0, Math.min(each, room));
+      used += said.length;
+      out.unshift({name: m.name || (m.is_user ? user : '旁白'), text: said});
+      continue;
+    }
     if (said.length > each) said = said.slice(0, each) + '……';
-    if (out.length && used + said.length > total) break;
+    if (out.length && used + said.length > total && i !== lastStory) continue;
     used += said.length;
     out.unshift({name: m.name || (m.is_user ? user : '旁白'), text: said});
   }

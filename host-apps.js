@@ -1,9 +1,11 @@
+import {readStoryLines} from './story-exact.js';
 // 论坛 and 查手机, tavern side. Like 朋友圈, they are generated apart from the story with the tavern's connected model (or
 // the phone's own text model) and nothing is written into the story. One model request per app at a time.
 import {currentDm} from './core/chats.js';
 import {buildForumRequest, parseForum, postLines} from './core/forum.js';
-import {buildPeekRequest, parsePeek, peekId, mergePeek} from './core/peek.js';
-import {storyLines, pickCrowd, activityNames} from './core/moments.js';
+import {buildPeekRequest, parsePeek, peekId, mergePeek, sharedPeekChats, keepSharedPeek} from './core/peek.js';
+import {findRoute, roleStore} from './core/routes.js';
+import {pickCrowd, activityNames} from './core/moments.js';
 import {inSpace, activeChatPreset, cleanTagged} from './core/chat.js';
 import {worldInfoFor, loreOptions} from './host-lore.js';
 import {pictureInputs, sizeFor, photoPicture} from './core/draw.js';
@@ -56,7 +58,7 @@ export function createAppsHost({context, settings, backend, memory = null}) {
       // The card asked for: the tavern may move to another one while the model writes.
       const space = backend.cardKey(), save = backend.saveKey(), hotId = backend.hotId(), {preset, everyone, user} = base(), handles = netNames();
       const posts = await feed(), recent = posts.slice(0, 8), hot = (await backend.apps.get(hotId))?.topics || [];
-      const story = storyLines(ctx.chat, preset, user), crowd = pick(everyone, story, posts);
+      const story = await readStoryLines(ctx.chat, preset, user), crowd = pick(everyone, story, posts);
       const prompt = buildForumRequest({prompts: settings().promptRules, preset, handles, earlier: memory?.storyMemory() || '', mode: 'posts', people: crowd, story, user, userPersona: userPersona(), recent, hot, lore: await lore(preset, crowd, story, [...hot, ...recent.map(p => p.title)])});
       const found = parseForum(await ask(ctx, prompt, preset, 'forum'), {user, mode: 'posts', handles});
       await keepNames(found.names, crowd);
@@ -71,7 +73,7 @@ export function createAppsHost({context, settings, backend, memory = null}) {
       const {preset, everyone, user} = base(), handles = netNames();
       const post = await backend.apps.get(postId);
       if (!post) throw Error('这个帖子已经不在了');
-      const story = storyLines(ctx.chat, preset, user), crowd = pick(everyone, story, await feed());
+      const story = await readStoryLines(ctx.chat, preset, user), crowd = pick(everyone, story, await feed());
       const prompt = buildForumRequest({prompts: settings().promptRules, preset, handles, earlier: memory?.storyMemory() || '', mode: 'react', people: crowd, story, user, userPersona: userPersona(), post, lore: await lore(preset, crowd, story, [postLines(post, user)])});
       const found = parseForum(await ask(ctx, prompt, preset, 'forum'), {user, mode: 'react', handles});
       await keepNames(found.names, crowd);
@@ -86,13 +88,13 @@ export function createAppsHost({context, settings, backend, memory = null}) {
       const post = await backend.apps.get(postId), mine = post?.replies.find(r => r.id === replyId);
       if (!post || !mine) throw Error('这条回复已经不在了');
       // The post's author, whom the reply answers and who already spoke under it are in the answer's list.
-      const story = storyLines(ctx.chat, preset, user), crowd = pick(everyone, story, await feed(), [post.author, mine.to, ...post.replies.map(r => r.from)]);
+      const story = await readStoryLines(ctx.chat, preset, user), crowd = pick(everyone, story, await feed(), [post.author, mine.to, ...post.replies.map(r => r.from)]);
       // Keep the topic in one scan unit: even a shallow scan needs the original question and recent discussion.
       const discussion = postLines(post, user) + `\n本次回复${mine.to ? '（回复 ' + mine.to + '）' : ''}：${mine.text}`;
       const prompt = buildForumRequest({prompts: settings().promptRules, preset, handles, earlier: memory?.storyMemory() || '', mode: 'reply', people: crowd, story, user, userPersona: userPersona(), post, reply: mine, lore: await lore(preset, crowd, story, [discussion])});
       const found = parseForum(await ask(ctx, prompt, preset, 'forum'), {user, mode: 'reply', handles});
       await keepNames(found.names, crowd);
-      if (!found.replies.length) throw Error('这次没有人接话，可以再试一次');
+      if (!found.replies.length) throw Error('这次没有人接话，点这条回帖的 ⋯ → 重试');
       return backend.addForumReplies(postId, found.replies);
     });
   }
@@ -106,12 +108,21 @@ export function createAppsHost({context, settings, backend, memory = null}) {
       const person = {name, persona: contact.persona, card: contact.persona ? '' : card(name)};
       const thread = currentDm(await backend.threads(), name);
       const history = thread ? (await backend.chats.get(thread.id)).messages.filter(m => m.kind !== 'system').slice(-20) : [];
-      const story = storyLines(ctx.chat, preset, user);
+      const story = await readStoryLines(ctx.chat, preset, user);
       const remembered = memory ? await memory.aboutPeople([name]).catch(() => '') : '';
-      const before = keep ? (await backend.apps.get(peekId(name, key))) || (key ? await backend.apps.get(peekId(name)) : null) : null;
+      let before = keep ? (await backend.apps.get(peekId(name, key))) || (key ? await backend.apps.get(peekId(name)) : null) : null;
+      const routes = backend.seen?.routes || settings().routes;
+      if (before?.ownerKey && before.ownerKey !== (roleStore(findRoute(routes, name)) || name)) before = null;
+      const snapshots = (await backend.apps.list('peek')).filter(p => (p.space || '') === key);
+      const shared = sharedPeekChats(name, snapshots, routes);
       const prompt = buildPeekRequest({prompts: settings().promptRules, preset, before, earlier: memory?.storyMemory() || '', person, story, user, userPersona: userPersona(), history, memory: remembered, images: !!backend.drawReady(), lore: await lore(preset, [person], story, history.map(m => m.text || ''))});
+      if (shared.length) prompt[0].content += '\n【双方已看到的共同聊天，保持原样，不要重写】\n' + shared.map(c => `【聊天】${c.with}\n${c.lines.map(l => `${l.from}：${l.text}`).join('\n')}`).join('\n');
       const found = parsePeek(await ask(ctx, prompt, preset, 'peek'), {name, user});
-      return backend.savePeek({name, ...mergePeek(before, found)}, key);
+      for (const c of found.chats) {
+        c.with = findRoute(routes, c.with)?.name || c.with;
+        c.withKey = roleStore(findRoute(routes, c.with)) || c.with;
+      }
+      return backend.savePeek({name, ...keepSharedPeek(mergePeek(before, found), shared), ownerKey: roleStore(findRoute(routes, name)) || name}, key);
     });
   }
 

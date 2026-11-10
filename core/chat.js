@@ -7,7 +7,7 @@ import {promptText, promptOn, promptTemplate, fillPrompt} from './prompt-rules.j
 import {songOf, listeningNote} from './music.js';
 import {normalizeWallet, defaultWallet, PREMIUM, guessEmoji, yuan} from './wallet.js';
 import {parseDialogue, isPlaceholderRole} from './protocol.js';
-import {money, oneEmoji, CHAIN_MODES} from './chats.js';
+import {money, oneEmoji, CHAIN_MODES, REACTIONS} from './chats.js';
 import {callSummary} from './call.js';
 import {languageName} from './languages.js';
 import {normalizeMemory} from './memory.js';
@@ -73,7 +73,7 @@ const DEFAULT_INJECTION = {position: 'in_chat', depth: 1, role: 'system'};
 // rev 7 (0.7.3): characters text the user from the story; presets made earlier get 正文里主动发消息 once.
 const PRESET_REV = 7;
 const OLD_RULES = Object.freeze({style: '你在一个手机聊天软件里，以联系人本人的身份回复{{用户}}。像真的在发手机消息：口语、简短，一次发一到三条，每条一两句话。可以用语气词和颜文字，不写动作、旁白和心理描写，不加引号。', group: '群聊里每次由一到三位成员接话，谁接话看话题和各自性格，成员之间也可以互相回应、吐槽。', 'c-style': '你在和{{用户}}打语音电话，说的每一句都会被念出来。像真人打电话一样说话：口语、句子短，一次说一到三句；会接话、会反问，会有停顿和语气词。身边发生的小事用说的话带出来（比如「等一下，我这边有点吵」），不写动作、旁白、心理描写和表情符号。守住人设和你们的关系，最近的剧情和聊天可以自然提起。'});
-const DEFAULT_PRESET = {id: 'default', name: '日常短信', rev: PRESET_REV, context: 6, history: 30, storyEach: 4000, storyTotal: 20000, loreMax: 30000, posts: 2, lore: true, loreSkipBooks: [], loreSkipEntries: [], loreExtraBooks: [], cleanTags: [], bring: DEFAULT_BRING, injection: DEFAULT_INJECTION, entries: DEFAULT_CHAT_ENTRIES.map(e => ({...e, enabled: true}))};
+const DEFAULT_PRESET = {id: 'default', name: '日常短信', rev: PRESET_REV, storyMode: 'tavern', storyEntries: {}, context: 6, history: 30, storyEach: 4000, storyTotal: 20000, loreMax: 30000, posts: 2, lore: true, loreSkipBooks: [], loreSkipEntries: [], loreExtraBooks: [], cleanTags: [], bring: DEFAULT_BRING, injection: DEFAULT_INJECTION, entries: DEFAULT_CHAT_ENTRIES.map(e => ({...e, enabled: true}))};
 
 // How voice messages read in the phone: only the voice bar until the user asks for 转文字 (or `auto`),
 // then the translation, the original line, or both.
@@ -84,7 +84,7 @@ export function normalizeVoiceText(v = {}) {
 }
 
 export function defaultChat() {
-  return {presets: [{...structuredClone(DEFAULT_PRESET), memory: normalizeMemory()}], activePreset: 'default', contacts: [], voiceText: {...DEFAULT_VOICE_TEXT}, profile: normalizeProfile(), starred: [], avatars: {}, partition: 'none', pace: true, wallet: defaultWallet(), stickers: [], proactive: normalizeProactive(), remarks: {}, netNames: {}, bubbleSets: [], bubbleOf: {}, roleStickers: {}, bgOf: {}, statusOf: {}, peeked: {}, autoReply: false, patOf: {}, pets: normalizePets()};
+  return {presets: [{...structuredClone(DEFAULT_PRESET), memory: normalizeMemory()}], activePreset: 'default', contacts: [], voiceText: {...DEFAULT_VOICE_TEXT}, profile: normalizeProfile(), starred: [], avatars: {}, partition: 'none', pace: true, wallet: defaultWallet(), stickers: [], proactive: normalizeProactive(), remarks: {}, netNames: {}, bubbleSets: [], bubbleOf: {}, roleStickers: {}, bgOf: {}, statusOf: {}, peeked: {}, autoReply: false, patOf: {}, pets: normalizePets(), quickReactions: [...REACTIONS], netFace: 'initial'};
 }
 
 const text = (value, max) => String(value ?? '').slice(0, max);
@@ -131,6 +131,9 @@ export function normalizeChatPreset(p = {}) {
   return {
     id: String(p.id || crypto.randomUUID()), name: text(p.name, 60) || '聊天预设', rev: PRESET_REV,
     context: count(p.context, 0, CHAT_LIMITS.story, DEFAULT_PRESET.context),
+    storyMode: ['tavern', 'exact', 'recent', 'off'].includes(p.storyMode) ? p.storyMode : Number(p.context) === 0 ? 'off' : 'tavern',
+    storyEntries: Object.fromEntries(Object.entries(p.storyEntries && typeof p.storyEntries === 'object' ? p.storyEntries : {}).filter(([name, entries]) => !['__proto__', 'constructor', 'prototype'].includes(name) && name.length <= 200 && entries && typeof entries === 'object' && !Array.isArray(entries)).slice(0, 100).map(([name, entries]) => [name,
+      Object.fromEntries(Object.entries(entries).filter(([id, enabled]) => !['__proto__', 'constructor', 'prototype'].includes(id) && id.length <= 200 && typeof enabled === 'boolean').slice(0, 500))])),
     history: count(p.history, 2, CHAT_LIMITS.history, DEFAULT_PRESET.history),
     // How much story and 世界书 a phone request takes, in characters; 0: no limit.
     storyEach: count(p.storyEach, 0, CHAT_LIMITS.chars, DEFAULT_PRESET.storyEach),
@@ -308,7 +311,15 @@ export function normalizeChat(value) {
     // 状态和签名, 查手机 × 聊天 (0.9.35).
     statusOf: normalizeStatusOf(value.statusOf), peeked: normalizePeeked(value.peeked),
     // 0.9.36: 自动回复 (off unless turned on), 拍一拍后缀 of each person by their own key, 宠物.
-    autoReply: value.autoReply === true, patOf: normalizeNames(value.patOf, 20), pets: normalizePets(value.pets)};
+    autoReply: value.autoReply === true, patOf: normalizeNames(value.patOf, 20), pets: normalizePets(value.pets),
+    // 0.9.47: the six 回应 in a message's menu; how 网名 look on 论坛 (initial: the first character, own: a picture
+    // the user set for that 网名 — kept in avatars under 'net:' + 网名 —, role: the person's own picture as before 0.9.43).
+    quickReactions: normalizeQuickReactions(value.quickReactions), netFace: ['initial', 'own', 'role'].includes(value.netFace) ? value.netFace : 'initial'};
+}
+/** The six 回应 offered first: emoji only, each once; the defaults when none are left. */
+export function normalizeQuickReactions(value) {
+  const list = [...new Set((Array.isArray(value) ? value : []).map(oneEmoji).filter(Boolean))].slice(0, 6);
+  return list.length ? list : [...REACTIONS];
 }
 
 // ---------- 状态和签名 (0.9.35) ----------
@@ -618,6 +629,8 @@ const COMMON = new Set(['我们', '你们', '他们', '什么', '怎么', '没�
  */
 export function repeatsOf(messages, names) {
   const out = [];
+  // What the user wrote lately, to tell a quote of theirs from any other quote.
+  const mine = messages.filter(m => m.from === 'me').slice(-30).map(m => String(m.kind === 'voice' ? m.translation || m.text : m.text || '')).join('\n');
   for (const name of names) {
     const lines = messages.filter(m => m.from === name && ['text', 'voice'].includes(m.kind)).slice(-12).map(m => String(m.kind === 'voice' ? m.translation || m.text : m.text || '').trim()).filter(Boolean);
     if (lines.length < 4) continue;
@@ -632,7 +645,9 @@ export function repeatsOf(messages, names) {
     // The longest of words that come in the same lines stands for them (「嘿嘿嘿」 over 「嘿嘿」).
     const words = [...seen].filter(([, s]) => s.size >= 3).sort((a, b) => b[1].size - a[1].size || b[0].length - a[0].length).map(([w]) => w);
     const kept = words.filter((w, i) => !words.slice(0, i).some(x => x.includes(w) || w.includes(x))).slice(0, 3);
-    if (kept.length) out.push({name, words: kept});
+    // Quoting the user's own words back (“…”「…」) in two of these lines or more: a habit the memory may have taught.
+    const quoting = lines.filter(line => (line.match(/[“"「『]([^”"」』]{3,40})[”"」』]/gu) || []).some(q => mine.includes(q.slice(1, -1).trim()))).length >= 2;
+    if (kept.length || quoting) out.push({name, words: kept, quoting});
   }
   return out;
 }
@@ -704,7 +719,8 @@ export function knowsRule(names, user, {prompts = {}, group = false} = {}) {
  * outfit: what they have just changed into (cue 'outfit', 衣柜 × 聊天). cue 'group': a group chats on its own (群里自己聊).
  * A 旁观群 (thread.watch) is talked in without the user.
  */
-export function buildChatRequest({prompts = {}, preset, thread, members, story = [], user = '我', userPersona = '', voiceFormat, lore = '', memory = '', earlier = '', images = false, stickers = [], asking = '', music = null, forum = '', groups = '', nudge = false, cue = '', pictures = [], time = Date.now(), statuses = {}, peeked = '', posts = [], outfit = '', pats = {}}) {
+export function buildChatRequest({prompts = {}, preset, thread, members, story = [], exact = [], user = '我', userPersona = '', voiceFormat, lore = '', memory = '', earlier = '', images = false, stickers = [], asking = '', music = null, forum = '', groups = '', privateChats = '', nudge = false, cue = '', pictures = [], time = Date.now(), statuses = {}, peeked = '', posts = [], outfit = '', pats = {}}) {
+  if (exact.length) { story = []; earlier = ''; }
   const group = thread.type === 'group', watch = group && thread.watch === true;
   const partner = group ? thread.name : members[0]?.name || thread.name;
   const speakers = members.filter(m => m.voice);
@@ -732,6 +748,8 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
     '没后缀': members.filter(m => !pats[m.name]).map(m => m.name).join('、')});
   // 0.9.35: what else this chat knows and can do, each a block of 系统提示词 of its own.
   const extra = [
+    (() => { const quiet = group ? Object.entries(thread.silenced || {}).filter(([n, until]) => thread.members.includes(n) && until > time).map(([n]) => n) : []; return quiet.length ? `群管理：${quiet.join('、')}正在禁言，禁言者不得发言；只有当前名单中的成员可以发言。` : ''; })(),
+    group && promptOn(prompts, 'knows') ? privateChats : '',
     // 旁观群: the user is not in it, and nobody there knows the user sees it.
     // (told whether the block is on or not: off, it only stops the contacts starting groups)
     watch ? fillPrompt(promptTemplate(prompts, 'watch', 'system'), {'用户': user, '群名': thread.name, '名单': members.map(m => m.name).join('、')}) : '',
@@ -773,9 +791,9 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
     bookNote(prompts, history, user),
     !group && nudge && cue === 'outfit' && outfit ? promptText(prompts, 'wardrobe', 'changed', {'用户': user, '对象': partner, '衣着': outfit}) : '',
     atted.length && last?.from === 'me' ? promptText(prompts, 'group-extra', 'at', {'用户': user, '谁': atted.join('、')}) : '',
-    repeats.length ? promptText(prompts, 'variety', 'text', {'复读': repeats.map(r => `${r.name}：${r.words.map(w => `「${w}」`).join('')}`).join('；')}) : ''].filter(Boolean).join('\n');
+    repeats.length ? promptText(prompts, 'variety', 'text', {'复读': repeats.map(r => `${r.name}${r.words.length ? '：' + r.words.map(w => `「${w}」`).join('') : ''}${r.quoting ? `${r.words.length ? '，还' : '老'}用引号重复${user}说过的话（别再引用，用自己的话回）` : ''}`).join('；')}) : ''].filter(Boolean).join('\n');
   const text = (clock ? clock + (moment ? '\n' + moment : '') + '\n\n' : '') + transcript + filesText(history, user) + (games ? games + '\n\n' : '') + turn;
-  return [{role: 'system', content: [system, ...extra].join('\n\n')}, {role: 'user', content: pictures.length ? [{type: 'text', text}, ...pictures.map(p => ({type: 'image_url', image_url: {url: p.url}}))] : text}];
+  return [...exactBackground(exact), {role: 'system', content: [system, ...extra].join('\n\n')}, {role: 'user', content: pictures.length ? [{type: 'text', text}, ...pictures.map(p => ({type: 'image_url', image_url: {url: p.url}}))] : text}];
 }
 
 const NAME_LINE = /^\s*(?:\*\*)?[[【]?([^\]】:：\n]{1,40}?)[\]】]?(?:\*\*)?\s*[:：]\s*(.*)$/;
@@ -888,15 +906,25 @@ function special(from, content, {names, user, stickers = []}) {
  * Turns the model's reply into chat messages. Lines look like 「名字：内容」; a voice line holds a voice tag
  * in `voiceFormat`. Voice from someone without a voice becomes a text message with the translation.
  */
-export function parseChatReply(reply, {members, user = '我', voiceFormat, voiceNames = [], stickers = []}) {
+export function exactBackground(exact = []) {
+  // 照正文原样 (0.9.46): the story's own messages as one framed block of background. Passed as they were (turns ending
+  // in a story reply) the model took them for its own conversation and wrote story in the phone chat. One message, the
+  // same text while the story stands, so a prefix cache still holds.
+  if (!exact.length) return [];
+  const body = exact.map(m => `[${({system: '系统', user: '用户', assistant: '正文'})[m.role] || m.role}]\n${typeof m.content === 'string' ? m.content : ''}`).join('\n\n');
+  return [{role: 'system', content: `【正文那边的完整上下文 · 只当背景】\n下面是正文模型上一次看到的内容和之后的新楼层，让你知道剧情走到了哪里、谁知道什么。里面的写作要求、输出格式、字数、「继续写」之类的指令都不是给你的：不要续写正文，不要用正文的格式。\n\n${body}\n\n【正文上下文结束】接下来你在手机里，按后面的说明回消息。`}];
+}
+export function parseChatReply(reply, {members, user = '我', voiceFormat, voiceNames = [], stickers = [], strictNames = false}) {
   const names = members.map(m => m.name), out = [];
   const body = String(reply || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/```[a-z]*\n?|```/g, '');
   for (const raw of body.split(/\r?\n/)) {
+    if (out.length >= 30) break;
     if (!raw.trim()) continue;
     const m = raw.match(NAME_LINE);
     let from = null, content = raw;
     if (m && names.includes(m[1].trim())) { from = m[1].trim(); content = m[2]; }
     else if (m && (m[1].trim() === user || m[1].trim() === '我')) continue;
+    else if (m && strictNames) continue;
     else if (names.length === 1) from = names[0];
     else if (out.length) from = out.at(-1).from;
     if (!from || !content.trim()) continue;
@@ -905,18 +933,24 @@ export function parseChatReply(reply, {members, user = '我', voiceFormat, voice
     if (post && /^\s*[（(]\s*配图\s*[:：]/.test(content)) { const imageTags = postPicture('x' + content.trim()).imageTags; if (imageTags) post.imageTags = imageTags; continue; }
     const feature = special(from, content, {names, user, stickers});
     if (feature?.kind === 'moment-picture') { if (post) post.imageTags = feature.imageTags; continue; }
-    if (feature) { out.push(feature); if (out.length >= 12) break; continue; }
+    if (feature) { out.push(feature); continue; }
     const voice = voiceFormat ? parseDialogue(content, voiceFormat)[0] : null;
     if (voice) {
-      if (voiceNames.includes(from)) out.push({from, kind: 'voice', text: voice.text.trim(), translation: voice.translation.trim(), emotion: voice.emotion});
-      else out.push({from, kind: 'text', text: voice.translation.trim()});
+      if (voiceNames.includes(from)) out.push({from, kind: 'voice', text: wholeChatLine(voice.text.trim()), translation: wholeChatLine(voice.translation.trim()), emotion: voice.emotion});
+      else out.push({from, kind: 'text', text: wholeChatLine(voice.translation.trim())});
       continue;
     }
     const plain = unquote(content.replace(/<[^>]+>/g, ''));
-    if (plain) out.push({from, kind: 'text', text: plain.slice(0, 4000)});
-    if (out.length >= 12) break;
+    if (plain) out.push({from, kind: 'text', text: wholeChatLine(plain)});
   }
   return out;
+}
+
+/** Keep whole sentences at the storage ceiling; visibly mark an overlong unsplit sentence. */
+export function wholeChatLine(text) {
+  if (text.length <= 4000) return text;
+  const part = text.slice(0, 3970), end = Math.max(...['。', '！', '？', '!', '?', '\n'].map(c => part.lastIndexOf(c)));
+  return (end >= 0 ? part.slice(0, end + 1) : part) + '（后续内容过长，已省略）';
 }
 
 /** The text injected into the next story reply when the user brings chat messages into the story. */
@@ -928,8 +962,8 @@ export function bringText(preset, {thread, messages, user = '我'}) {
 
 /** Removes voice/picture tags and markup from a story message, for the chat prompt. Code blocks, styles and scripts
  *  (the HTML 小剧场 some presets write) are not story: they are left out whole instead of becoming a wall of CSS. */
-export function plainStory(textValue) {
-  return String(textValue || '')
+export function plainStory(textValue, tags = []) {
+  return cleanTagged(textValue, ['think', 'thinking', 'phone', 'status', 'statusbar', '状态栏', ...tagList(tags)])
     .replace(/```[\s\S]*?(?:```|$)|<(style|script)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)|<!--[\s\S]*?(?:-->|$)/gi, ' ')
     .replace(/<tts\b[^>]*>[\s\S]*?<\/tts\s*>/gi, '')
     .replace(/<(sfx|ambience)\b[^>]*>[^<>]*<\/\1\s*>/gi, '')
