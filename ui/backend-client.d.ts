@@ -716,6 +716,15 @@ export interface BackendFacade {
     /** ElevenLabs or Fish balance; null without a key. Cached for a minute unless `refresh`. */
     voiceBalance(engine: 'eleven' | 'fish', refresh?: boolean): Promise<VoiceBalance | null>;
     keyStatus(engine: KeyEngine): boolean;
+    fishSubscriptionStatus(): {connected: boolean};
+    fishSubscriptionConnect(): Promise<{connected: boolean}>;
+    fishSubscriptionResume(): Promise<{connected: boolean}>;
+    fishSubscriptionCompleteManual(text: string): Promise<{connected: boolean}>;
+    fishSubscriptionTrace(): {at: number, ev: string, msg: string}[];
+    fishSubscriptionDisconnect(): void;
+    fishSubscriptionBalance(): Promise<string>;
+    /** Subscription credits, not developer API dollars; null means the service returned no recognizable balance. */
+    fishSubscriptionCredits(refresh?: boolean): Promise<{remaining: number | null; detail: string; checkedAt: number}>;
     /** The last 4 characters of the saved key ('' when none is saved), to tell which key is in use. */
     keyHint(engine: KeyEngine): string;
     /** Several keys (Fish): how many, which one is in use (1-based) and how many were refused while this page is open. */
@@ -1114,7 +1123,7 @@ export interface BackendFacade {
     deleteForum(id: string): Promise<boolean>;
     clearForum(): Promise<number>;
     /** 分区: the character card open in the tavern ({key, name, members}) and whether 分区 is on. */
-    phoneSpace(): { key: string; name: string; members: string[]; on: boolean };
+    phoneSpace(): { key: string; name: string; members: string[]; save?: string; on: boolean; pending?: boolean };
     /** The roles as the card open now sees them: of those sharing a name, only its own. */
     rolesHere(): Route[];
     /** 查手机 snapshots, newest first; one per character. */
@@ -1417,6 +1426,7 @@ export interface BackendAPI extends BackendFacade {
     bedtimeStatus(): {playing: boolean; busy: boolean; id: string; index: number; text: string};
     bedtimePlay(id: string, options?: {timer?: number; song?: string}): Promise<void>;
     bedtimeStop(): void;
+    bedtimeAudio(id: string): Promise<Blob[]>;
     bookRead?(lines: BookLine[], onLine?: (index: number) => void): Promise<boolean>;
     /** 绘本: a page's ambience ('ambience', looping until another or 停), a sound ('sfx'), or 'stop' — from the 音效 library while 音效 is on (false: off). */
     bookSound?(kind: 'ambience' | 'sfx' | 'stop', name?: string): Promise<boolean>;
