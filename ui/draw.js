@@ -235,10 +235,12 @@ export function drawApp(ctx) {
     const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
     const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
+    const models = Array.isArray(i.models) ? i.models : [], curModel = i.model?.id || '';
+    const modelRow = models.length ? `<div class="px-cell px-wide"><small>模型${help('点一下会去切 PixAI 网页：换模型，并按这个模型的设定带上或去掉 LoRA / Recipe。要等十几秒到半分钟，期间按钮灰着。')}</small><b>${esc(i.model?.name || '读不到网页上的模型')}</b><em>${esc([...(i.model?.recipes || []).map(x => 'Recipe ' + x), ...(i.model?.loras || []).map(x => 'LoRA ' + x)].join(' · '))}</em><div class="size-chips px-pick">${models.map(m => `<button type="button" data-action="pixai-model" data-value="${esc(m.id)}" aria-pressed="${m.id === curModel}"${pick ? ' disabled' : ''}>${esc(m.name)}</button>`).join('')}</div></div>` : '';
     const perTask = Number.isInteger(i.count) ? i.count : null;
     const lines = [];
-    lines.push(`<p class="hint" style="padding:0">比例、尺寸和横竖点上面的按钮就会去切网页；张数点下面的 1 / 4；模型和 LoRA 在 PixAI 网页里改，这里每 10 秒自动跟着变；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
-    return `<div class="group pad px-sync">${foot}<div class="px-grid">${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${lines.join('')}</div>`;
+    lines.push(`<p class="hint" style="padding:0">比例、尺寸和横竖点上面的按钮就会去切网页；张数点下面的 1 / 4；模型在上面点就会去切网页（LoRA / Recipe 跟着模型走）；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
+    return `<div class="group pad px-sync">${foot}<div class="px-grid">${modelRow}${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${lines.join('')}</div>`;
   }
   function naiParams(d, size) {
     const p = d.params, f = naiFeatures(p.model), medium = p.effort === 'medium', guard = d.guard, schedules = schedulesFor(p.model, p.sampler);
@@ -355,7 +357,7 @@ export function drawApp(ctx) {
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing]);
+  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
   const pixaiSize = () => { const r = eng() === 'pixai' ? pixaiInfo?.resolution : null; return Number.isInteger(r?.width) && Number.isInteger(r?.height) ? {width: r.width, height: r.height} : {}; };
   /** What `n` pictures cost now: the page's pictures-per-task decides how many tasks, and a task costs what the page's button says. */
@@ -571,6 +573,7 @@ export function drawApp(ctx) {
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
       case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; } render(); refreshSubscription(); refreshPixai(); break;
+      case 'pixai-model': await setPixaiPage({model: el.dataset.value}); break;
       case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
       case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
       case 'pixai-swap': await setPixaiPage({swap: true}); break;

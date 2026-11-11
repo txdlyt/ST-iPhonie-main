@@ -1636,7 +1636,7 @@ export class TTSBackend {
         if (Number.isInteger(r?.width) && Number.isInteger(r?.height)) this.pixaiWeb = { width: r.width, height: r.height };
     }
     /**
-     * PixAI 反代: change what the PixAI page is set to — {ratio: '9:16', size: 'M', swap: true, count: 1|4}, any of them —
+     * PixAI 反代: change what the PixAI page is set to — {model: 'tsubaki2', ratio: '9:16', size: 'M', swap: true, count: 1|4}, any of them —
      * and read the page back (like pixaiStatus). The bridge applies count, ratio, size, then swap, in that order.
      */
     async pixaiSetPage(patch = {}) {
@@ -1648,13 +1648,14 @@ export class TTSBackend {
         if (patch.ratio !== undefined) { body.ratio = String(patch.ratio).trim(); if (!/^\d+:\d+$/.test(body.ratio)) throw Error('比例要写成 9:16 这样'); }
         if (patch.size !== undefined) { body.size = String(patch.size).trim().toUpperCase(); if (!/^[A-Z]{1,3}$/.test(body.size)) throw Error('尺寸档位不对'); }
         if (patch.swap === true) body.swap = true;
+        if (patch.model !== undefined) { body.model = String(patch.model).trim(); if (!body.model) throw Error('没有选模型'); }
         if (!Object.keys(body).length) throw Error('没有要切换的内容');
         this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
         let response;
         try {
             response = await this.pixai.call('/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify(body) });
         } catch (error) {
-            throw Error(error?.status === 409 ? '反代正在出图，画完再切' : error?.status === 502 ? '没能在 PixAI 网页上切换（尺寸被锁或网页没变过去），检查反代的日志' : error?.status === 404 || error?.status === 405 || error?.status === 400 ? '反代版本太旧，不支持切比例、尺寸或横竖，需要更新反代的 server.js' : error.message);
+            throw Error(error?.status === 409 ? '反代正在出图，画完再切' : error?.status === 502 ? '没能在 PixAI 网页上切换（模型/LoRA/Recipe 没选上、尺寸被锁或网页没变过去），检查反代的日志' : error?.status === 404 || error?.status === 405 || error?.status === 400 ? '反代版本太旧，不支持切模型、比例、尺寸或横竖，需要更新反代的 server.js' : error.message);
         }
         const info = await response.json().catch(() => ({}));
         this.pixaiRemember(info);
