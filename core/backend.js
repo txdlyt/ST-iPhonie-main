@@ -498,7 +498,7 @@ export class TTSBackend {
         // The host callback completes before the service acknowledges a new settings revision.
         this.persist(clone(copy));
         this.settings = copy;
-        if (imageChanged) this.activateImageKeys();
+        if (changedImage.length) this.activateImageKeys();
         this.revision++;
         this.emit('settings', { state: this.getState() });
         return this.getState();
