@@ -10,7 +10,7 @@ import { isGoMusic, goUrl, goData, goSongs, goGroups, goCategories, goQrSession,
 import { MUSIC_LIMITS, normalizeMusic, normalizeSource, validateSource, readSearch, readGroups, paged, PAGE_WAYS, withPages, songKey, readLink, missingLink, trialOnly, asChina, playable, onTavern, isAudio, fill as fillSource, songRow, sameFile, lyricOwner, bestMatch, matchScore, pick as pickPath, GROUP_KINDS } from './music.js';
 import { AppStore } from './app-store.js';
 import { ASSISTANT_LIMITS, ASSISTANT_IMAGE_SLOT, normalizeAssistant, validateAssistantPatch, assistantId, assistantMessage, assistantMeta, assistantThoughts, assistantClip, assistantFirstTitle, assertAssistantThread, assistantSummary } from './assistant.js';
-import { FORUM_LIMITS, buildForumRequest, cleanPost as cleanForumPost, cleanReply as cleanForumReply, startingHeat } from './forum.js';
+import { FORUM_LIMITS, normalizeForum, buildForumRequest, cleanPost as cleanForumPost, cleanReply as cleanForumReply, startingHeat } from './forum.js';
 import { buildPeekRequest, cleanPeek, peekId } from './peek.js';
 import { languageCode } from './languages.js';
 import { normalizeMoments, buildMomentsRequest } from './moments.js';
@@ -33,6 +33,7 @@ import { Ledger } from './ledger.js';
 import { cleanItem, cleanSet, cleanWear, WARDROBE_LIMITS } from './wardrobe.js';
 import { FishMcp } from './fish-mcp.js';
 import {fishTavernProxy} from './fish-transport.js';
+import {fishAudioProxy} from './fish-audio.js';
 import { cleanTheater, GENERATOR_LIMITS } from './generator.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
 import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, gptBase, gptSize, gptPrompt, gptGenerate, comfyUrl, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, comfyProgress, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS } from './image-engines.js';
@@ -238,7 +239,7 @@ export class TTSBackend {
             prepared: audio => { this.prepared = audio; this.emit('audio-ready', this.audioInfo(audio)); },
             voiced: (engine, text) => this.ledger.voice(engine, text),
         });
-        this.providers.fishMcp = new FishMcp({scope: this.settings.scope, fetcher: this.providers.fetcher, notice: this.notify, proxy: fishTavernProxy({fetcher: imageFetch, headers: tavernHeaders})});
+        this.providers.fishMcp = new FishMcp({scope: this.settings.scope, fetcher: this.providers.fetcher, notice: this.notify, proxy: fishTavernProxy({fetcher: imageFetch, headers: tavernHeaders}), audioProxy: fishAudioProxy({fetcher: this.requestLog.fetch(imageFetch, 'Fish 音频取回'), headers: tavernHeaders})});
     }
     async initialize() {
         this.assertOpen();
@@ -495,10 +496,11 @@ export class TTSBackend {
         // Each engine has its own line: changing one engine's connections waits for that engine's pictures only, and choosing another engine waits for none.
         const changedImage = Object.keys(copy.draw.connections).filter(id => JSON.stringify(copy.draw.connections[id]) !== JSON.stringify(this.settings.draw.connections?.[id]));
         if (changedImage.length) this.assertImageIdle(...changedImage);
+        const imageChanged = changedImage.length > 0 || copy.draw.engine !== this.settings.draw.engine; // the engine in use decides which keys are active
         // The host callback completes before the service acknowledges a new settings revision.
         this.persist(clone(copy));
         this.settings = copy;
-        if (changedImage.length) this.activateImageKeys();
+        if (imageChanged) this.activateImageKeys();
         this.revision++;
         this.emit('settings', { state: this.getState() });
         return this.getState();
@@ -2997,6 +2999,15 @@ export class TTSBackend {
         next.moments = normalizeMoments({ ...next.moments, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
         return this.save(next).moments;
     }
+    saveForum(patch) {
+        const next=this.getState();
+        next.forum=normalizeForum({...next.forum,...Object.fromEntries(Object.entries(patch||{}).filter(([key])=>['auto','every','dailyMax'].includes(key)))});
+        return this.save(next).forum;
+    }
+    async forumAutoToday() {
+        const start=new Date();start.setHours(0,0,0,0);
+        return new Set((await this.apps.list('forum')).filter(p=>p.source==='auto'&&p.autoBatch&&p.at>=start.getTime()).map(p=>p.autoBatch)).size;
+    }
     // ---------- 分区 ----------
     /** The card open in the tavern now: {key, name, members}. With 分区 on, the phone shows that card's own things. */
     setSpace(space) {
@@ -3166,9 +3177,41 @@ export class TTSBackend {
     /** 收藏 and the 相簿 one made, in order: [{id, name, photos, at, order}]. */
     async listAlbums() { this.assertOpen(); return albumsInOrder(await this.apps.listFrom('albums:')); }
     async favoritePhotoIds() { this.assertOpen(); return (await this.apps.get(FAVORITES))?.photos || []; }
+    /** Keep album edits and protected cleanup in one order, including other tabs when Web Locks is available. */
+    #keepPhotoChange(work) {
+        const run=()=>globalThis.navigator?.locks?.request
+            ? globalThis.navigator.locks.request('st-iphonie-photo-keep:'+this.settings.scope,work) : work();
+        const job=(this.photoKeepJob||Promise.resolve()).then(run);
+        this.photoKeepJob=job.catch(()=>{});
+        return job;
+    }
+    /** Confirmed candidate ids only; recheck favourites and user albums before each batch. */
+    async unkeptPhotos() {
+        this.assertOpen();
+        const [photos,albums,phone]=await Promise.all([this.library.listPhotos(),this.listAlbums(),this.getPhone()]);
+        const chat=this.settings.chat||{},shown=a=>a?.kind==='photo'?a.photoId:null;
+        const keep=new Set([...albums.flatMap(a=>a.photos||[]),shown(phone.wallpaper),...Object.values(phone.icons||{}).map(shown),...Object.values(chat.avatars||{}).map(shown),chat.profile?.backgroundPhoto].filter(Boolean));
+        const rows=photos.filter(p=>!keep.has(p.id));
+        return {photos:rows.map(({id,name,size})=>({id,name,size})),count:rows.length,bytes:rows.reduce((n,p)=>n+(p.size||0),0),kept:photos.length-rows.length};
+    }
+    async deleteUnkeptPhotos(ids) {
+        this.assertOpen();
+        return this.#keepPhotoChange(async()=>{
+        const requested=new Set((Array.isArray(ids)?ids:[]).map(String));
+        if(!requested.size)return {count:0,bytes:0,kept:0};
+        let count=0,bytes=0;const initial=await this.unkeptPhotos(),pending=initial.photos.filter(p=>requested.has(p.id));
+        for(let i=0;i<pending.length;i+=16){
+            const safe=new Set((await this.unkeptPhotos()).photos.map(p=>p.id)),batch=pending.slice(i,i+16).filter(p=>safe.has(p.id));
+            if(!batch.length)continue;
+            await this.deletePhotos(batch.map(p=>p.id));count+=batch.length;bytes+=batch.reduce((n,p)=>n+(p.size||0),0);
+        }
+        return {count,bytes,kept:requested.size-count};
+        });
+    }
     /** Gives these photos the heart, or takes it away. */
     async favoritePhotos(ids, on = true) {
         this.assertOpen();
+        return this.#keepPhotoChange(async()=>{
         const list = [...new Set((ids || []).map(String))], now = Date.now();
         const out = new Set(list), edit = row => { const inside = new Set(row.photos); row.photos = on ? [...list.filter(id => !inside.has(id)), ...row.photos] : row.photos.filter(id => !out.has(id)); row.updatedAt = now; };
         await this.appsMutate('albums', () => this.apps.change(FAVORITES, edit).catch(async error => {
@@ -3178,6 +3221,7 @@ export class TTSBackend {
             await this.apps.put([row]);
         }));
         return true;
+        });
     }
     /** Makes a 相簿 ({name}) or renames one ({id, name}). */
     async saveAlbum({ id = '', name = '' } = {}) {
@@ -3202,6 +3246,7 @@ export class TTSBackend {
     /** Puts photos into a 相簿, on top; {added: how many were not in it yet}. */
     async addToAlbum(id, ids) {
         this.assertOpen();
+        return this.#keepPhotoChange(async()=>{
         let added = 0;
         await this.appsMutate('albums', () => this.apps.change(id, row => {
             const inside = new Set(row.photos), fresh = [...new Set((ids || []).map(String))].filter(x => !inside.has(x));
@@ -3210,6 +3255,7 @@ export class TTSBackend {
             row.updatedAt = Date.now();
         }));
         return { added };
+        });
     }
     /** Takes photos out of a 相簿 (they stay in the album). */
     async removeFromAlbum(id, ids) {
@@ -3241,10 +3287,10 @@ export class TTSBackend {
         return result;
     }
     /** New posts from the board (characters and strangers), with made-up likes and 热度; the oldest go past the limit. */
-    async addForumPosts(posts, { source = 'auto', space = this.cardKey(), save = this.saveKey() } = {}) {
+    async addForumPosts(posts, { source = 'auto', autoBatch = '', space = this.cardKey(), save = this.saveKey() } = {}) {
         // The first post the model wrote is shown on top (newest first).
         const now = Date.now(), id = () => crypto.randomUUID();
-        const docs = posts.map((p, i) => cleanForumPost({ ...p, source, space, ...(save ? { save } : {}), ...(source === 'me' ? { likes: 0, heat: 1 } : startingHeat(p)) }, id(), now - i * 10, id));
+        const docs = posts.map((p, i) => cleanForumPost({ ...p, source, autoBatch, space, ...(save ? { save } : {}), ...(source === 'me' ? { likes: 0, heat: 1 } : startingHeat(p)) }, id(), now - i * 10, id));
         return this.appsMutate('forum', () => this.apps.put(docs, { keep: FORUM_LIMITS.posts }));
     }
     /** id: the 热搜 of the card the request was made for (hotId() when it was asked). */
@@ -3949,9 +3995,10 @@ export class TTSBackend {
             listBooks: () => this.library.listBooks(), getBook: id => this.library.getBook(id), saveBook: value => this.mutateLibrary('books', 'saveBook', clone(value)), deleteBook: id => this.mutateLibrary('books', 'deleteBook', id),
             getPhone: () => this.getPhone(), savePhone: patch => this.savePhone(patch), libraryStats: () => this.library.stats(), storageBudget: () => this.budget.read(),
             listAlbums: () => this.listAlbums(), favoritePhotoIds: () => this.favoritePhotoIds(), favoritePhotos: (ids, on) => this.favoritePhotos([...(ids || [])], on !== false), saveAlbum: value => this.saveAlbum(clone(value || {})), deleteAlbum: id => this.deleteAlbum(String(id)), addToAlbum: (id, ids) => this.addToAlbum(String(id), [...(ids || [])]), removeFromAlbum: (id, ids) => this.removeFromAlbum(String(id), [...(ids || [])]), arrangeAlbums: ids => this.arrangeAlbums([...(ids || [])]),
+            unkeptPhotos: () => this.unkeptPhotos(), deleteUnkeptPhotos: ids => this.deleteUnkeptPhotos([...(Array.isArray(ids)?ids:[])]),
             listLooks: () => this.listLooks(), getLook: id => this.apps.get(String(id)), saveLook: look => this.saveLook(look), renameLook: (id, patch) => this.renameLook(String(id), clone(patch || {})), deleteLook: id => this.deleteLook(String(id)), lookFiles: id => this.lookFiles(String(id)),
             generatedPhotos: () => this.generatedPhotos().then(({ count, bytes, sources }) => ({ count, bytes, sources: Object.fromEntries(Object.entries(sources).map(([k, { ids, ...rest }]) => [k, rest])) })), deleteGeneratedPhotos: sources => this.deleteGeneratedPhotos(sources),
-            saveMoments: patch => this.saveMoments(clone(patch)), saveCalls: patch => this.saveCalls(clone(patch)),
+            saveMoments: patch => this.saveMoments(clone(patch)), saveForum: patch => this.saveForum(clone(patch)), saveCalls: patch => this.saveCalls(clone(patch)),
             saveAssistant: patch => this.saveAssistant(patch), assistantThreads: query => this.assistantThreads(query), assistantThread: id => this.assistantThread(id),
             forkAssistantThread: (id, mid) => this.forkAssistantThread(id, mid),
             newAssistantThread: () => this.newAssistantThread(), appendAssistantMessage: (id, value, expectedLastId, expectedRevision) => this.appendAssistantMessage(id, value, expectedLastId, expectedRevision),

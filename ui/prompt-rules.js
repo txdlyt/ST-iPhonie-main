@@ -8,6 +8,7 @@ export function promptRulesSheet(ctx) {
   let group = '全部', query = '';
   const groups = ['全部', ...new Set(PROMPT_BLOCKS.map(b => b.group))];
   const status = (b, saved) => {
+    if(b.id==='now')return saved?.parts&&Object.keys(saved.parts).length?'规则已修改':'默认规则';
     const on = promptOn(saved ? {[b.id]: saved} : {}, b.id);
     return [!on ? '已关闭' : b.off ? '已打开' : '', saved?.parts && Object.keys(saved.parts).length ? '已修改' : ''].filter(Boolean).join('、') || '默认';
   };
@@ -16,7 +17,7 @@ export function promptRulesSheet(ctx) {
     const paint = () => {
       const overrides = ctx.api.getState().promptRules || {}, q = query.toLowerCase();
       const rows = PROMPT_BLOCKS.filter(b => (group === '全部' || b.group === group) && [b.title, b.note, ...b.parts.map(p => overrides[b.id]?.parts?.[p.key] ?? p.text)].join('\n').toLowerCase().includes(q)).map(b =>
-        `<button class="list-row" data-rule-id="${esc(b.id)}"><span><strong>${esc(b.title)}</strong><small>${esc(b.group)} · ${status(b, overrides[b.id])} · ${esc(b.note)}</small></span>${icon('next')}</button>`);
+        `<button class="list-row" data-rule-id="${esc(b.id)}"><span><strong>${esc(b.title)}</strong><small>${esc(b.group)} · ${status(b, overrides[b.id])} · ${esc(b.id==='now'?'日期、时间与主动消息的规则文字':b.note)}</small></span>${icon('next')}</button>`);
       const legacy = overrides.legacy || [];
       if (legacy.length && group === '全部' && !q) rows.push(`<button class="list-row" data-rule-legacy><span><strong>旧版逐句修改（${legacy.length} 条）</strong><small>0.8.22 以前按句改过的提示词，已经不再生效，可以照着改进上面的块里</small></span>${icon('next')}</button>`);
       d.body.querySelector('[data-rule-list]').innerHTML = rows.join('') || '<p class="hint">没有匹配的提示词</p>';
@@ -34,7 +35,7 @@ export function promptRulesSheet(ctx) {
   function edit(id) {
     const block = PROMPT_BLOCKS.find(b => b.id === id), saved = ctx.api.getState().promptRules?.[id];
     const d = ctx.dialog(block.title + ' · 系统提示词', `<div class="group pad"><p class="hint">${esc(block.note)}</p>`
-      + (block.optional ? toggle('rule-enabled', '启用', promptOn(saved ? {[id]: saved} : {}, id)) : '')
+      + (id === 'now' ? '<p class="hint">同步开关在「设置 → 正文 → 正文和手机 → 现实时间同步」，这里修改规则文字。</p>' : block.optional ? toggle('rule-enabled', '启用', promptOn(saved ? {[id]: saved} : {}, id)) : '')
       + block.parts.map(p => {
         const text = saved?.parts?.[p.key] ?? p.text, rows = Math.min(14, Math.max(3, Math.ceil(text.length / 24) + text.split('\n').length));
         return field(p.label, textArea('part-' + p.key, text, `rows="${rows}" spellcheck="false"`));
@@ -42,7 +43,7 @@ export function promptRulesSheet(ctx) {
       + `<p class="hint">{{名字}} 由插件填进去；{{#名字}}…{{/名字}} 有内容时才保留，{{^名字}}…{{/名字}} 没有时才保留。</p><p class="hint">${esc(block.fills)}</p></div>`
       + `<div class="actions"><button class="secondary" data-rule-back>返回</button><button class="secondary" data-rule-reset>恢复默认</button><button class="primary" data-rule-save>保存</button></div>`);
     d.body.querySelector('[data-rule-back]').onclick = list;
-    d.body.querySelector('[data-rule-reset]').onclick = () => { ctx.api.savePromptRule(id, null); edit(id); };
+    d.body.querySelector('[data-rule-reset]').onclick = () => { ctx.api.savePromptRule(id, id==='now'?{enabled:promptOn(ctx.api.getState().promptRules,'now')}:null); edit(id); };
     d.body.querySelector('[data-rule-save]').onclick = () => {
       // Only parts that differ from the shipped text are kept, so the others follow later updates.
       const parts = {};
@@ -51,7 +52,7 @@ export function promptRulesSheet(ctx) {
         if (text !== p.text) parts[p.key] = text;
       }
       const enabled = d.body.querySelector('[data-field=rule-enabled]');
-      try { ctx.api.savePromptRule(id, {...(enabled ? {enabled: enabled.checked} : {}), parts}); ctx.notify('已保存'); list(); }
+      try { ctx.api.savePromptRule(id, {...(id==='now'?{enabled:promptOn(ctx.api.getState().promptRules,'now')}:enabled ? {enabled: enabled.checked} : {}), parts}); ctx.notify('已保存'); list(); }
       catch (error) { ctx.notify(error.message, {error: true}); }
     };
   }
