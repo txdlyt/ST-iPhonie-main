@@ -1,7 +1,9 @@
 // Fish's web-plan OAuth/MCP connection. Credentials stay in this browser, outside settings/backups.
 // Official protocol: https://docs.fish.audio/overview/mcp (2026-11-11).
 import {joinAudio} from './audio-join.js';
-import {fishCreditBalance, fishMcpHttpError, fishSafeText} from './fish-mcp-results.js';
+import {fishCreditBalance, fishMcpHttpError, fishOAuthHttpError, fishSafeText} from './fish-mcp-results.js';
+import {fishExternalHost, fishLoginRedirect, openFishExternal} from './fish-transport.js';
+import {FishTtMcp} from './fish-tt-mcp.js';
 import {fishLoginKeys, FISH_LOGIN_TTL, fishTrace, fishTraceOf, fishCredentialKey, acceptFishCallback, parseFishManualInput, readFishPending, fishCredentials, fishLoginCompleted, fishLoginEpoch, fishLoginOwner, fishLoginLocks, cancelFishLogins, dropFishPending, canFinishFishLogin, completeFishLogin} from './fish-oauth-flow.js';
 const API = 'https://api.fish.audio', RESOURCE = API + '/mcp';
 // Named popups are shared by clients in one host window, not by just one FishMcp instance.
@@ -56,19 +58,24 @@ export function audioLinks(result) {
   return [...new Set(links)];
 }
 export class FishMcp {
-  constructor({scope = '', win = globalThis, fetcher = globalThis.fetch?.bind(globalThis), storage = () => win.localStorage} = {}) {
+  constructor({scope = '', win = globalThis, fetcher = globalThis.fetch?.bind(globalThis), storage = () => win.localStorage, proxy = null, notice = () => {}} = {}) {
     this.win = win; this.fetcher = fetcher; this.storage = storage; this.scope = scope || ''; this.key = fishCredentialKey(scope);
+    this.proxy = proxy; this.notice = notice; this.viaProxy = false;
+    this.native = new FishTtMcp({win, storage, scope});
     this.loginOwner = fishLoginOwner(win); this.loginLocks = fishLoginLocks(win);
     this.session = ''; this.sequence = 0; this.epoch = 0; this.ready = null; this.refreshing = null; this.tools = null;
   }
   credentials() { try { return fishCredentials(this.storage(), this.scope); } catch { return null; } }
-  status() { return {connected: !!this.credentials()?.access_token}; }
+  status() { return {connected: !!this.credentials()?.access_token, ...(fishExternalHost(this.win) ? {transport: 'tt-mcp'} : {})}; }
   save(value) { const s = this.storage(); s.setItem(this.key, JSON.stringify({...value, login_epoch: value.login_epoch ?? fishLoginEpoch(s, this.scope)})); }
-  disconnect() { this.epoch++; this.cancelLogin?.(); const s = this.storage(); cancelFishLogins(s, this.scope); s?.removeItem(this.key); this.session = ''; this.ready = null; this.tools = null; this.invalidateCredits(); }
+  disconnect() { this.epoch++; this.cancelLogin?.(); const s = this.storage(); cancelFishLogins(s, this.scope); s?.removeItem(this.key); this.session = ''; this.ready = null; this.tools = null; this.invalidateCredits(); return this.native.disconnect(); }
   loginReady() { this.ready = null; this.session = ''; this.tools = null; this.invalidateCredits(); return this.status(); }
   async json(url, init) {
     const r = await this.fetcher(url, {credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000), ...init});
-    if (!r.ok) throw Error(`Fish 连接失败（${r.status}），请重新连接订阅账户`);
+    if (!r.ok) {
+      const fields = init?.body instanceof URLSearchParams ? Object.fromEntries(init.body) : {};
+      throw await fishOAuthHttpError(r, {step: url.endsWith('/oauth/register') ? '注册授权客户端' : '刷新登录', secrets: [fields.refresh_token, fields.code, fields.code_verifier]});
+    }
     return r.json();
   }
   async token(body) {
@@ -140,7 +147,7 @@ export class FishMcp {
     this.sweepStale();
     dropFishPending(storage, this.scope);
     fishTrace(storage, 'connect-start');
-    const epoch = ++this.epoch, state = random(), verifier = random(), redirect = new URL('../fish-oauth.html', import.meta.url).href;
+    const epoch = ++this.epoch, state = random(), verifier = random(), redirect = fishLoginRedirect(win, new URL('../fish-oauth.html', import.meta.url).href);
     const keys = fishLoginKeys(state), attempt = {state, epoch, cancelled: false};
     this.login = attempt;
     let popup, cleanup = () => {}, rejectWait;
@@ -149,8 +156,11 @@ export class FishMcp {
     this.cancelLogin = cancel;
     popupOwners.set(win, {attempt, cancel});
     try {
-      popup = win.open('about:blank', 'st-iphonie-fish', 'popup,width=560,height=720');
-      if (!popup) throw Error('请允许弹出窗口，再连接 Fish 订阅账户');
+      const external = fishExternalHost(win);
+      if (!external) {
+        popup = win.open('about:blank', 'st-iphonie-fish', 'popup,width=560,height=720');
+        if (!popup) throw Error('请允许弹出窗口，再连接 Fish 订阅账户');
+      }
       const client = await this.json(API + '/oauth/register', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({client_name: 'ST-iPhonie', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code']})});
       if (!valid()) throw Error('Fish 登录已取消');
       if (!client.client_id) throw Error('Fish 没有返回登录客户端编号');
@@ -185,7 +195,11 @@ export class FishMcp {
         const timer = win.setTimeout(() => reject(Error('Fish 登录已超时，请重试')), FISH_LOGIN_TTL);
         const poll = win.setInterval(read, 500);
         cleanup = () => { win.removeEventListener('message', listener); win.removeEventListener('storage', onStorage); win.removeEventListener('focus', read); win.clearTimeout(timer); win.clearInterval(poll); };
-        win.addEventListener('message', listener); win.addEventListener('storage', onStorage); win.addEventListener('focus', read); popup.location.href = target.href;
+        win.addEventListener('message', listener); win.addEventListener('storage', onStorage); win.addEventListener('focus', read);
+        if (external) {
+          this.notice('已在系统浏览器打开 Fish。授权后回环页面通常无法打开；这是手动回传方式，请复制地址栏完整网址，回 TT「连接诊断」粘贴完成连接。');
+          Promise.resolve(openFishExternal(win, target.href)).catch(reject);
+        } else popup.location.href = target.href;
       });
       cleanup();
       if (!valid()) throw Error('Fish 登录已取消');
@@ -224,9 +238,18 @@ export class FishMcp {
   }
   async rpc(method, params, signal, notification = false) {
     const token = await this.access(), id = ++this.sequence;
-    const r = await this.fetcher(RESOURCE, {method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer', signal: signal || AbortSignal.timeout(120000),
+    const init = {method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer', signal: signal || AbortSignal.timeout(120000),
       headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': this.protocol || '2025-03-26', ...(this.session ? {'Mcp-Session-Id': this.session} : {})},
-      body: JSON.stringify({jsonrpc: '2.0', ...(notification ? {} : {id}), method, params})});
+      body: JSON.stringify({jsonrpc: '2.0', ...(notification ? {} : {id}), method, params})};
+    let r = await (this.viaProxy && this.proxy ? this.proxy : this.fetcher)(RESOURCE, init);
+    // Only retry an explicitly rejected, non-generating handshake. Once selected,
+    // the transport is fixed for tools/call; paid requests are never replayed.
+    if (!this.viaProxy && this.proxy && method === 'initialize' && r.status === 403 && /origin.{0,80}(?:not allowed|forbidden|invalid|not permitted)/i.test(await r.clone().text())) {
+      await r.body?.cancel();
+      this.viaProxy = true;
+      fishTrace(this.storage(), 'mcp-proxy', '网页来源被拒，改用酒馆转发握手');
+      r = await this.proxy(RESOURCE, init);
+    }
     if (!r.ok) {
       const c = this.credentials() || {};
       const error = await fishMcpHttpError(r, {method, tool: params?.name, secrets: [token, c.access_token, c.refresh_token]});
@@ -238,6 +261,12 @@ export class FishMcp {
     return mcpResult(await r.text(), id);
   }
   async initialize() {
+    if (fishExternalHost(this.win)) {
+      const token = await this.access(), epoch = this.epoch;
+      try { this.tools = await this.native.discover(token, () => epoch === this.epoch && this.credentials()?.access_token === token); }
+      catch (error) { throw Error(fishSafeText(error.message || String(error), [token, this.credentials()?.refresh_token])); }
+      return;
+    }
     if (!this.ready) this.ready = (async () => {
       const hello = await this.rpc('initialize', {protocolVersion: '2025-03-26', capabilities: {}, clientInfo: {name: 'ST-iPhonie', version: '1.0'}});
       this.protocol = hello.protocolVersion;
@@ -247,7 +276,17 @@ export class FishMcp {
     })().catch(e => { this.ready = null; throw e; });
     return this.ready;
   }
-  async call(name, args = {}, signal) { await this.initialize(); return this.rpc('tools/call', {name, arguments: args}, signal); }
+  async call(name, args = {}, signal) {
+    if (fishExternalHost(this.win)) {
+      const token = await this.access(), epoch = this.epoch;
+      try { return await this.native.call(name, args, token, () => epoch === this.epoch && this.credentials()?.access_token === token, signal); }
+      catch (error) {
+        const message = fishSafeText(error.message || String(error), [token, this.credentials()?.refresh_token]);
+        fishTrace(this.storage(), 'mcp-error', 'TT 原生 MCP：' + message); throw Error(message);
+      }
+    }
+    await this.initialize(); return this.rpc('tools/call', {name, arguments: args}, signal);
+  }
   async balance() { return (await this.credits()).detail; }
   invalidateCredits() { this.creditCache = null; }
   /** Reading credits is free. Coalesce concurrent card/menu reads, cache briefly, and never reuse another login's balance. */

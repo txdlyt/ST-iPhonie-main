@@ -32,6 +32,7 @@ import { paintStore } from './paint-store.js';
 import { Ledger } from './ledger.js';
 import { cleanItem, cleanSet, cleanWear, WARDROBE_LIMITS } from './wardrobe.js';
 import { FishMcp } from './fish-mcp.js';
+import {fishTavernProxy} from './fish-transport.js';
 import { cleanTheater, GENERATOR_LIMITS } from './generator.js';
 import { WALLET_LIMITS, PREMIUM, DECOR_KINDS, LEDGER_KINDS, premiumOf, decorKey, cents, yuan, shopGifts, normalizeGift, validateGift } from './wallet.js';
 import { gptModels, DRAW_ENGINES, DRAW_ENGINE_NAMES, GPT_IMAGE_MODELS, GPT_QUALITIES, GPT_MAX_REFS, gptBase, gptSize, gptPrompt, gptGenerate, comfyUrl, comfySize, comfyPrompt, comfyValues, fillWorkflow, comfyGenerate, comfyCatalog, comfyLoras, comfyClips, comfyProgress, defaultWorkflow, tavernWorkflows, tavernWorkflow, orientationOf, DEFAULT_COMFY_WORKFLOW, COMFY_PARAM_KEYS } from './image-engines.js';
@@ -154,6 +155,7 @@ export class TTSBackend {
         this.persist = persist;
         this.notify = notify;
         this.providers = providers;
+        this.providers.elevenConnection = () => this.settings.connections.eleven;
         // 自己的接口 that does not let web pages ask it: asked through the tavern's own proxy, with the tavern's login.
         if (!this.providers.proxy) this.providers.proxy = (url, init, signal) => this.proxyFetch('/proxy/' + encodeURIComponent(url), { ...init, credentials: 'same-origin', redirect: 'error', signal });
         // Voice balances (ElevenLabs, Fish) read for the engine cards; a new audio marks them out of date.
@@ -225,7 +227,7 @@ export class TTSBackend {
         this.syncTimer = 0;
         this.syncApplying = false;
         this.drawQueue = new DrawQueue({ gap: () => this.settings.draw.queue.gap * 1000, retries: () => this.settings.draw.queue.retries,
-            remote: () => this.settings.draw.engine === 'nai' ? this.cloudQueue() : null, onChange: (queue, { remoteError }) => this.emit('draw', { queue, cloud: remoteError }) });
+            remote: lane => lane === 'nai' ? this.cloudQueue() : null, onChange: (queue, { remoteError }) => this.emit('draw', { queue, cloud: remoteError }) });
         this.listeners = new Set();
         this.revision = 0;
         this.closed = false;
@@ -236,7 +238,7 @@ export class TTSBackend {
             prepared: audio => { this.prepared = audio; this.emit('audio-ready', this.audioInfo(audio)); },
             voiced: (engine, text) => this.ledger.voice(engine, text),
         });
-        this.providers.fishMcp = new FishMcp({scope: this.settings.scope, fetcher: this.providers.fetcher});
+        this.providers.fishMcp = new FishMcp({scope: this.settings.scope, fetcher: this.providers.fetcher, notice: this.notify, proxy: fishTavernProxy({fetcher: imageFetch, headers: tavernHeaders})});
     }
     async initialize() {
         this.assertOpen();
@@ -490,8 +492,9 @@ export class TTSBackend {
             for (const [engine, connection] of Object.entries(copy.connections)) modelCheck(engine, connection.model);
             validateSettings(copy);
         } catch (error) { throw Error(message(error)); }
-        const imageChanged = JSON.stringify([copy.draw.connections, copy.draw.engine]) !== JSON.stringify([this.settings.draw.connections, this.settings.draw.engine]);
-        if (imageChanged) this.assertImageIdle();
+        // Each engine has its own line: changing one engine's connections waits for that engine's pictures only, and choosing another engine waits for none.
+        const changedImage = Object.keys(copy.draw.connections).filter(id => JSON.stringify(copy.draw.connections[id]) !== JSON.stringify(this.settings.draw.connections?.[id]));
+        if (changedImage.length) this.assertImageIdle(...changedImage);
         // The host callback completes before the service acknowledges a new settings revision.
         this.persist(clone(copy));
         this.settings = copy;
@@ -674,7 +677,7 @@ export class TTSBackend {
         if (!patch || typeof patch !== 'object' || Array.isArray(patch) || ('params' in patch && (!patch.params || typeof patch.params !== 'object' || Array.isArray(patch.params)))) throw Error('引擎设置格式无效');
         patch = clone(patch);
         // Fish relay: an address checked like the NovelAI one ('' = straight to Fish). A new address: the balance is read again.
-        if (engine === 'fish' && 'relay' in patch) { patch.relay = relayUrl(patch.relay, undefined, FISH_PATHS); if (patch.relay !== this.settings.connections.fish.relay) this.balances.delete('fish'); }
+        if (['fish','eleven'].includes(engine) && 'relay' in patch) { patch.relay = relayUrl(patch.relay, undefined, engine === 'fish' ? FISH_PATHS : /\/(?:v[12]\/(?:text-to-speech(?:\/[^/]+)?|voices(?:\/[^/]+)?|user\/subscription|sound-generation)|v[12])$/i); if (patch.relay !== this.settings.connections[engine].relay) this.balances.delete(engine); }
         else delete patch.relay;
         if (engine === 'fish' && 'relayApi' in patch) { if (!['fish', 'openai'].includes(patch.relayApi)) throw Error('中转接口格式无效'); this.balances.delete('fish'); }
         else if (engine !== 'fish') delete patch.relayApi;
@@ -727,7 +730,7 @@ export class TTSBackend {
         if (engine === 'embed') { const value = String(key).replace(/[\u200b-\u200d\ufeff]/g, '').replace(/^\s*Bearer\s+/i, '').trim(); this.keyStore.save('embed', value); this.embedKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'pixai') { const value = validateKey('pixai', key); this.keyStore.save('pixai', value); this.pixaiKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'nai' || engine === 'gpt') {
-            this.assertImageIdle();
+            this.assertImageIdle(engine);
             const map = String(key).includes('\t') ? parseTextKeys(key) : new Map(this.imageKeys[engine]).set(this.settings.draw.connections[engine].active, validateKey(engine, key));
             this.storeImageKeys(engine, map); return;
         }
@@ -851,7 +854,7 @@ export class TTSBackend {
         if (engine === 'custom') { const map = new Map(this.providers.customKeys); map.delete(this.customActive()); this.storeCustomKeys(map); return; }
         if (engine === 'embed') { this.keyStore.save('embed', ''); this.embedKey = ''; this.emit('keys', { engine, configured: false }); return; }
         if (engine === 'pixai') { this.keyStore.save('pixai', ''); this.pixaiKey = ''; this.emit('keys', { engine, configured: false }); return; }
-        if (engine === 'nai' || engine === 'gpt') { this.assertImageIdle(); const map = new Map(this.imageKeys[engine]); map.delete(this.settings.draw.connections[engine].active); this.storeImageKeys(engine, map); return; }
+        if (engine === 'nai' || engine === 'gpt') { this.assertImageIdle(engine); const map = new Map(this.imageKeys[engine]); map.delete(this.settings.draw.connections[engine].active); this.storeImageKeys(engine, map); return; }
         this.keyStore.save(engine, '');
         if (SONG_KEYS.includes(engine)) { delete this.songKeys[engine]; this.emit('keys', { engine, configured: false }); return; }
         this.providers.setKey(engine, ''); this.balances.delete(engine);
@@ -1278,7 +1281,8 @@ export class TTSBackend {
     textModels(draft) { const text = activeText(this.textWith(draft)); return listModels({ text, key: this.textKeys.get(text.id) || '' }); }
 
     // ---------- Drawing ----------
-    assertImageIdle() { this.assertOpen(); if (this.drawQueue.pending) throw Error('还有图片正在生成或排队，请等完成或取消队列后再换生图引擎或账号连接'); }
+    /** Throws while pictures of these engines (all of them when none is named) are drawing or waiting. */
+    assertImageIdle(...engines) { this.assertOpen(); if (this.drawQueue.pendingIn(...engines)) throw Error('还有图片正在生成或排队，请等完成或取消队列后再换生图引擎或账号连接'); }
     activateImageKeys() {
         this.novelai.setKey(this.imageKeys.nai.get(this.settings.draw.connections.nai.active) || '');
         this.novelai.relay = this.settings.draw.relay.url;
@@ -1311,7 +1315,7 @@ export class TTSBackend {
     }
     /** Missing id creates and selects an empty connection; a blank key keeps its saved key. */
     saveImageConnection(engine, patch = {}) {
-        this.imageConnectionList(engine); this.assertImageIdle();
+        this.imageConnectionList(engine); this.assertImageIdle(engine);
         const next = this.getState(), group = next.draw.connections[engine];
         const id = patch.id || crypto.randomUUID(), old = group.presets.find(p => p.id === id);
         if (patch.id && !old) throw Error('这组生图连接已经不在了');
@@ -1341,7 +1345,7 @@ export class TTSBackend {
         const list = this.imageConnectionList(engine);
         if (!list.some(p => p.id === id)) throw Error('这组生图连接已经不在了');
         if (list.length < 2) throw Error('请至少保留一组生图连接');
-        this.assertImageIdle();
+        this.assertImageIdle(engine);
         const next = this.getState(), group = next.draw.connections[engine];
         group.presets = group.presets.filter(p => p.id !== id);
         if (group.active === id) group.active = group.presets[0].id;
@@ -1772,7 +1776,7 @@ export class TTSBackend {
                 else { pixaiBatch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, pixaiBatch); }
             }
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
-            const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), free: !!(pixaiBatch && pixaiBatch.index > 0 && pixaiBatch.size > 1), task: async signal => {
+            const job = this.drawQueue.add({ key, lane: engine, label: label || String(prompt).slice(0, 40), free: !!(pixaiBatch && pixaiBatch.index > 0 && pixaiBatch.size > 1), task: async signal => {
                 this.assertOpen();
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
@@ -3616,19 +3620,9 @@ export class TTSBackend {
             posts++;
         }
         if (posts) this.emit('moments', {});
-        // Photos in the phone chats: a drawn one can be drawn again; one of the album goes back to its words.
-        for (const summary of await this.chats.list()) {
-            await this.chatMutate(summary.id, async () => {
-                const thread = await this.chats.get(summary.id);
-                const hit = (thread?.messages || []).filter(m => m.kind === 'photo' && [m.photoId, ...(m.imageVersions || [])].some(id => gone.has(id)));
-                for (const m of hit) {
-                    const imageVersions = [...new Set([...(m.imageVersions || []), m.photoId].filter(id => id && !gone.has(id)))];
-                    const photoId = gone.has(m.photoId) ? imageVersions.at(-1) || '' : m.photoId;
-                    await this.chats.updateMessage(thread.id, m.id, {photoId, imageVersions, imageState: photoId ? 'done' : 'failed', imageNote: photoId ? '' : '图片已清理'});
-                }
-                if (hit.length) this.emit('chat', { threadId: thread.id });
-            });
-        }
+        // Account-wide reference maintenance, not a user edit in the current chat.
+        // Only threads referencing deleted photos are changed, including reply versions.
+        for (const threadId of await this.chats.forgetPhotos([...gone])) this.emit('chat', {threadId});
         const snaps = (await this.apps.list('peek')).filter(doc => [...(doc.photos || []), doc.wallpaper].some(p => p && gone.has(p.photoId)));
         const strip = p => { if (!p || !gone.has(p.photoId)) return p; const { photoId, state, note, ...rest } = p; return rest; };
         if (snaps.length) await this.appsMutate('peek', () => this.apps.put(snaps.map(doc => ({ ...doc, photos: (doc.photos || []).map(strip), ...(doc.wallpaper ? { wallpaper: strip(doc.wallpaper) } : {}) }))));

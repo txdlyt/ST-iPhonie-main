@@ -5,16 +5,18 @@
 //   - a 429 ("account busy") waits and retries with growing pauses, up to `retries` times, instead of failing.
 //   - with a shared cloud queue (remote), each request also waits for its turn among everyone using the account;
 //     when the cloud cannot be reached the job goes ahead with the local rules and remoteError says why.
+// Lanes: each drawing engine has its own line (nai, pixai, gpt, comfy), so a long PixAI picture does not hold up another
+// engine's pictures; within one engine everything above still holds. A job without a lane is NovelAI's.
 // Job states: waiting (in line) · spacing (keeping the gap) · remote (waiting in the cloud queue) · busy (429, waiting to retry) · running.
 
 const LAST_KEY = 'sttts.nai.lastRequest';
 const cancelled = () => Object.assign(Error('已取消'), {cancelled: true});
 
-function memoryStorage() {
+function memoryStorage(key = LAST_KEY) {
   let value = 0;
   try {
     const s = globalThis.localStorage;
-    if (s) return {get: () => Number(s.getItem(LAST_KEY)) || 0, set: v => { try { s.setItem(LAST_KEY, String(v)); } catch { value = v; } }};
+    if (s) return {get: () => Number(s.getItem(key)) || 0, set: v => { try { s.setItem(key, String(v)); } catch { value = v; } }};
   } catch { /* storage blocked */ }
   return {get: () => value, set: v => { value = v; }};
 }
@@ -38,13 +40,20 @@ export class DrawQueue {
     Object.assign(this, {gap, retries, onChange, remote, locks, storage, now, wait, backoff});
     this.jobs = [];
     this.remoteError = '';
-    this.running = false;
+    this.active = new Set(); // lanes that have a job running
+    this.stores = new Map([['nai', storage]]);
   }
+  /** Where the time of a lane's last request is kept: the injected storage for NovelAI, one of its own for each other engine. */
+  store(lane) {
+    if (!this.stores.has(lane)) this.stores.set(lane, memoryStorage(`sttts.${lane}.lastRequest`));
+    return this.stores.get(lane);
+  }
+  get running() { return this.active.size > 0; }
   /** Adds a job; the same key joins the job already in line. task(signal) makes the request. */
-  add({key = crypto.randomUUID(), label = '', task, free = false}) {
+  add({key = crypto.randomUUID(), label = '', task, free = false, lane = 'nai'}) {
     const existing = this.jobs.find(j => j.key === key);
     if (existing) return existing.promise;
-    const job = {key, label, task, free, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
+    const job = {key, label, task, free, lane, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     this.jobs.push(job);
     this.changed();
@@ -56,20 +65,23 @@ export class DrawQueue {
   }
   get(key) { return this.list().find(j => j.key === key) || null; }
   get pending() { return this.jobs.some(job => !job.settled); }
+  /** Whether a picture of one of these lanes (any lane when none is named) is drawing or waiting. */
+  pendingIn(...lanes) { return this.jobs.some(job => !job.settled && (!lanes.length || lanes.includes(job.lane))); }
   cancel(key) {
     const index = this.jobs.findIndex(j => j.key === key);
     if (index < 0) return false;
     const job = this.jobs[index];
     job.controller.abort();
     // The head job is stopped by its own run(); later jobs leave the line right away.
-    if (index > 0 || !this.running) { this.jobs.splice(index, 1); job.reject(cancelled()); this.changed(); }
+    const head = this.jobs.find(j => j.lane === job.lane) === job && this.active.has(job.lane);
+    if (!head) { this.jobs.splice(index, 1); job.reject(cancelled()); this.changed(); }
     return true;
   }
   cancelAll() { for (const job of [...this.jobs].reverse()) this.cancel(job.key); }
   changed() { try { this.onChange(this.list(), {remoteError: this.remoteError}); } catch { /* a listener cannot stop the queue */ } }
   /** Takes a turn in the shared cloud queue; null when there is none or it cannot be reached. */
   async turn(job, signal) {
-    const remote = this.remote();
+    const remote = this.remote(job.lane);
     if (!remote) { this.remoteError = ''; return null; }
     try {
       const lease = await remote.acquire({label: job.label, signal, onWait: info => {
@@ -84,26 +96,27 @@ export class DrawQueue {
     }
   }
 
-  async pump() {
-    if (this.running) return;
-    this.running = true;
+  pump() {
+    for (const lane of new Set(this.jobs.map(j => j.lane))) if (!this.active.has(lane)) this.pumpLane(lane);
+  }
+  async pumpLane(lane) {
+    this.active.add(lane);
     try {
-      while (this.jobs.length) {
-        const job = this.jobs[0];
+      for (let job; (job = this.jobs.find(j => j.lane === lane));) {
         const run = () => this.run(job);
-        await (this.locks?.request ? this.locks.request('st-iphonie-novelai', run) : run());
+        await (this.locks?.request ? this.locks.request('st-iphonie-' + (lane === 'nai' ? 'novelai' : lane), run) : run());
         const index = this.jobs.indexOf(job);
         if (index >= 0) this.jobs.splice(index, 1);
         this.changed();
       }
-    } finally { this.running = false; }
+    } finally { this.active.delete(lane); }
   }
   async run(job) {
     const signal = job.controller.signal;
     try {
       for (let attempt = 0; ; attempt++) {
         // free: answered from a cache that is already there (PixAI's 2nd–4th picture of one task), so no gap is kept.
-        const readyAt = job.free && attempt === 0 ? 0 : this.storage.get() + this.gap();
+        const readyAt = job.free && attempt === 0 ? 0 : this.store(job.lane).get() + this.gap();
         if (readyAt > this.now()) {
           job.state = 'spacing'; job.until = readyAt; this.changed();
           await this.wait(readyAt - this.now(), signal);
@@ -112,13 +125,13 @@ export class DrawQueue {
         job.state = 'running'; job.attempt = attempt; job.until = 0; job.cloud = null; this.changed();
         try {
           const result = await job.task(signal);
-          if (!job.free) this.storage.set(this.now());
+          if (!job.free) this.store(job.lane).set(this.now());
           lease?.release('done');
           job.settled = true;
           job.resolve(result);
           return;
         } catch (error) {
-          this.storage.set(this.now());
+          this.store(job.lane).set(this.now());
           const delay = error?.status === 429 ? this.backoff(attempt + 1) : 0;
           // A 429 makes everyone in the cloud queue wait as well.
           lease?.release(delay ? 'busy' : 'done', delay);
