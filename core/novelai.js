@@ -420,7 +420,7 @@ function failure(status, text, relay = false) {
     : status === 429 ? 'NovelAI 账号正忙（可能有人在用同一个账号出图），重试几次后仍然没空，已停下'
     : status === 400 ? 'NovelAI 拒绝了这次请求：' + (text || '参数无效').slice(0, 160)
     : `NovelAI 暂时不可用（${status}）`;
-  return Object.assign(Error(relay ? '经中转：' + message : message), {status});
+  return Object.assign(Error(relay ? '经中转：' + message : message), {status, detail: String(text || '').slice(0, 600)});
 }
 
 /** An address asked through the tavern's /proxy/: its route drops a query and decodes once, so such an address goes encoded. */

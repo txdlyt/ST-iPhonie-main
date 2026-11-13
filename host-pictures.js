@@ -145,9 +145,15 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   /** Queues one picture. Redrawing adds a version; the earlier versions stay. */
   async function generate(id, tag, {interactive = false, permission = null} = {}) {
     const ctx = context(), message = ctx.chat[id], key = jobKey(id, tag);
-    if (!message || jobs.get(key)?.state === 'generating') return;
+    if (!message) return;
+    if (jobs.get(key)?.state === 'generating') { if (interactive) notice('这张图已经在画了（或卡在队列里）。点「取消」后再重画'); return; }
     permission ??= await allowed(interactive);
-    if (!permission) return;
+    if (!permission) {
+      // Tapping 出图 / 重画 and getting nothing back is the worst answer: say why.
+      if (interactive) notice(backend.drawReady() ? '没有出图：这张图要花钱，需要你确认（弹窗里点「确定」）' : (backend.drawMissing() || '没有出图：绘图引擎还没设好'));
+      backend.reportDiagnostic?.('正文出图', {message: '点了出图但没有开始', ready: backend.drawReady(), engine: settings().draw.engine, interactive}, 'warn');
+      return;
+    }
     jobs.set(key, {state: 'generating'});
     scheduleRender();
     try {
@@ -165,7 +171,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       }
       jobs.delete(key);
     } catch (error) {
-      if (error.cancelled) jobs.delete(key); else { jobs.set(key, {state: 'error', message: error.message}); if (settings().general.hideStoryWaves) notice(error.message); }
+      if (error.cancelled) jobs.delete(key); else { jobs.set(key, {state: 'error', message: error.message}); if (interactive || settings().general.hideStoryWaves) notice(error.message); backend.reportDiagnostic?.('正文出图', {message: error.message, engine: settings().draw.engine, interactive}, 'error'); }
     }
     scheduleRender();
   }

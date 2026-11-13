@@ -132,6 +132,8 @@ const assistantTransferRows = docs => normalizeAssistantThreads(docs.filter(row 
 })));
 const engineCheck = engine => { if (!ENGINES.includes(engine)) throw Error('引擎无效'); };
 // Keys cover the voice engines, NovelAI for drawing, and llm (the phone's own text model).
+/** What the PixAI relay said went wrong (its message), so "check the log" has a lead. */
+const pixaiWhy = error => { try { const m = JSON.parse(error?.detail || '{}').message; return m ? '：' + String(m).slice(0, 240) : ''; } catch { return ''; } };
 const keyCheck = engine => { if (engine !== 'nai' && engine !== 'llm' && engine !== 'gpt' && engine !== 'embed' && engine !== 'pixai' && engine !== 'github' && !SONG_KEYS.includes(engine)) engineCheck(engine); };
 // 自己的接口: a role's model names one of its sets; one that is gone (deleted on another device) is not refused,
 // its lines go to the set in use.
@@ -1724,7 +1726,7 @@ export class TTSBackend {
         try {
             response = await this.pixai.call('/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify(body) });
         } catch (error) {
-            throw Error(error?.status === 409 ? '反代正在出图，画完再切' : error?.status === 502 ? '没能在 PixAI 网页上切换（模型/LoRA/Recipe 没选上、尺寸被锁或网页没变过去），检查反代的日志' : error?.status === 404 || error?.status === 405 || error?.status === 400 ? '反代版本太旧，不支持切模型、比例、尺寸或横竖，需要更新反代的 server.js' : error.message);
+            throw Error(error?.status === 409 ? '反代正在出图，画完再切' : error?.status === 502 ? '没能在 PixAI 网页上切换（模型/LoRA/Recipe 没选上、尺寸被锁或网页没变过去），检查反代的日志' + pixaiWhy(error) : error?.status === 404 || error?.status === 405 || error?.status === 400 ? '反代版本太旧，不支持切模型、比例、尺寸或横竖，需要更新反代的 server.js' : error.message);
         }
         const info = await response.json().catch(() => ({}));
         this.pixaiRemember(info);
@@ -1742,7 +1744,7 @@ export class TTSBackend {
             response = await this.pixai.call('/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify({ count: n }) });
         } catch (error) {
             // The bridge's own words are in the body, which the NovelAI-shaped error does not carry: say what these statuses mean here.
-            throw Error(error?.status === 409 ? '反代正在出图，画完再切张数' : error?.status === 502 ? '没能在 PixAI 网页上切换张数，检查反代的日志' : error?.status === 404 || error?.status === 405 ? '反代版本太旧，没有切换张数的接口（/ai/settings）' : error.message);
+            throw Error(error?.status === 409 ? '反代正在出图，画完再切张数' : error?.status === 502 ? '没能在 PixAI 网页上切换张数，检查反代的日志' + pixaiWhy(error) : error?.status === 404 || error?.status === 405 ? '反代版本太旧，没有切换张数的接口（/ai/settings）' : error.message);
         }
         const info = await response.json().catch(() => ({}));
         this.pixaiRemember(info);
