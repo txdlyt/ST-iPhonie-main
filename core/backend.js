@@ -1,3 +1,4 @@
+import {TextTasks} from './text-tasks.js';
 import {withProxyHeaders, noTavernProxy} from './proxy-url.js';
 import { ownBlob } from './compat.js';
 import { normalizeNarration, NARRATOR } from './narration.js';
@@ -1181,7 +1182,7 @@ export class TTSBackend {
      */
     /** signal: the request is let go (停止回复). Kept out of the request log, which keeps copies of the request. */
     async generateText(context, { use = 'other', signal, ...request }) {
-        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, request, signal, use === 'chat'));
+        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, {...request, background: ['moments','forum'].includes(use)}, signal, use === 'chat'));
         // A model that never answers must not keep a reply "being voiced / drawn" for ever: after this long the request is given up
         // (the state is freed and the floor can be tried again).
         let timer, result;
@@ -1196,10 +1197,16 @@ export class TTSBackend {
         const text = activeText(this.settings.text);
         if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch, signal, details });
         if (!context?.generateRaw) throw Error('当前酒馆版本不支持后台生成');
+        const valid = this.spaceGuard(), visit = this.space;
+        return (this.textTasks ||= new TextTasks()).run(() => this.generateTavernText(context, request), {signal, background: request.background === true, valid: () => !this.closed && this.space === visit && valid()});
+    }
+    async generateTavernText(context, request) {
         // The chat-completion request the tavern builds is kept, so an empty answer can be asked again as a stream:
         // "假流式" channels only answer streamed requests, and the tavern's background generation never streams.
         // A length the task asks for replaces the tavern's own for that request: the tavern's, when longer, is kept.
         const own = context?.mainApi === 'openai' ? context.chatCompletionSettings?.openai_max_tokens : 0;
+        const {background, ...localRequest} = request;
+        request = localRequest;
         const outgoing=tavernTextRequest(request.responseLength ? {...request, responseLength: answerRoom(request.responseLength, own)} : request);
         const source = context.eventSource, event = context.eventTypes?.CHAT_COMPLETION_SETTINGS_READY, last = JSON.stringify(asMessages(outgoing.prompt).at(-1)?.content ?? '');
         let payload = null;
@@ -4016,7 +4023,6 @@ export class TTSBackend {
             setRoleRef: (id, blob) => this.setRoleRef(String(id), blob), clearRoleRef: id => this.clearRoleRef(String(id)),
             arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
             imageConnectionList: engine => this.imageConnectionList(engine), saveImageConnection: (engine, patch) => this.saveImageConnection(engine, patch), selectImageConnection: (engine, id) => this.selectImageConnection(engine, id), deleteImageConnection: (engine, id) => this.deleteImageConnection(engine, id),
-            imageHost: () => this.imageHost(), saveImageHost: patch => this.saveImageHost(clone(patch || {})), hostTest: () => this.hostTest(), hostUpload: photoId => this.hostUpload(photoId), hostLinksOf: photoId => this.hostLinksOf(photoId), hostProblem: () => this.hostProblem(), hostForget: photoId => this.hostForget(photoId),
             drawReady: () => this.drawReady(), drawMissing: () => this.drawMissing(), paidPrompt: () => this.paidPrompt(), comfyCatalog: url => this.comfyCatalog(url), comfyClips: options => this.comfyClips(options), comfyWorkflows: () => this.comfyWorkflows(), comfyWorkflow: name => this.comfyWorkflow(name),
             saveComfyWorkflow: patch => this.saveComfyWorkflow(patch), selectComfyWorkflow: id => this.selectComfyWorkflow(id), deleteComfyWorkflow: id => this.deleteComfyWorkflow(id),
             comfyLoraInfo: () => this.comfyLoraInfo(), editComfyLoras: change => this.editComfyLoras(clone(change || {})), restoreComfyWorkflow: () => this.restoreComfyWorkflow(),
@@ -4135,6 +4141,8 @@ export class TTSBackend {
             pixaiStatus: () => this.pixaiStatus(),
             pixaiSetCount: count => this.pixaiSetCount(count),
             pixaiSetPage: patch => this.pixaiSetPage(patch),
+            imageHost: () => this.imageHost(), saveImageHost: patch => this.saveImageHost(clone(patch || {})), hostTest: () => this.hostTest(),
+            hostUpload: photoId => this.hostUpload(photoId), hostLinksOf: photoId => this.hostLinksOf(photoId), hostForget: photoId => this.hostForget(photoId), hostProblem: () => this.hostProblem(),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
             wardrobe: owner => this.wardrobe(String(owner || '')), saveWardrobeItem: item => this.saveWardrobeItem(clone(item)), saveWardrobeSet: set => this.saveWardrobeSet(clone(set)), deleteWardrobe: ids => this.deleteWardrobe([...(ids || [])]), setWardrobeWear: wear => this.setWardrobeWear(clone(wear || {})), clearWardrobeWear: owner => this.clearWardrobeWear(String(owner || '')), theaters: () => this.theaters(), saveTheater: doc => this.saveTheater(clone(doc)), deleteTheater: ids => this.deleteTheater([...(ids || [])]),
@@ -4156,7 +4164,7 @@ export class TTSBackend {
     }
     async close() {
         if (this.closing) return this.closing;
-        this.closed = true; this.prepared = null; this.listeners.clear(); this.providers.clear();
+        this.closed = true; this.textTasks?.close(); this.prepared = null; this.listeners.clear(); this.providers.clear();
         this.chats.close();
         clearTimeout(this.syncTimer);
         clearTimeout(this.anlasTimer);
