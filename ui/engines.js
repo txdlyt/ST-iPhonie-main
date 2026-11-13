@@ -23,12 +23,13 @@ export function enginesApp(ctx) {
     {id: 'image', title: '图像', en: 'IMAGE', glyph: 'image', ids: ['nai', 'gpt', 'comfy', 'pixai']},
     {id: 'voice', title: '语音', en: 'VOICE', glyph: 'wave', ids: Object.keys(engines)},
     {id: 'text', title: '文字', en: 'TEXT · VECTOR', glyph: 'chat', ids: ['embed', 'llm']},
+    {id: 'host', title: '图床', en: 'IMAGE HOST', glyph: 'image', ids: ['github']},
     {id: 'music', title: '音乐', en: 'MUSIC', glyph: 'music', ids: [...SONG_KEYS].reverse()}];
   const groupOf = id => GROUPS.find(g => g.ids.includes(id));
   let order = (() => {
     const s = api.getState(), voices = Object.keys(engines).sort((a, b) => s.routes.filter(r => r.engine === a).length - s.routes.filter(r => r.engine === b).length);
     const drawing = ['nai', 'gpt', 'comfy', 'pixai'].filter(x => x !== s.draw.engine);
-    return [...drawing, s.draw.engine, ...voices, 'embed', 'llm', ...[...SONG_KEYS].reverse()];
+    return [...drawing, s.draw.engine, ...voices, 'embed', 'llm', 'github', ...[...SONG_KEYS].reverse()];
   })();
   /** The card in front of its pocket. */
   const frontOf = id => groupOf(id).ids.slice().sort((a, b) => order.indexOf(a) - order.indexOf(b)).at(-1);
@@ -110,16 +111,17 @@ export function enginesApp(ctx) {
   /** The text model preset being edited (the draft's active one). */
   const textPreset = () => textDraft.presets.find(p => p.id === textDraft.active) || textDraft.presets[0];
   const song = id => SONG_KEYS.includes(id);
-  const nameOf = id => song(id) ? SING_NAMES[id] : id === 'nai' ? 'NovelAI' : id === 'gpt' ? 'GPT 生图' : id === 'comfy' ? 'ComfyUI' : id === 'pixai' ? 'PixAI 反代' : id === 'llm' ? '文字模型' : id === 'embed' ? '向量模型' : engines[id];
+  const nameOf = id => song(id) ? SING_NAMES[id] : id === 'nai' ? 'NovelAI' : id === 'gpt' ? 'GPT 生图' : id === 'comfy' ? 'ComfyUI' : id === 'pixai' ? 'PixAI 反代' : id === 'github' ? 'GitHub 图床' : id === 'llm' ? '文字模型' : id === 'embed' ? '向量模型' : engines[id];
   function card(id, tag = 'button') {
     // the settings once per card (each read is a copy of all of them)
     const st = api.getState();
-    const comfy = id === 'comfy', pix = id === 'pixai', saved = comfy ? !!st.draw.comfy.url : pix ? !!st.draw.pixai.url : api.keyStatus(id), nai = id === 'nai', llm = id === 'llm', vector = id === 'embed', d = st.draw, fishSubscribed = id === 'fish' && !!api.fishSubscriptionStatus?.().connected;
+    const comfy = id === 'comfy', pix = id === 'pixai', saved = comfy ? !!st.draw.comfy.url : pix ? !!st.draw.pixai.url : api.keyStatus(id), nai = id === 'nai', llm = id === 'llm', vector = id === 'embed', gh = id === 'github', host = st.imageHost, d = st.draw, fishSubscribed = id === 'fish' && !!api.fishSubscriptionStatus?.().connected;
     const em = vector ? (engine === 'embed' && embedDraft ? embedDraft : st.embed) : null;
     const name = nameOf(id), t = llm ? (engine === 'llm' && textDraft ? textDraft : st.text) : null, custom = t?.source === 'custom';
     const fields = song(id) ? [['MODEL', id === 'lyria' ? st.music.sing.lyriaModel : id === 'replicate' ? st.music.sing.replicateModel : 'StepAudio 3'], ['USE', '写歌']]
       : vector ? [['MODEL', em.model || '未填写'], ['MEMORY', em.enabled ? '语义检索' : '本地检索']]
       : id === 'gpt' ? [['MODEL', d.gpt.model], ['QUALITY', d.gpt.quality.toUpperCase()]]
+      : gh ? [['AUTO', host.auto ? '自动上传' : '手动'], ['LINK', host.link === 'raw' ? 'RAW' : 'JSDELIVR']]
       : pix ? [['CREDITS', pixaiCreditsText()], ['TOKEN', api.keyStatus('pixai') ? '已填写' : '没填']]
       // A workflow that names its own model has nothing left to choose.
       : comfy ? [['MODEL', d.comfy.workflow && !d.comfy.workflow.includes('"%model%"') ? '工作流决定' : d.comfy.model ? d.comfy.model.replace(/\.[^.]*$/, '').slice(0, 18) : '未选'], ['WORKFLOW', d.comfy.workflows.find(p => p.id === d.comfy.activeWorkflow)?.name || '默认工作流']]
@@ -138,11 +140,11 @@ export function enginesApp(ctx) {
     const attrs = tag === 'button' ? `data-action="engine" data-engine="${id}" aria-label="${name}，${front ? '点一下打开' : '点一下抽到最前面'}"` : `data-engine="${id}"`;
     const dots = comfy ? '' : `•••• •••• •••• ${api.keyHint?.(id) || '••••'}`;
     const ownApi = id === 'custom' ? (st.connections.custom.params.url || '').replace(/^https?:\/\//, '') : '';
-    const number = fishSubscribed ? '已连接 Fish 账户 · 订阅积分' : id === 'custom' ? (ownApi || '还没填接口地址 · 点卡片去填写') : vector ? (em.enabled ? (saved ? dots : '未绑定密钥 · 本地接口可以不填') : '没开 · 记忆用本地检索') : comfy ? d.comfy.url.replace(/^https?:\/\//, '') : pix ? (d.pixai.url.replace(/^https?:\/\//, '') || '还没填反代地址 · 点卡片去填写') : llm ? (custom ? (saved ? dots : '未绑定密钥 · 点卡片去填写') : '用酒馆当前连接的模型') : saved ? dots : '未绑定密钥 · 点卡片去填写';
+    const number = gh ? (host.repo || '还没填仓库 · 点卡片去填写') : fishSubscribed ? '已连接 Fish 账户 · 订阅积分' : id === 'custom' ? (ownApi || '还没填接口地址 · 点卡片去填写') : vector ? (em.enabled ? (saved ? dots : '未绑定密钥 · 本地接口可以不填') : '没开 · 记忆用本地检索') : comfy ? d.comfy.url.replace(/^https?:\/\//, '') : pix ? (d.pixai.url.replace(/^https?:\/\//, '') || '还没填反代地址 · 点卡片去填写') : llm ? (custom ? (saved ? dots : '未绑定密钥 · 点卡片去填写') : '用酒馆当前连接的模型') : saved ? dots : '未绑定密钥 · 点卡片去填写';
     return `<${tag} class="bank-card${tag === 'div' ? ' detail-card' : ''}" ${attrs}>${spark()}
-      <span class="card-top"><span class="card-name">${name}</span><span class="card-kind">${IMAGE.includes(id) ? 'IMAGE' : song(id) ? 'MUSIC' : llm ? 'TEXT' : vector ? 'VECTOR' : 'VOICE'}${icon('nfc')}</span></span>
+      <span class="card-top"><span class="card-name">${name}</span><span class="card-kind">${gh ? 'HOST' : IMAGE.includes(id) ? 'IMAGE' : song(id) ? 'MUSIC' : llm ? 'TEXT' : vector ? 'VECTOR' : 'VOICE'}${icon('nfc')}</span></span>
       <span class="card-chip"></span>
-      <span class="card-number${number.startsWith('•') || comfy || pix || ownApi ? '' : ' none'}${comfy || pix || ownApi ? ' address' : ''}">${number}</span>
+      <span class="card-number${number.startsWith('•') || comfy || pix || gh || ownApi ? '' : ' none'}${comfy || pix || gh || ownApi ? ' address' : ''}">${number}</span>
       <span class="card-bottom">${fields.map(([k, value]) => `<span><span class="k">${k}</span><span class="v"${fishSubscribed && k === 'BALANCE' ? ' data-fish-credit-balance' : ''}>${esc(value)}</span></span>`).join('')}<span class="card-brand">ST-iPhonie</span></span></${tag}>`;
   }
 
@@ -309,6 +311,28 @@ export function enginesApp(ctx) {
         </div>
         <div class="actions">${x.url ? btn('pixai-test', icon('refresh') + '测试连接', 'secondary') : ''}${btn('open-draw', icon('paint') + '打开绘图', 'secondary')}</div>`);
   }
+  let hostStatus = '';
+  function renderGithub() {
+    const h = api.getState().imageHost, tokenSaved = api.keyStatus('github');
+    v.root.dataset.engine = 'github';
+    v.draw(heading('GitHub 图床', moreButton(), 'Image Host')
+      + card('github', 'div')
+      + groupTitle('仓库', help('把图传到你自己的 GitHub 仓库，换成一条能在任何地方打开的链接。仓库要设成公开（Public），外链才打得开；令牌（Token）要有这个仓库的 Contents 读写权限。\n\n图按「文件夹 / 角色卡名 / 时间-编号.png」存放，同一张图不会重复上传。令牌只保存在当前浏览器和酒馆地址。'))
+      + `<div class="group pad">
+          ${field('仓库', input('host-repo', h.repo, 'text', 'autocomplete="off" spellcheck="false" placeholder="例如 txdlyt/my-images 或完整网址"'))}
+          ${keyBox('令牌（Token）', tokenSaved && (api.keyHint('github') || '已保存'), 'github_pat_ 或 ghp_ 开头', '在 GitHub → Settings → Developer settings 里生成，只给这个仓库的 Contents 读写。填完点一下别处就保存了。')}
+          ${field('分支', input('host-branch', h.branch, 'text', 'autocomplete="off" spellcheck="false" placeholder="main"'))}
+          ${field('根文件夹', input('host-folder', h.folder, 'text', 'autocomplete="off" spellcheck="false" placeholder="images（可留空）"'))}
+          ${toggle('host-bycard', '按角色卡分文件夹', h.byCard, '开：每张角色卡一个文件夹，换卡后图自动进另一个文件夹。关：全放在根文件夹里。')}
+        </div>`
+      + groupTitle('外链与自动上传')
+      + `<div class="group pad">
+          ${field('默认外链', select('host-link', h.link, [['jsdelivr', 'jsDelivr（CDN，国内更快）'], ['raw', 'GitHub 原链（raw.githubusercontent.com）']]))}
+          ${toggle('host-auto', '画完自动上传', h.auto, '开：绘图 App 和正文画出的新图，存进相册后自动传到仓库。关：只在相册里手动传。上传失败不影响画图。')}
+          <p class="hint" aria-live="polite" data-host-status>${esc(hostStatus || (api.hostProblem?.() ? '✗ 上次自动上传失败：' + api.hostProblem().message : ''))}</p>
+        </div>
+        <div class="actions">${btn('host-test', icon('refresh') + '测试连接', 'secondary')}</div>`);
+  }
   function renderGpt() {
     const saved = api.keyStatus('gpt'), g = api.getState().draw.gpt;
     v.root.dataset.engine = 'gpt';
@@ -415,6 +439,10 @@ export function enginesApp(ctx) {
       // 自己的接口 is ready once it has an address (a key is optional there).
       const ready = g.ids.filter(id => id === 'custom' ? !!s.connections.custom?.params?.url : api.keyStatus(id)).length, voiced = s.routes.filter(r => r.voice).length;
       return [ready ? `${ready} 家能用 · ${voiced} 个角色有音色` : '还没有绑定密钥', `${ready}/${g.ids.length}`];
+    }
+    if (g.id === 'host') {
+      const h = s.imageHost, ok = !!(h.repo && api.keyStatus('github'));
+      return [ok ? `${h.repo} · ${h.auto ? '画完自动上传' : '手动上传'}` : '仓库和令牌填好后，画好的图能传到 GitHub', ok ? '1/1' : '0/1'];
     }
     if (g.id === 'music') {
       const ready = g.ids.filter(id => api.keyStatus(id)).length;
@@ -672,7 +700,7 @@ export function enginesApp(ctx) {
         ${id === 'replicate' ? field('模型', `${input('song-replicateModel', s.replicateModel, 'text', 'autocomplete="off" spellcheck="false" placeholder="作者/模型名"')}<div class="write-chips" role="group" aria-label="模型">${REPLICATE_MODELS.map(m => `<button type="button" class="combo-chip" data-action="song-pick" data-model="${esc(m.id)}" aria-pressed="${m.id === s.replicateModel}">${esc(m.name)}<small>约 $${m.price}</small></button>`).join('')}</div>`, '点一个就选上。MiniMax Music 1.5 便宜，但歌词最多 600 字。别的模型写成「作者/模型名」：会读它要什么参数，有歌词和风格参数的才能用。') : ''}</div>`
       + `<p class="hint">用它写歌：音乐 App → 写歌。</p>`);
   }
-  const render = () => song(engine) ? renderSong() : engine === 'nai' ? renderNovelAI() : engine === 'gpt' ? renderGpt() : engine === 'comfy' ? renderComfy() : engine === 'pixai' ? renderPixai() : engine === 'llm' ? renderText() : engine === 'embed' ? renderEmbed() : engine ? renderDetail() : renderList();
+  const render = () => song(engine) ? renderSong() : engine === 'nai' ? renderNovelAI() : engine === 'gpt' ? renderGpt() : engine === 'comfy' ? renderComfy() : engine === 'pixai' ? renderPixai() : engine === 'github' ? renderGithub() : engine === 'llm' ? renderText() : engine === 'embed' ? renderEmbed() : engine ? renderDetail() : renderList();
   function edit(id) {
     resetGptModels();
     engine = id;
@@ -681,6 +709,7 @@ export function enginesApp(ctx) {
     if (id === 'embed') { embedDraft = structuredClone(api.getState().embed); embedModels = []; dirty = false; render(); v.root.scrollTop = 0; return; }
     if (song(id)) { render(); v.root.scrollTop = 0; return; }
     if (id === 'nai') { render(); v.root.scrollTop = 0; loadSubscription(false); return; }
+    if (id === 'github') { hostStatus = ''; render(); v.root.scrollTop = 0; return; }
     if (id === 'pixai') { pixaiStatus = ''; loadPixaiCredits(); }
     if (id === 'gpt' || id === 'comfy' || id === 'pixai') { render(); v.root.scrollTop = 0; return; }
     if (id === 'custom') { customAddress = null; customFound = null; customNote = ''; }
@@ -783,6 +812,11 @@ export function enginesApp(ctx) {
     if (el.dataset.field === 'gpt-url') { saveImageField({url: el.value}, el.value.trim() ? '接口地址已保存' : '已改回直连 OpenAI'); return; }
     if (el.dataset.field === 'pixai-url') { try { api.saveDraw({pixai: {url: el.value}}); pixaiStatus = ''; later(render); loadPixaiCredits(); ctx.notify(el.value.trim() ? '反代地址已保存' : '反代地址已清除'); } catch (error) { ctx.notify(error.message, {error: true}); } return; }
     if (el.dataset.field === 'comfy-url') { api.saveDraw({comfy: {url: el.value}}); later(render); ctx.notify('ComfyUI 地址已保存'); return; }
+    if (el.dataset.field?.startsWith('host-')) {
+      const key = el.dataset.field.slice(5), value = el.type === 'checkbox' ? el.checked : el.value;
+      try { api.saveImageHost({[key === 'bycard' ? 'byCard' : key]: value}); hostStatus = ''; later(render); } catch (error) { ctx.notify(error.message); }
+      return;
+    }
     if (el.dataset.field === 'guard') { api.saveDraw({guard: el.checked}); return; }
     if (el.dataset.field === 'relayOpus') { api.saveDraw({relay: {assumeOpus: el.checked}}); return; }
     if (el.dataset.field === 'relay') { if (engine === 'nai') saveImageField({url: el.value}, el.value.trim() ? '中转地址已保存' : '已改回直连 NovelAI'); else saveFishRelay(el.value); return; }
@@ -796,6 +830,7 @@ export function enginesApp(ctx) {
     if (!typed) return;
     try {
       if (engine === 'nai' || engine === 'gpt') { saveImageField({key: typed}, '密钥已保存'); return; }
+      if (engine === 'github') { api.setKey('github', typed); hostStatus = ''; later(render); ctx.notify('令牌已保存'); return; }
       if (engine === 'embed' || engine === 'pixai' || song(engine)) { api.setKey(engine, typed); if (engine === 'pixai') later(loadPixaiCredits); }
       else if (engine === 'llm') api.setTextKey(textDraft.active, typed);
       else { const added = api.addKeys(engine, typed); balances.delete(engine); ctx.notify(added > 1 ? `已添加 ${added} 个密钥` : '密钥已保存'); later(render); loadBalance(engine, true); if (engine === 'custom') later(findVoices); return; }
@@ -814,7 +849,7 @@ export function enginesApp(ctx) {
   /** The 「⋯」 of an engine page: what is not needed every time. */
   async function engineMore(el) {
     const saved = engine === 'llm' ? !!api.textKeyHint?.(textDraft.active) : engine === 'embed' ? !!api.keyHint('embed') : api.keyStatus(engine), image = engine === 'nai' || engine === 'gpt';
-    const voice = !image && !['comfy', 'embed', 'llm', 'pixai'].includes(engine) && !song(engine);
+    const voice = !image && !['comfy', 'embed', 'llm', 'pixai', 'github'].includes(engine) && !song(engine);
     const picked = await menu(ctx, nameOf(engine), [
       image && {key: 'image-connections', icon: 'swap', label: '连接', note: '新建、切换、改名、删除保存的几组连接'},
       engine === 'custom' && {key: 'custom-sets', icon: 'swap', label: '几套接口', note: '新建、切换、改名、删除存着的几套接口'},
@@ -983,6 +1018,15 @@ export function enginesApp(ctx) {
         changed();
         break;
       }
+      case 'host-test': {
+        hostStatus = '正在连接 GitHub…'; render();
+        try {
+          const r = await api.hostTest();
+          hostStatus = (r?.ok === false ? '✗ ' : '✓ ') + (r?.message || '仓库可以写入') + (r?.warning ? '（' + r.warning + '）' : '');
+        } catch (error) { hostStatus = '✗ ' + error.message; }
+        if (!v.disposed && engine === 'github') render();
+        break;
+      }
       case 'pixai-test': {
         pixaiStatus = '正在连接反代…'; render();
         try {
@@ -1066,6 +1110,7 @@ export function enginesApp(ctx) {
       case 'clear-key': if (engine === 'embed') { if (await ctx.confirm('清除向量模型的密钥？', '之后用向量模型需要重新填写。')) { api.clearKey('embed'); render(); } break; }
         if (engine === 'llm') { if (await ctx.confirm('清除这套接口的密钥？', '其他接口预设的密钥不受影响。')) { api.clearTextKey(textDraft.active); render(); } break; }
         if (engine === 'custom') { if (await ctx.confirm('清除这套接口的密钥？', '其他几套的密钥保留。')) { api.clearKey('custom'); render(); } break; }
+        if (engine === 'github') { if (await ctx.confirm('清除图床令牌？', '仓库设置保留；之后上传需要重新填令牌。')) { api.clearKey('github'); render(); } break; }
         if (engine === 'pixai') { if (await ctx.confirm('清除反代令牌？', '地址保留；反代设了令牌的话，之后需要重新填写。')) { api.clearKey('pixai'); render(); loadPixaiCredits(); } break; }
         if (engine === 'nai' || engine === 'gpt') { if (await ctx.confirm('清除这组连接的密钥？', '其他连接的密钥保留，这组之后需要重新填写。')) { api.clearKey(engine); imageSaved(); } break; }
         if (await ctx.confirm(['nai', 'gpt'].includes(engine) ? '清除密钥？' : '清除全部密钥？', '之后使用这个引擎需要重新填写。')) { api.clearKey(engine); if (engine === 'nai') subscription = null; balances.delete(engine); render(); } break;

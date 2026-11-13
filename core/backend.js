@@ -23,6 +23,7 @@ import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync
 import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS, normalizeSfx, SFX_MODELS, SFX_FORMATS, SFX_LIMITS } from './sounds.js';
 import { gatherCardRoles } from './role-groups.js';
+import { normalizeHost, uploadImage, testHost, hostReady, hostLinks } from './image-host.js';
 import { normalizeTagger, reachableFromHttps } from './tagger.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, ROW_PARTS, fieldsOf, writeBackup, readBackup, rowJSON, withBlobs, sealKeys, openKeys } from './backup.js';
@@ -130,7 +131,7 @@ const assistantTransferRows = docs => normalizeAssistantThreads(docs.filter(row 
 })));
 const engineCheck = engine => { if (!ENGINES.includes(engine)) throw Error('引擎无效'); };
 // Keys cover the voice engines, NovelAI for drawing, and llm (the phone's own text model).
-const keyCheck = engine => { if (engine !== 'nai' && engine !== 'llm' && engine !== 'gpt' && engine !== 'embed' && engine !== 'pixai' && !SONG_KEYS.includes(engine)) engineCheck(engine); };
+const keyCheck = engine => { if (engine !== 'nai' && engine !== 'llm' && engine !== 'gpt' && engine !== 'embed' && engine !== 'pixai' && engine !== 'github' && !SONG_KEYS.includes(engine)) engineCheck(engine); };
 // 自己的接口: a role's model names one of its sets; one that is gone (deleted on another device) is not refused,
 // its lines go to the set in use.
 const modelCheck = (engine, model) => { engineCheck(engine); if (engine === 'custom' ? model && !/^[\w-]{1,64}$/.test(model) : model && !TTSParameters.catalogs[engine].models.includes(model)) throw Error('请选择列表中的模型'); };
@@ -173,10 +174,13 @@ export class TTSBackend {
         // PixAI 反代: a NovelAI-format client of its own (address from the settings, the bridge's token optional).
         this.pixai = new PixaiClient();
         this.pixaiKey = '';
+        this.githubKey = '';
+        this.hostQueue = Promise.resolve();
+        this.hostLast = null;
         /** The resolution the bridge last read off the PixAI page ({width, height}), so a picture is labelled with the page's size. */
         this.pixaiWeb = null;
         this.requestLog = new RequestLog({change: () => this.emit('logs', {}), secrets: () => [
-            ...this.keyStore.load().values(), ...(this.textKeys?.values() || []), this.gptKey, this.embedKey, this.pixaiKey, this.novelai.key,
+            ...this.keyStore.load().values(), ...(this.textKeys?.values() || []), this.gptKey, this.embedKey, this.pixaiKey, this.githubKey, this.novelai.key,
             ...(this.imageKeys?.nai?.values() || []), ...(this.imageKeys?.gpt?.values() || []),
             ...(this.providers.keys?.values() || []), ...(this.providers.customKeys?.values() || []),
             this.providers.fishMcp?.credentials()?.access_token, this.providers.fishMcp?.credentials()?.refresh_token].flatMap(x => typeof x === 'string' ? x.split('\n').filter(Boolean) : [])});
@@ -243,7 +247,7 @@ export class TTSBackend {
     }
     async initialize() {
         this.assertOpen();
-        try { await this.keyStore.open?.(); for (const [engine, key] of this.keyStore.load()) { if (engine === 'nai' || engine === 'gpt') this.imageKeys[engine] = parseTextKeys(key); else if (engine === 'llm') this.textKeys = parseTextKeys(key); else if (engine === 'embed') this.embedKey = String(key).trim(); else if (engine === 'pixai') this.pixaiKey = String(key).trim(); else if (SONG_KEYS.includes(engine)) this.songKeys[engine] = key; else if (engine === 'custom') this.providers.customKeys = parseTextKeys(key); else this.providers.setKey(engine, key); } this.activateImageKeys(); }
+        try { await this.keyStore.open?.(); for (const [engine, key] of this.keyStore.load()) { if (engine === 'nai' || engine === 'gpt') this.imageKeys[engine] = parseTextKeys(key); else if (engine === 'llm') this.textKeys = parseTextKeys(key); else if (engine === 'embed') this.embedKey = String(key).trim(); else if (engine === 'pixai') this.pixaiKey = String(key).trim(); else if (engine === 'github') this.githubKey = String(key).trim(); else if (SONG_KEYS.includes(engine)) this.songKeys[engine] = key; else if (engine === 'custom') this.providers.customKeys = parseTextKeys(key); else this.providers.setKey(engine, key); } this.activateImageKeys(); }
         catch (error) { this.notify(error.message); }
         try {
             const phone = await this.library.getPhone();
@@ -730,6 +734,7 @@ export class TTSBackend {
         if (engine === 'custom') { this.storeCustomKeys(String(key).includes('\t') ? parseTextKeys(key) : new Map(this.providers.customKeys).set(this.customActive(), validateKey('custom', key))); return; }
         if (engine === 'llm') { if (String(key).includes('\t')) this.storeTextKeys(parseTextKeys(key)); else this.setTextKey(this.settings.text.active, key); return; }
         if (engine === 'embed') { const value = String(key).replace(/[\u200b-\u200d\ufeff]/g, '').replace(/^\s*Bearer\s+/i, '').trim(); this.keyStore.save('embed', value); this.embedKey = value; this.emit('keys', { engine, configured: true }); return; }
+        if (engine === 'github') { const value = validateKey('github', key); this.keyStore.save('github', value); this.githubKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'pixai') { const value = validateKey('pixai', key); this.keyStore.save('pixai', value); this.pixaiKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'nai' || engine === 'gpt') {
             this.assertImageIdle(engine);
@@ -855,6 +860,7 @@ export class TTSBackend {
         if (engine === 'llm') { this.clearTextKey(this.settings.text.active); return; }
         if (engine === 'custom') { const map = new Map(this.providers.customKeys); map.delete(this.customActive()); this.storeCustomKeys(map); return; }
         if (engine === 'embed') { this.keyStore.save('embed', ''); this.embedKey = ''; this.emit('keys', { engine, configured: false }); return; }
+        if (engine === 'github') { this.keyStore.save('github', ''); this.githubKey = ''; this.emit('keys', { engine, configured: false }); return; }
         if (engine === 'pixai') { this.keyStore.save('pixai', ''); this.pixaiKey = ''; this.emit('keys', { engine, configured: false }); return; }
         if (engine === 'nai' || engine === 'gpt') { this.assertImageIdle(engine); const map = new Map(this.imageKeys[engine]); map.delete(this.settings.draw.connections[engine].active); this.storeImageKeys(engine, map); return; }
         this.keyStore.save(engine, '');
@@ -875,11 +881,58 @@ export class TTSBackend {
         return clone(value);
     }
     /** The last 4 characters of the saved key ('' without one), so the user can tell which key is in use. */
-    keyHint(engine) { keyCheck(engine); if (engine === 'pixai') return keyTail(this.pixaiKey) || (this.pixaiKey ? '••••' : ''); if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return key ? keyTail(key) || '••••' : ''; } if (SONG_KEYS.includes(engine)) return keyTail(this.songKeys[engine]) || (this.songKeys[engine] ? '••••' : ''); if (engine === 'nai' || engine === 'gpt') return keyTail(this.imageKeys[engine].get(this.settings.draw.connections[engine].active)); if (engine === 'llm') return this.textKeyHint(this.settings.text.active); if (engine === 'embed') return this.embedKey ? keyTail(this.embedKey) || '••••' : ''; return keyTail(this.providers.currentKey(engine)); }
+    keyHint(engine) { keyCheck(engine); if (engine === 'github') return keyTail(this.githubKey) || (this.githubKey ? '••••' : ''); if (engine === 'pixai') return keyTail(this.pixaiKey) || (this.pixaiKey ? '••••' : ''); if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return key ? keyTail(key) || '••••' : ''; } if (SONG_KEYS.includes(engine)) return keyTail(this.songKeys[engine]) || (this.songKeys[engine] ? '••••' : ''); if (engine === 'nai' || engine === 'gpt') return keyTail(this.imageKeys[engine].get(this.settings.draw.connections[engine].active)); if (engine === 'llm') return this.textKeyHint(this.settings.text.active); if (engine === 'embed') return this.embedKey ? keyTail(this.embedKey) || '••••' : ''; return keyTail(this.providers.currentKey(engine)); }
     /** For a voice engine with keys: how many, which one is in use (1-based) and how many were refused while this page is open. */
     keyPool(engine) { engineCheck(engine); return this.providers.keyPool(engine); }
-    keyStatus(engine) { keyCheck(engine); if (engine === 'pixai') return !!this.pixaiKey; return SONG_KEYS.includes(engine) ? !!this.songKeys[engine] : engine === 'nai' ? this.novelai.configured : engine === 'gpt' ? !!this.gptKey : engine === 'llm' ? this.textKeys.has(this.settings.text.active) : engine === 'embed' ? !!this.embedKey : engine === 'custom' ? this.providers.customKeys.has(this.customActive()) : this.providers.keys.has(engine); }
+    keyStatus(engine) { keyCheck(engine); if (engine === 'github') return !!this.githubKey; if (engine === 'pixai') return !!this.pixaiKey; return SONG_KEYS.includes(engine) ? !!this.songKeys[engine] : engine === 'nai' ? this.novelai.configured : engine === 'gpt' ? !!this.gptKey : engine === 'llm' ? this.textKeys.has(this.settings.text.active) : engine === 'embed' ? !!this.embedKey : engine === 'custom' ? this.providers.customKeys.has(this.customActive()) : this.providers.keys.has(engine); }
 
+    // ---------- GitHub 图床 ----------
+    /** Where pictures go in the repository, and whether every new drawn picture goes there by itself. The token is a key ('github'). */
+    imageHost() { return clone(this.settings.imageHost); }
+    saveImageHost(patch) {
+        const next = this.getState(), allowed = ['auto', 'repo', 'branch', 'folder', 'byCard', 'link'];
+        next.imageHost = normalizeHost({ ...next.imageHost, ...Object.fromEntries(Object.entries(patch || {}).filter(([key]) => allowed.includes(key))) });
+        this.save(next);
+        this.emit('host', {});
+        return clone(next.imageHost);
+    }
+    async hostTest() { return testHost({ token: this.githubKey, config: this.settings.imageHost }); }
+    /** What was uploaded: {photoId: {path, at}}, kept on this device only. */
+    #hostRows() { try { return JSON.parse(globalThis.localStorage?.getItem('sttts.imghost.v1:' + encodeURIComponent(this.settings.scope)) || '{}') || {}; } catch { return {}; } }
+    #hostWrite(rows) { try { globalThis.localStorage?.setItem('sttts.imghost.v1:' + encodeURIComponent(this.settings.scope), JSON.stringify(rows)); } catch { /* full: the link is lost, the picture is not */ } }
+    /** The links of a photo that was uploaded, {path, at, links: {jsdelivr, raw}, link} ('link' is the one the settings choose), else null. */
+    hostLinksOf(photoId) {
+        const row = this.#hostRows()[String(photoId)], config = this.settings.imageHost, links = row && hostLinks({ ...config, branch: row.branch || config.branch, repo: row.repo || config.repo }, row.path);
+        return links ? { path: row.path, at: row.at, links, link: links[config.link] || links.jsdelivr } : null;
+    }
+    /** The last automatic upload that failed (null when none, or when a later one worked). */
+    hostProblem() { return this.hostLast ? { ...this.hostLast } : null; }
+    hostForget(photoId) { const rows = this.#hostRows(); if (delete rows[String(photoId)]) { this.#hostWrite(rows); this.emit('host', { photoId }); } }
+    /** Uploads a photo (one at a time: GitHub does not like many writes at once); the links when done. */
+    hostUpload(photoId) {
+        const run = async () => {
+            const config = this.settings.imageHost;
+            if (!hostReady(config, this.githubKey)) throw Error('图床还没设好：要填仓库和令牌（引擎 → GitHub 图床）');
+            const photo = await this.library.getPhoto(photoId);
+            if (!photo?.blob) throw Error('找不到这张图');
+            const done = await uploadImage({ token: this.githubKey, config, blob: photo.blob, cardName: photo.cardName || (photo.card ? '' : this.space.name) });
+            const rows = this.#hostRows();
+            rows[String(photoId)] = { path: done.path, repo: config.repo, branch: config.branch, at: Date.now() };
+            this.#hostWrite(rows);
+            this.hostLast = null;
+            this.emit('host', { photoId });
+            return this.hostLinksOf(photoId);
+        };
+        const job = this.hostQueue.then(run);
+        this.hostQueue = job.catch(() => {});
+        return job;
+    }
+    /** A picture just drawn goes to the repository when 自动上传 is on; a failure is said in the 图床 page and the log, never to the drawing. */
+    #hostAuto(photo, blob) {
+        const config = this.settings.imageHost;
+        if (!config.auto || !photo?.id || !hostReady(config, this.githubKey)) return;
+        this.hostUpload(photo.id).catch(error => { this.hostLast = { at: Date.now(), message: error.message }; this.emit('host', { error: error.message }); });
+    }
     // ---------- 钱包 and 商城 ----------
     wallet() { return clone(this.settings.chat.wallet); }
     /** Money in (+) or out (-) of the wallet, with a line in its 明细. Out with too little left: code 'BROKE'. */
@@ -1798,6 +1851,7 @@ export class TTSBackend {
                 else if (made.refs) info.push(['参考图', made.faces?.length ? made.faces.join('、') : `${made.refs} 张`]);
                 const photo = await this.library.addPhoto({ name: (name || DRAW_ENGINE_NAMES[engine]) + '-' + (made.seed >= 0 ? made.seed : Date.now()) + '.' + ext, blob: made.blob, info, card: this.cardKey(), cardName: this.space.name });
                 this.ledger.image(engine);
+                this.#hostAuto(photo, made.blob);
                 this.#thumbSoon(photo.id);
                 this.emit('library', { collection: 'photos' });
                 this.emit('draw', { phase: 'done' });
@@ -1834,6 +1888,7 @@ export class TTSBackend {
             if (request.refs) info.push(['角色参考', `${request.refs} 张`]);
             const photo = await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + (blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '.png'), blob, info, card: this.cardKey(), cardName: this.space.name });
             this.ledger.image('nai');
+            this.#hostAuto(photo, blob);
             if (quote.free === false) this.spentAnlas();
             this.#thumbSoon(photo.id);
             this.emit('library', { collection: 'photos' });
@@ -1870,6 +1925,7 @@ export class TTSBackend {
             for (const [i, blob] of blobs.entries()) {
                 const named = blobs.length > 1 ? `${label} ${i + 1}` : label;
                 const photo = await this.library.addPhoto({ name: `${name}-${named}-${Date.now()}.png`, blob, info: blobs.length > 1 ? info.map(([k, v]) => k === '工具' ? [k, named] : [k, v]) : info, card: this.cardKey(), cardName: this.space.name });
+                this.#hostAuto(photo, blob);
                 this.#thumbSoon(photo.id);
                 results.push({ photoId: photo.id, seed: -1, params: { width: width * (scale || 1), height: height * (scale || 1) }, prompt: named, engine: 'nai', tool });
             }
@@ -3060,6 +3116,9 @@ export class TTSBackend {
         for (const route of rolesSeen(next.routes, this.space.key)) {
             if (!want.has(route.name)) continue;
             const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
+            // A role that belongs to other cards only is theirs: this card's person of the same name is another person (each card's 姐姐
+            // is her own), so it is not tagged with this card. A role of no card, or of this card already, is.
+            if (cards.length && !cards.some(k => k.split('#')[0] === key.split('#')[0])) continue;
             if (add.length) { route.cards = [...cards, ...add].slice(-100); changed = true; }
             // Met in a story for the first time: it goes in that card's group.
             if (!cards.length && !route.group) this.#joinCard(next, route, keys[0], keys[0] === this.space.key ? this.space.name : '');

@@ -2,8 +2,10 @@
 export type Engine = 'fish' | 'mini' | 'eleven' | 'mimo' | 'doubao' | 'custom';
 /** Keys cover the voice engines and NovelAI. */
 /** llm: the key of the phone's own text model (an OpenAI-compatible API). */
-export type KeyEngine = Engine | 'nai' | 'llm' | 'embed' | 'gpt' | 'pixai';
+export type KeyEngine = Engine | 'nai' | 'llm' | 'embed' | 'gpt' | 'pixai' | 'github';
 /** What the drawing App and every picture use: NovelAI, a GPT image model, or the user's ComfyUI. */
+export interface ImageHostSettings { auto: boolean; repo: string; branch: string; folder: string; byCard: boolean; link: 'jsdelivr' | 'raw'; }
+export interface HostLinks { path: string; at: number; links: { jsdelivr: string; raw: string }; link: string; }
 export type DrawEngine = 'nai' | 'gpt' | 'comfy' | 'pixai';
 export type Theme = 'system' | 'light' | 'dark';
 export type InjectionPosition = 'in_chat' | 'in_prompt' | 'before_prompt';
@@ -181,6 +183,7 @@ export interface Settings {
     chat: ChatSettings;
     moments: MomentsSettings;
     forum: {auto: boolean; every: number; dailyMax: number};
+    imageHost: ImageHostSettings;
     calls: CallsSettings;
     assistant: AssistantSettings;
     sounds: SoundSettings;
@@ -753,6 +756,16 @@ export interface BackendFacade {
     /** Models offered by the saved GPT image connection. Reads /models without generating an image. */
     gptModels(): Promise<string[]>;
     /** PixAI 反代: the bridge's /health for the saved address. Rejects with why when it cannot be reached. */
+    /** GitHub 图床: where pictures go ('github' is the token, keyStatus('github')). */
+    imageHost(): ImageHostSettings;
+    saveImageHost(patch: Partial<ImageHostSettings>): ImageHostSettings;
+    hostTest(): Promise<{ ok: boolean; private: boolean; message: string }>;
+    /** Uploads a photo (queued, one at a time) and answers with its links. */
+    hostUpload(photoId: string): Promise<HostLinks>;
+    /** The links of a photo that was uploaded, else null. */
+    hostLinksOf(photoId: string): HostLinks | null;
+    hostProblem(): { at: number; message: string } | null;
+    hostForget(photoId: string): void;
     pixaiHealth(): Promise<{ status?: string; page?: string; generating?: boolean }>;
     /** PixAI 反代: the bridge's /ai/status for the saved address (what the PixAI page is set to, read live). A field it cannot read is null. */
     pixaiStatus(): Promise<{ ok?: boolean; generating?: boolean; count?: number | null; countLabel?: string | null; resolution?: { ratio: string | null; size: string | null; width: number | null; height: number | null; label: string | null; ratios?: Array<{ ratio: string; on: boolean; locked: boolean }>; sizes?: Array<{ size: string; width: number; height: number; label: string; on: boolean; locked: boolean }> }; canSwap?: boolean; cost?: number | null; balance?: number | null; updatedAt?: string }>;

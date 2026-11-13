@@ -329,6 +329,14 @@ export function galleryApp(ctx) {
         ...(album && album.id !== FAVORITES ? [{key: 'out', icon: 'minus', label: `移出「${album.name}」`, more: true, run: async x => { await api.removeFromAlbum(album.id, [x]); changed = true; ctx.notify('移出了，它还在图库里'); return 'removed'; }}] : []),
         ...(canShareFiles(win) ? [{key: 'share', icon: 'share', label: '分享', more: true, run: async x => { const {source, name} = await photoFile(x); try { await shareFile(ctx.doc, source, name); } catch (error) { ctx.notify(error.message, {error: !/已取消/.test(error.message)}); } }}] : []),
         ...(canCopyPicture(win) ? [{key: 'copy', icon: 'copy', label: '复制', more: true, run: async x => { try { await copyPicture(win, photoFile(x).then(f => f.source)); ctx.notify('已复制'); } catch { ctx.notify('这个浏览器不让复制图片', {error: true}); } }}] : []),
+        ...(api.hostLinksOf && api.getState().imageHost?.repo && api.keyStatus('github') ? [['host', '上传到图床并复制外链', ''], ['host-jsdelivr', '复制 jsDelivr 外链', 'jsdelivr'], ['host-raw', '复制 GitHub 原链', 'raw']].map(([key, label, kind]) => ({key, icon: 'share', label, more: true, run: async x => {
+          try {
+            let got = api.hostLinksOf(x);
+            if (!got) { ctx.notify('正在上传到 GitHub…'); got = await api.hostUpload(x); }
+            const link = kind ? got.links[kind] : got.link;
+            ctx.notify(await copyText(win, link) ? '外链已复制' : link);
+          } catch (error) { ctx.notify(error.message, {error: true}); }
+        }})) : []),
         {key: 'wallpaper', icon: 'image', label: '设为壁纸', more: true, run: async x => { await api.savePhone({wallpaper: {kind: 'photo', photoId: x}}); ctx.notify('已设为壁纸'); }},
         {key: 'cover', icon: 'paint', label: '当效果图', more: true, run: async x => {
           const photo = await api.getPhoto(x);

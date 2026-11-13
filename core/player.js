@@ -50,6 +50,9 @@ export class BrowserAudio {
  }
  unlock() {
   this.pausedByUser=false;
+  // iPhone: Web Audio is silent while the ring/silent switch is on (a cached clip played by an <audio> still sounds) unless the page's audio
+  // session is 'playback'. The voice is the thing the person pressed play for, so it plays whatever the switch says.
+  try { const session = globalThis.navigator?.audioSession; if (session && session.type !== 'playback') session.type = 'playback'; } catch { /* older systems have none */ }
   this.context ??= new AudioContext();
   if (!this.analyser) {
    this.gain = this.context.createGain();
