@@ -215,24 +215,23 @@ export function drawApp(ctx) {
    * task, points per task (which change with the first two) and the account's balance. The plugin only asks for a size
    * itself when the page cannot be read.
    */
-  /** API mode: the bridge sends PixAI's own request, so these settings travel with it and the page is left alone. */
+  /** The way PixAI draws: the choice, and for API mode its own few settings (model, size, LoRA weight); the page is not touched. */
+  const pixaiModeBar = () => `<div class="field"><span>出图方式${help('API 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快；失败会直接报错，不会改用直控。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n两种模式各有自己的一套参数，来回切不会互相覆盖。')}</span>${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式']])}</div>`;
   function pixaiApiParams() {
-    const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null;
-    const modelChip = (id, name) => `<button type="button" data-action="pixai-api-model" data-value="${esc(id)}" aria-pressed="${a.model === id}">${esc(name)}</button>`;
-    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。选「跟网页」就用反代网页上当前的模型。LoRA 随模型自带，权重在下面调。')}</span><div class="size-chips">${modelChip('', '跟网页')}${models.map(m => modelChip(m.id, m.name)).join('')}</div>${!models.length ? '<p class="hint" style="padding:0">读不到反代的 API 模型列表（反代要换成新的 server.js）。</p>' : ''}</div>`;
-    const ratios = table ? Object.keys(table) : [];
-    const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 18 / Math.max(x, y); return `<button type="button" data-action="pixai-api-ratio" data-value="${esc(r)}" aria-pressed="${a.ratio === r}"><i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}</button>`; };
+    const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null, ratios = table ? Object.keys(table) : [];
+    const chip = (action, value, on, label, extra = '') => `<button type="button" data-action="${action}" data-value="${esc(value)}" aria-pressed="${on}"${extra}>${label}</button>`;
+    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。「跟网页」就用反代网页上当前的模型。LoRA 随模型自带，权重在下面调。')}</span><div class="size-chips">${chip('pixai-api-model', '', !a.model, '跟网页')}${models.map(m => chip('pixai-api-model', m.id, a.model === m.id, esc(m.name))).join('')}</div>${models.length ? '' : '<p class="hint" style="padding:0">读不到模型列表，反代要换成新的 server.js。</p>'}</div>`;
+    const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 16 / Math.max(x, y); return chip('pixai-api-ratio', r, a.ratio === r, `<i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}`); };
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
-    const sizeChip = x => `<button type="button" data-action="pixai-api-pick" data-value="${esc(a.ratio + '|' + x.size)}" aria-pressed="${a.size === x.size}"${x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
+    const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
-    const sizeRow = `<div class="field"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后，点「重新读取」就会多出更大的档位。')}</span><b>${a.width && a.height ? esc(a.width + '×' + a.height) : '还没选'}</b>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}` : '<p class="hint" style="padding:0">反代还没有分辨率表：点下面的按钮，让反代去网页读一次。</p>'}<div class="px-foot">${at ? `<span class="chip">读取于 ${esc(at)}</span>` : ''}${btn('pixai-res', pixaiReading ? '读取中……（要一会儿）' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '')}</div></div>`;
-    const lora = `<div class="field"><div class="meter-label"><span>LoRA 权重${help('只在 API 模式生效，所有带 LoRA 的模型共用这一个值。目前反代里原本固定 0.7，之后再细分。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>`;
-    const countRow = `<div class="field"><span>一次出几张</span><b>${a.count} 张</b><em>用下面的 1 / 4 切换，只记在酒馆里，不会去动网页。</em></div>`;
-    return `<div class="group pad px-sync">${modelRow}${sizeRow}${countRow}${lora}<p class="hint" style="padding:0">API 模式出图失败会直接报错，不会自动改用直控。两种模式的设置各存各的，来回切不会互相覆盖。</p></div>`;
+    const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
+    const sizeRow = `<div class="field"><div class="meter-label"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</span><output>${a.width && a.height ? esc(a.width + '×' + a.height) : '未选'}</output></div>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}<div>${read}</div>` : `<p class="hint" style="padding:0">还没有分辨率表，让反代去网页读一次：</p><div>${read}</div>`}</div>`;
+    const lora = `<div class="field"><div class="meter-label"><span>LoRA 权重${help('只在 API 模式生效，所有带 LoRA 的模型共用这一个值（以前反代里固定 0.7）。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>`;
+    return `<div class="group pad px-sync">${pixaiModeBar()}${modelRow}${sizeRow}${lora}</div>`;
   }
   function pixaiParams(size) {
-    const modeBar = `<div class="group pad" style="padding-bottom:6px"><div class="field"><span>出图方式${help('API 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n两种模式各有自己的一套参数，切换不会互相影响。')}</span>${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式']])}</div></div>`;
-    return modeBar + (state().pixai.mode === 'api' ? pixaiApiParams() : pixaiDirectParams(size));
+    return state().pixai.mode === 'api' ? pixaiApiParams() : `<div class="group pad" style="margin-bottom:8px">${pixaiModeBar()}</div>` + pixaiDirectParams(size);
   }
   function pixaiDirectParams(size) {
     const i = pixaiInfo, r = i?.resolution || {}, plan = pixaiPlan(), bad = !i || i.stale;
