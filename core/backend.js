@@ -1719,7 +1719,7 @@ export class TTSBackend {
         if (patch.ratio !== undefined) { body.ratio = String(patch.ratio).trim(); if (!/^\d+:\d+$/.test(body.ratio)) throw Error('比例要写成 9:16 这样'); }
         if (patch.size !== undefined) { body.size = String(patch.size).trim().toUpperCase(); if (!/^[A-Z]{1,3}$/.test(body.size)) throw Error('尺寸档位不对'); }
         if (patch.swap === true) body.swap = true;
-        if (patch.model !== undefined) { body.model = String(patch.model).trim(); if (!body.model) throw Error('没有选模型'); }
+        if (patch.model !== undefined) { body.model = String(patch.model).trim(); if (!body.model) throw Error('没有选模型'); body.direct = true; } // 直控模式：反代要真的去网页上切，不能只记下来
         if (!Object.keys(body).length) throw Error('没有要切换的内容');
         this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
         let response;
