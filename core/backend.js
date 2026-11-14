@@ -1651,7 +1651,7 @@ export class TTSBackend {
             return { engine, params: { model: draw.gpt.model, width, height, seed: -1 }, clamped: false, free: draw.gpt.ask ? false : true, paid: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 };
         }
         // PixAI 反代: the size and seed ask NovelAI's parameters; the bridge draws on the user's own PixAI account (nothing to ask first).
-        if (engine === 'pixai') { const p = normalizeDrawParams({ ...draw.params, ...(params || {}) }); return { engine, params: { model: 'PixAI', width: exactSize(params?.width, this.pixaiWeb?.width, p.width), height: exactSize(params?.height, this.pixaiWeb?.height, p.height), seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 }; }
+        if (engine === 'pixai') { const p = normalizeDrawParams({ ...draw.params, ...(params || {}) }); return { engine, params: { model: 'PixAI', width: exactSize(params?.width, draw.pixai.mode === 'api' ? draw.pixai.api.width : this.pixaiWeb?.width, p.width), height: exactSize(params?.height, draw.pixai.mode === 'api' ? draw.pixai.api.height : this.pixaiWeb?.height, p.height), seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 }; }
         const c = draw.comfy, size = comfySize(c, orientation || orientationOf(c.width, c.height));
         return { engine, params: { model: c.model, ...size, steps: c.steps, scale: c.scale, sampler: c.sampler, seed: Number.isInteger(params?.seed) && params.seed >= 0 ? params.seed : -1 }, clamped: false, free: true, guard: false, v5: false, usage: null, vibes: none, vibeAnlas: 0 };
     }
@@ -1732,6 +1732,20 @@ export class TTSBackend {
         this.pixaiRemember(info);
         return info;
     }
+    /** PixAI 反代 (API mode): have the bridge read the page's ratio → size table once and keep it. Takes a while (it clicks through every ratio). */
+    async pixaiReadResolutions() {
+        this.assertOpen();
+        const url = this.settings.draw.pixai.url;
+        if (!url) throw Error('还没有填写 PixAI 反代地址');
+        this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
+        let response;
+        try {
+            response = await this.pixai.call('/ai/resolutions', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: '{}' });
+        } catch (error) {
+            throw Error(error?.status === 409 ? '反代正在出图，画完再读' : error?.status === 404 || error?.status === 405 ? '反代版本太旧，没有读分辨率表的接口，换成新的 server.js' : '没能读出分辨率表，检查反代的日志' + pixaiWhy(error));
+        }
+        return response.json().catch(() => ({}));
+    }
     /** PixAI 反代: switch the PixAI page to draw `count` pictures per task (1 or 4: the page has no other); answers like pixaiStatus. */
     async pixaiSetCount(count) {
         this.assertOpen();
@@ -1762,7 +1776,7 @@ export class TTSBackend {
         const draw = this.settings.draw, p = quote.params;
         if (engine === 'pixai') {
             this.pixai.relay = draw.pixai.url; this.pixai.setKey(this.pixaiKey);
-            const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [] });
+            const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [], pixai: draw.pixai });
             const blob = await this.pixai.generate(request.body, signal);
             return { blob, seed: request.seed, params: request.params, prompt: request.body.input };
         }
@@ -4143,6 +4157,7 @@ export class TTSBackend {
             pixaiStatus: () => this.pixaiStatus(),
             pixaiSetCount: count => this.pixaiSetCount(count),
             pixaiSetPage: patch => this.pixaiSetPage(patch),
+            pixaiReadResolutions: () => this.pixaiReadResolutions(),
             imageHost: () => this.imageHost(), saveImageHost: patch => this.saveImageHost(clone(patch || {})), hostTest: () => this.hostTest(),
             hostUpload: photoId => this.hostUpload(photoId), hostLinksOf: photoId => this.hostLinksOf(photoId), hostForget: photoId => this.hostForget(photoId), hostProblem: () => this.hostProblem(),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },

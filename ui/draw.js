@@ -215,7 +215,26 @@ export function drawApp(ctx) {
    * task, points per task (which change with the first two) and the account's balance. The plugin only asks for a size
    * itself when the page cannot be read.
    */
+  /** API mode: the bridge sends PixAI's own request, so these settings travel with it and the page is left alone. */
+  function pixaiApiParams() {
+    const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null;
+    const modelChip = (id, name) => `<button type="button" data-action="pixai-api-model" data-value="${esc(id)}" aria-pressed="${a.model === id}">${esc(name)}</button>`;
+    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。选「跟网页」就用反代网页上当前的模型。LoRA 随模型自带，权重在下面调。')}</span><div class="size-chips">${modelChip('', '跟网页')}${models.map(m => modelChip(m.id, m.name)).join('')}</div>${!models.length ? '<p class="hint" style="padding:0">读不到反代的 API 模型列表（反代要换成新的 server.js）。</p>' : ''}</div>`;
+    const ratios = table ? Object.keys(table) : [];
+    const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 18 / Math.max(x, y); return `<button type="button" data-action="pixai-api-ratio" data-value="${esc(r)}" aria-pressed="${a.ratio === r}"><i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}</button>`; };
+    const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
+    const sizeChip = x => `<button type="button" data-action="pixai-api-pick" data-value="${esc(a.ratio + '|' + x.size)}" aria-pressed="${a.size === x.size}"${x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
+    const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
+    const sizeRow = `<div class="field"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后，点「重新读取」就会多出更大的档位。')}</span><b>${a.width && a.height ? esc(a.width + '×' + a.height) : '还没选'}</b>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}` : '<p class="hint" style="padding:0">反代还没有分辨率表：点下面的按钮，让反代去网页读一次。</p>'}<div class="px-foot">${at ? `<span class="chip">读取于 ${esc(at)}</span>` : ''}${btn('pixai-res', pixaiReading ? '读取中……（要一会儿）' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '')}</div></div>`;
+    const lora = `<div class="field"><div class="meter-label"><span>LoRA 权重${help('只在 API 模式生效，所有带 LoRA 的模型共用这一个值。目前反代里原本固定 0.7，之后再细分。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>`;
+    const countRow = `<div class="field"><span>一次出几张</span><b>${a.count} 张</b><em>用下面的 1 / 4 切换，只记在酒馆里，不会去动网页。</em></div>`;
+    return `<div class="group pad px-sync">${modelRow}${sizeRow}${countRow}${lora}<p class="hint" style="padding:0">API 模式出图失败会直接报错，不会自动改用直控。两种模式的设置各存各的，来回切不会互相覆盖。</p></div>`;
+  }
   function pixaiParams(size) {
+    const modeBar = `<div class="group pad" style="padding-bottom:6px"><div class="field"><span>出图方式${help('API 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n两种模式各有自己的一套参数，切换不会互相影响。')}</span>${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式']])}</div></div>`;
+    return modeBar + (state().pixai.mode === 'api' ? pixaiApiParams() : pixaiDirectParams(size));
+  }
+  function pixaiDirectParams(size) {
     const i = pixaiInfo, r = i?.resolution || {}, plan = pixaiPlan(), bad = !i || i.stale;
     const known = !!i && !!(r.width && r.height || Number.isFinite(i.cost) || Number.isFinite(i.balance) || Number.isInteger(i.count));
     const status = i === undefined ? '正在读取……' : !i ? '读不到反代状态' : i.syncing ? '同步中……' : i.stale ? '连不上反代，显示的是上次读到的' : i.generating ? '反代正在出图' : '已和网页同步';
@@ -354,12 +373,13 @@ export function drawApp(ctx) {
 
   // PixAI 反代: the bridge's /ai/status (undefined: not read yet, null: could not be read).
   // Kept while the bridge cannot be reached (shown as stale) so the numbers do not vanish; read again every 10 s and whenever the app comes back.
+  let pixaiReading = false;
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing]);
+  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
-  const pixaiSize = () => { const r = eng() === 'pixai' ? pixaiInfo?.resolution : null; return Number.isInteger(r?.width) && Number.isInteger(r?.height) ? {width: r.width, height: r.height} : {}; };
+  const pixaiSize = () => { if (eng() === 'pixai' && state().pixai.mode === 'api') { const a = state().pixai.api; return a.width && a.height ? {width: a.width, height: a.height} : {}; } const r = eng() === 'pixai' ? pixaiInfo?.resolution : null; return Number.isInteger(r?.width) && Number.isInteger(r?.height) ? {width: r.width, height: r.height} : {}; };
   /** What `n` pictures cost now: the page's pictures-per-task decides how many tasks, and a task costs what the page's button says. */
   function pixaiPlan(n = count) {
     const i = pixaiInfo;
@@ -390,7 +410,7 @@ export function drawApp(ctx) {
   function takePixai(info) {
     const fresh = info && typeof info === 'object' && info.ok !== false && Object.keys(info).length ? info : null;
     // The first reading of a visit: the picture count follows what the page is set to (nothing is changed on the page by looking).
-    if (fresh && !pixaiLast && (fresh.count === 1 || fresh.count === 4)) count = fresh.count;
+    if (fresh && !pixaiLast && state().pixai.mode === 'direct' && (fresh.count === 1 || fresh.count === 4)) count = fresh.count;
     if (fresh) pixaiLast = fresh;
     const next = fresh || (pixaiLast ? {...pixaiLast, stale: true} : null);
     const changed = pixaiSig(next) !== pixaiSig(pixaiInfo);
@@ -519,6 +539,8 @@ export function drawApp(ctx) {
     event.preventDefault();
   });
   v.on('change', '[data-param]', el => { api.saveDraw({params: {[el.dataset.param]: Number(el.value)}}); render(); });
+  v.on('input', '[data-pxapi]', el => { el.previousElementSibling.querySelector('output').textContent = Number(el.value).toFixed(2); });
+  v.on('change', '[data-pxapi]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapi]: Number(el.value)}}}); });
   v.on('input', '[data-queue]', el => { el.previousElementSibling.querySelector('output').textContent = el.value + (el.dataset.queue === 'gap' ? ' 秒' : ' 次'); });
   v.on('change', '[data-queue]', el => { api.saveDraw({queue: {[el.dataset.queue]: Number(el.value)}}); });
   v.on('change', 'select[data-field]', el => { if (/^comfy-/.test(el.dataset.field)) return; api.saveDraw({params: {[el.dataset.field]: el.value}}); render(); });
@@ -572,7 +594,17 @@ export function drawApp(ctx) {
     const index = Number(el.dataset.index);
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
-      case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; } render(); refreshSubscription(); refreshPixai(); break;
+      case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; if (state().pixai.mode === 'api') count = state().pixai.api.count; } render(); refreshSubscription(); refreshPixai(); break;
+      case 'pixai-mode': { const mode = el.dataset.value; if (mode === state().pixai.mode) break; api.saveDraw({pixai: {mode}}); if (mode === 'api') count = state().pixai.api.count; render(); refreshPixai(); break; }
+      case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
+      case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: {ratio, size, width: hit.width, height: hit.height}}}); render(); } break; }
+      case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: {ratio, size: hit.size, width: hit.width, height: hit.height}}}); render(); } break; }
+      case 'pixai-res': {
+        if (pixaiReading) break;
+        pixaiReading = true; render();
+        try { await api.pixaiReadResolutions(); ctx.notify('已读出分辨率表'); } catch (error) { ctx.notify(error.message); }
+        pixaiReading = false; await refreshPixai(); render(); break;
+      }
       case 'pixai-model': await setPixaiPage({model: el.dataset.value}); break;
       case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
       case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
@@ -670,7 +702,7 @@ export function drawApp(ctx) {
         });
         break;
       case 'pick-style': pickStyle(); break;
-      case 'count': { const k = Number(el.dataset.count) || 1; if (eng() === 'pixai' && (k === 2 || k === 3)) break; count = k; render(); if (eng() === 'pixai') setPixaiCount(k); break; }
+      case 'count': { const k = Number(el.dataset.count) || 1; if (eng() === 'pixai' && (k === 2 || k === 3)) break; count = k; if (eng() === 'pixai' && state().pixai.mode === 'api') api.saveDraw({pixai: {api: {count: k}}}); render(); if (eng() === 'pixai' && state().pixai.mode === 'direct') setPixaiCount(k); break; }
       case 'tools-toggle': toolsOpen = !toolsOpen; render(); break;
       case 'generate': await generate(); break;
     }
@@ -739,7 +771,7 @@ export function drawApp(ctx) {
   }
   const joinWords = list => list.map(x => (x || '').trim()).filter(Boolean).join(', ');
   async function generate() {
-    if (eng() === 'pixai') {
+    if (eng() === 'pixai' && state().pixai.mode === 'direct') {
       // The page may have changed since the last look: read it again, so the picture is the size the page will draw and the cost shown is the cost charged.
       await refreshPixai(6000);
       if (v.disposed) return;

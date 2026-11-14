@@ -771,6 +771,8 @@ export interface BackendFacade {
     pixaiStatus(): Promise<{ ok?: boolean; generating?: boolean; count?: number | null; countLabel?: string | null; resolution?: { ratio: string | null; size: string | null; width: number | null; height: number | null; label: string | null; ratios?: Array<{ ratio: string; on: boolean; locked: boolean }>; sizes?: Array<{ size: string; width: number; height: number; label: string; on: boolean; locked: boolean }> }; canSwap?: boolean; cost?: number | null; balance?: number | null; updatedAt?: string }>;
     /** PixAI 反代: switch the PixAI page to draw 1 or 4 pictures per task; answers like pixaiStatus. */
     pixaiSetCount(count: 1 | 4): ReturnType<BackendFacade['pixaiStatus']>;
+    /** PixAI 反代 (API mode): the bridge reads the page's ratio → size table once and keeps it; answers {ok, resolutions, at}. */
+    pixaiReadResolutions(): Promise<{ ok?: boolean; resolutions?: Record<string, Array<{ size: string; width: number; height: number; locked?: boolean }>>; at?: string }>;
     /** PixAI 反代: switch the PixAI page's ratio ('9:16'), size tier ('M'), portrait/landscape (swap) and/or pictures per task; answers like pixaiStatus. */
     pixaiSetPage(patch: { model?: string; ratio?: string; size?: string; swap?: boolean; count?: 1 | 4 }): ReturnType<BackendFacade['pixaiStatus']>;
     /** ComfyUI through the tavern: connection check and what it offers. url: an address not saved yet. */

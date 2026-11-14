@@ -252,6 +252,7 @@ class DrawSettings {
         if ('pixai' in patch) {
             const x = patch.pixai && typeof patch.pixai === 'object' ? clone(patch.pixai) : {};
             if ('url' in x) x.url = relayUrl(x.url);
+            if ('api' in x) x.api = { ...draw.pixai.api, ...(x.api && typeof x.api === 'object' ? x.api : {}) }; // each mode keeps its own settings: a patch of one never drops the other's
             draw.pixai = normalizePixai({ ...draw.pixai, ...x });
         }
         if ('comfy' in patch) {
