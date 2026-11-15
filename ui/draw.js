@@ -10,6 +10,8 @@ import {styleSheets, watchCovers} from './draw-styles.js';
 import {tokenBudget, loadCounter, countPicture, countField, tagCost} from '../core/tokens.js';
 import {refPanel} from './draw-refs.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
+import {layerSort} from './layer-sort.js';
+import {openImageViewer} from '../image-viewer.js';
 import {pickPicture, pictureData, readNovelAI, fitBase, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
 import {DIRECTOR_TOOLS, DIRECTOR_WORDS, EMOTIONS, upscaleBy, UPSCALE_MAX, naiFeatures, samplersFor, schedulesFor, qualityPresets, ucPresets, finalWords, NAI_SAMPLER_NAMES, maxEnhanceSize, usageImages, usageRefillPerDay} from '../core/novelai.js';
 import {LOCKS, unlockedParams, POSITION_GRIDS} from '../core/draw.js';
@@ -233,24 +235,40 @@ export function drawApp(ctx) {
     return `<div class="group pad px-sync px-api">${pixaiModeBar()}${pageRow}${sizeRow}</div>`;
   }
   // 记录: the page settings the bridge has recorded, kept in one sheet (PixAI has no 画风; this takes its place).
-  const recordList = () => { const t = pixaiInfo?.template || {}; return Array.isArray(t.list) ? t.list : []; };
+  const recordList = () => { const t = pixaiInfo?.template || {}, all = Array.isArray(t.list) ? t.list : [], order = state().pixai.api.tplOrder || []; return [...order.map(id => all.find(x => x.id === id)).filter(Boolean), ...all.filter(x => !order.includes(x.id))]; };
   const recordNow = () => { const t = pixaiInfo?.template || {}, list = recordList(), id = state().pixai.api.tplId; return list.find(x => x.id === id) || list.find(x => x.id === t.current) || list[list.length - 1]; };
   const recName = x => state().pixai.api.tplNames?.[x.id] || x.model;
   const recordName = () => { const x = recordNow(); return x ? recName(x) : '记录'; };
-  const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="给「${esc(recName(x))}」${c ? '换' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
+  const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="${c ? '看' : '给'}「${esc(recName(x))}」${c ? '的' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
   const recFacts = x => [`${x.loras.length} LoRA`, ...(x.recipes ? [`${x.recipes} Recipe`] : []), ...(x.steps ? [`${x.steps} 步`] : []), ...(x.width ? [`${x.width}×${x.height}`] : [])].join(' · ');
   const recStamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+  const recUse = rec => { api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); render(); };
   const recAdd = async () => {
     if (pixaiRecording) return;
     pixaiRecording = true; ctx.notify('正在去网页上记录……');
     try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); } catch (error) { ctx.notify(error.message, {error: true}); }
     pixaiRecording = false; await refreshPixai(); render();
   };
+  /** Adding or changing a 记录's 效果图: any picture, from the album or the phone. */
+  const recSetCover = async (id, after = () => {}) => {
+    try { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(id, blob); ctx.notify('已放到这条记录的效果图'); after(); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
+  };
+  /** The 效果图 big, paging through the others in the list's order. */
+  const recViewCover = (id, from, closeSheet = () => {}, after = () => {}) => {
+    const covers = () => state().pixai.api.tplCovers || {}, covered = recordList().filter(x => covers()[x.id]);
+    openImageViewer({doc: ctx.doc, from, gallery: {items: covered.map(x => ({src: covers()[x.id].full, alt: recName(x), caption: recName(x)})), index: Math.max(0, covered.findIndex(x => x.id === id))},
+      actions: [{label: '用这个', run: i => { recUse(covered[i]); closeSheet(); }}, {label: '换图', run: i => { closeSheet(); recSetCover(covered[i].id, after); }}]});
+  };
+  const recTap = (id, tile, closeSheet, after) => state().pixai.api.tplCovers?.[id] && tile.querySelector('img') ? recViewCover(id, tile, closeSheet, after) : recSetCover(id, after);
+  const recDelete = async ids => {
+    for (const id of ids) { await api.pixaiTemplate('delete', id); api.clearRecordCover(id); }
+    await refreshPixai(); render();
+  };
   /** A 记录, in a sheet like a 画风's: 效果图, 名字, and the LoRA it carries (weights and switches only touch what the tavern sends). */
   function editRecord(rec) {
     const d = ctx.dialog('记录', `<div class="style-edit-cover" data-edit-cover></div>${field('名字', input('name', recName(rec), 'text', 'maxlength="40"'))}<div data-rec-loras></div><div class="actions">${btn('save-record', '保存', 'primary')}</div>`);
     let name = recName(rec);
-    const tile = () => { const now = recordList().find(x => x.id === rec.id) || rec, has = !!state().pixai.api.tplCovers?.[rec.id]; d.body.querySelector('[data-edit-cover]').innerHTML = `${recCover(now)}<span><strong>效果图</strong><small>${has ? '点图换一张' : '点一下加一张，列表里一眼能认出它'}</small></span>`; };
+    const tile = () => { const now = recordList().find(x => x.id === rec.id) || rec, has = !!state().pixai.api.tplCovers?.[rec.id]; d.body.querySelector('[data-edit-cover]').innerHTML = `${recCover(now)}<span><strong>效果图</strong><small>${has ? '点图看大图、换图' : '点一下加一张，列表里一眼能认出它'}</small></span>`; };
     const loras = () => {
       const a = state().pixai.api, now = recordList().find(x => x.id === rec.id) || rec;
       d.body.querySelector('[data-rec-loras]').innerHTML = now.loras.length ? field('LoRA', `<div class="rec-loras">${now.loras.map(l => { const w = {on: true, weight: l.weight, ...(a.tplLoras[now.id]?.[l.id] || {})}; return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name" title="${esc(l.trigger || '')}">${esc(l.name)}</span><output>${Number(w.weight).toFixed(2)}</output><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label>${w.on ? `<input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('')}</div>`, '只影响酒馆发出的请求，不改网页上的设置。') : '';
@@ -266,43 +284,53 @@ export function drawApp(ctx) {
       if (w) tplTweak(w.dataset.pxtplW, {weight: Number(w.value)}, rec.id); else if (on) { tplTweak(on.dataset.pxtplOn, {on: on.checked}, rec.id); loras(); } else return;
       render();
     });
-    d.body.addEventListener('click', async e => {
-      if (e.target.closest('[data-rec-cover]')) {
-        try { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(rec.id, blob); ctx.notify('已放到这条记录的效果图'); if (d.live !== false) tile(); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
-        return;
-      }
+    d.body.addEventListener('click', e => {
+      const art = e.target.closest('[data-rec-cover]');
+      if (art) { recTap(rec.id, art, () => {}, () => { if (d.live !== false) tile(); }); return; }
       if (!e.target.closest('[data-action=save-record]')) return;
       const names = {...state().pixai.api.tplNames}; if (name.trim() && name.trim() !== rec.model) names[rec.id] = name.trim().slice(0, 40); else delete names[rec.id];
       api.saveDraw({pixai: {api: {tplNames: names}}}); d.close(); render(); ctx.notify('记录已保存');
     });
   }
-  /** The 记录 list, the way the 画风 list is: tap to use, swipe for 改 / 删除, ＋ to record the page's settings again. */
+  /** The 记录 list, the way the 画风 list is: tap to use, hold to drag into order, swipe for 改 / 删除 (or pick several), ＋ to record the page's settings again. */
   function openRecords() {
-    const d = ctx.dialog('记录', '<div class="style-picker"><div class="style-list" data-rec-list></div></div>', {add: '记录网页设置'});
-    const list = d.body.querySelector('[data-rec-list]');
-    const row = (x, on) => swipeRow(x.id, `<div class="list-row style-row" aria-current="${on}">${recCover(x)}<span><strong>${esc(recName(x))}</strong><small class="mono picker-preview">${esc(recFacts(x))}</small><small class="style-params">${esc(recStamp(x))}</small></span></div>`, [{key: 'edit', label: '改', icon: 'edit'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}], {label: recName(x), ...(on ? {className: 'style-on'} : {})});
+    const d = ctx.dialog('记录', '<div class="style-picker"><div class="picker-search" hidden><input type="search" data-rec-search aria-label="搜索记录" placeholder="搜索记录…" autocomplete="off"></div><div class="style-list" data-rec-list></div></div>', {add: '记录网页设置'});
+    const list = d.body.querySelector('[data-rec-list]'), search = d.body.querySelector('[data-rec-search]');
+    let query = '';
+    const norm = v => String(v || '').toLowerCase();
+    const actions = [{key: 'edit', label: '改', icon: 'edit'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}];
+    const row = (x, on) => swipeRow(x.id, `<div class="list-row style-row" aria-current="${on}">${recCover(x)}<span><strong>${esc(recName(x))}</strong><small class="mono picker-preview">${esc(recFacts(x))}</small><small class="style-params">${esc(recStamp(x))}</small></span></div>`, actions, {label: recName(x), ...(on ? {className: 'style-on'} : {})});
     const paint = () => {
       const all = recordList(), sel = recordNow(), t = pixaiInfo?.template || {};
+      const shown = query ? all.filter(x => norm(recName(x) + ' ' + x.model).includes(query)) : all;
+      list.classList.toggle('searching', !!query);
       list.innerHTML = (t.armed ? `<p class="hint">反代没能自己点「生成」，正在等你在网页上点一次（不会真出图）。</p><div class="tpl-actions">${btn('pixai-tpl-cancel', '取消', 'chip-button')}</div>` : '')
-        + (all.map(x => row(x, x === sel)).join('') || '<p class="hint">还没有记录。先在反代网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数调好，再点右上角的＋。</p>');
+        + (shown.map(x => row(x, x === sel)).join('') || `<p class="hint">${query ? '没有匹配的记录' : '还没有记录。先在反代网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数调好，再点右上角的＋。'}</p>`);
+      search.closest('.picker-search').hidden = all.length <= 6 && !query;
     };
+    const {flip, lift} = layerSort({ctx, list, tree: () => recordList().map(x => ({style: x.id})), commit: next => api.saveDraw({pixai: {api: {tplOrder: next.flatMap(e => e.style ? [e.style] : e.styles)}}}), paint, groupName: () => ''});
     paint();
     const swipe = mountSwipeList(list, {ctx,
-      hint: '点一下用这条记录，点左边的图加或换效果图；左滑：改、删除',
-      mouseHint: '点一下用这条记录，点左边的图加或换效果图；⋯ 或右键：改、删除',
-      onTap: id => { const rec = recordList().find(x => x.id === id); if (!rec) return; api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); swipe.dispose(); d.close(); render(); },
+      hint: '点一下用这条记录，点左边的图看效果图；按住可以拖动排序；左滑：改、删除；右滑：多选',
+      mouseHint: '点一下用这条记录，点左边的图看效果图；按住可以拖动排序；⋯ 或右键：改、删除；Ctrl / ⌘ 点：多选',
+      sort: {start: (rowEl, point) => query ? null : lift(rowEl, point)},
+      onTap: id => { const rec = recordList().find(x => x.id === id); if (!rec) return; recUse(rec); swipe.dispose(); d.close(); },
       onAction: async (key, id) => {
         const rec = recordList().find(x => x.id === id); if (!rec) return;
         try {
           if (key === 'edit') { swipe.dispose(); d.close(); editRecord(rec); }
-          else if (key === 'delete' && await ctx.confirm(`删除记录「${recName(rec)}」？`, '只删酒馆里记的这条，不影响网页。')) { await api.pixaiTemplate('delete', id); api.clearRecordCover(id); await refreshPixai(); render(); if (d.live !== false) { swipe.done?.(); paint(); } }
+          else if (key === 'delete' && await ctx.confirm(`删除记录「${recName(rec)}」？`, '只删酒馆里记的这条，不影响网页。')) { await recDelete([id]); if (d.live !== false) { swipe.done?.(); paint(); } }
         } catch (error) { ctx.notify(error.message, {error: true}); }
+      },
+      bulk: [{key: 'delete', label: '删除', icon: 'trash', danger: true}],
+      onBulk: async (key, ids) => {
+        if (key !== 'delete' || !ids.length) return;
+        if (!await ctx.confirm(`删除这 ${ids.length} 条记录？`, '只删酒馆里记的，不影响网页。')) return;
+        await recDelete(ids); if (d.live !== false) { swipe.done?.(); paint(); }
       }});
     d.onClose?.(() => swipe.dispose());
-    list.addEventListener('click', async e => {
-      const tile = e.target.closest('[data-rec-cover]'); if (!tile) return;
-      try { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(tile.dataset.recCover, blob); ctx.notify('已放到这条记录的效果图'); if (d.live !== false) paint(); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
-    });
+    search.addEventListener('input', () => { query = norm(search.value).trim(); swipe.done?.(); paint(); });
+    list.addEventListener('click', e => { const tile = e.target.closest('[data-rec-cover]'); if (tile) recTap(tile.dataset.recCover, tile, () => { swipe.dispose(); d.close(); }, () => { if (d.live !== false) paint(); }); });
     d.body.addEventListener('click', async e => { if (!e.target.closest('[data-action=pixai-tpl-cancel]')) return; try { await api.pixaiTemplate('cancel'); } catch (error) { ctx.notify(error.message, {error: true}); } await refreshPixai(); if (d.live !== false) paint(); });
     d.overlay.addEventListener('click', async e => { if (!e.target.closest('[data-sheet-add]')) return; await recAdd(); if (d.live !== false) paint(); });
     refreshPixai().then(() => { if (d.live !== false) paint(); }).catch(() => {});

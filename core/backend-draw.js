@@ -341,7 +341,12 @@ class DrawSettings {
         sweepCovers(this, [old]);
         return clone(this.settings.draw.styles.find(s => s.id === id).cover);
     }
-    /** 效果图 of a PixAI 记录 (a recorded page setting): same files and sizes as a 画风's. */
+    /** Files of a PixAI 记录's 效果图 that no other 记录 shows any more are deleted. */
+    sweepRecordCovers(covers) {
+        const used = JSON.stringify(Object.values(this.settings.draw.pixai.api.tplCovers || {}));
+        for (const path of covers.filter(Boolean).flatMap(c => [c.thumb, c.full])) if (COVER_FILE.test(path) && !used.includes(JSON.stringify(path))) this.syncFiles?.removePath?.(path).catch(() => {});
+    }
+    /** 效果图 of a PixAI 记录, made the way a 画风's is: a small file for the list and a bigger one to look at. */
     async setRecordCover(id, blob) {
         this.assertOpen();
         if (!this.syncFiles?.writePath) throw Error('要在酒馆里打开小手机，才能存效果图');
@@ -353,11 +358,11 @@ class DrawSettings {
         // A phone's connection drops now and then ("Load failed"): one more try before giving up.
         const put = async (kind, made) => { try { return await this.syncFiles.writePath(file(kind, made), made.blob); } catch (error) { if (error?.name !== 'TypeError') throw error; await new Promise(r => setTimeout(r, 600)); return this.syncFiles.writePath(file(kind, made), made.blob); } };
         let cover;
-        try { cover = { thumb: await put('s', small), full: await put('l', big) }; } catch (error) { throw Error('效果图没能传到酒馆（网络断了一下），再试一次：' + (error?.message || '')); }
+        try { cover = {thumb: await put('s', small), full: await put('l', big)}; } catch (error) { throw Error('效果图没能传到酒馆（网络断了一下），再试一次：' + (error?.message || '')); }
         const next = this.getState(), covers = next.draw.pixai.api.tplCovers = {...next.draw.pixai.api.tplCovers}, old = covers[id];
         covers[id] = cover;
         this.save(next);
-        if (old) for (const path of [old.thumb, old.full]) if (COVER_FILE.test(path)) this.syncFiles?.removePath?.(path).catch(() => {});
+        this.sweepRecordCovers([old]);
         return clone(cover);
     }
     clearRecordCover(id) {
@@ -365,7 +370,7 @@ class DrawSettings {
         if (!old) return;
         delete covers[id];
         this.save(next);
-        for (const path of [old.thumb, old.full]) if (COVER_FILE.test(path)) this.syncFiles?.removePath?.(path).catch(() => {});
+        this.sweepRecordCovers([old]);
     }
     clearStyleCover(id) {
         const next = this.getState(), style = next.draw.styles.find(s => s.id === id), old = style?.cover;
