@@ -18,7 +18,8 @@ export const PIXAI_NAME = 'PixAI 反代';
 export const PIXAI_MODES = ['api', 'direct'];
 // source: 'preset' — the model, LoRA and Recipe are the bridge's preset (each of LoRA / Recipe can be switched off);
 //         'page'   — the model, LoRA, Recipe, steps … are what was set on the PixAI page and recorded by the bridge: this side only decides the prompt and the size.
-export const defaultPixaiApi = () => ({source: 'preset', model: '', useLora: true, useRecipe: true, ratio: '', size: '', width: 0, height: 0, count: 4, loraWeight: 0.7});
+// tplId: which recorded page setting is in use; tplKnown: the records seen so far (null = none yet), so a newly recorded one is noticed; tplLoras: per record, per LoRA {on, weight}.
+export const defaultPixaiApi = () => ({tplId: '', tplKnown: null, tplLoras: {}, source: 'preset', model: '', useLora: true, useRecipe: true, ratio: '', size: '', width: 0, height: 0, count: 4, loraWeight: 0.7});
 export const defaultPixai = () => ({url: '', style: '', mode: 'api', api: defaultPixaiApi()});
 export function normalizePixaiApi(value) {
   const a = value && typeof value === 'object' ? value : {}, d = defaultPixaiApi();
@@ -26,7 +27,13 @@ export function normalizePixaiApi(value) {
   const weight = Number.isFinite(Number(a.loraWeight)) ? Math.round(Math.min(1, Math.max(0, Number(a.loraWeight))) * 20) / 20 : d.loraWeight;
   const ratio = typeof a.ratio === 'string' && /^\d+:\d+$/.test(a.ratio.trim()) ? a.ratio.trim() : '', size = typeof a.size === 'string' && /^[A-Za-z]{1,3}$/.test(a.size.trim()) ? a.size.trim().toUpperCase() : '';
   const width = dim(a.width), height = dim(a.height);
-  return {source: a.source === 'page' ? 'page' : 'preset', useLora: a.useLora !== false, useRecipe: a.useRecipe !== false, model: typeof a.model === 'string' && /^[\w.-]{0,40}$/.test(a.model) ? a.model : '', ratio, size, width: width && height ? width : 0, height: width && height ? height : 0, count: Number(a.count) === 1 ? 1 : 4, loraWeight: weight};
+  const text = (v, n) => (typeof v === 'string' && /^[\w-]{1,40}$/.test(v) ? v.slice(0, n) : '');
+  const tplLoras = {};
+  for (const [tid, map] of Object.entries(a.tplLoras && typeof a.tplLoras === 'object' ? a.tplLoras : {}).slice(0, 12)) {
+    if (!text(tid, 40) || !map || typeof map !== 'object') continue;
+    tplLoras[tid] = Object.fromEntries(Object.entries(map).slice(0, 20).filter(([k, v]) => /^\d{1,30}$/.test(k) && v && typeof v === 'object').map(([k, v]) => [k, {on: v.on !== false, weight: Number.isFinite(Number(v.weight)) ? Math.round(Math.min(1, Math.max(0, Number(v.weight))) * 20) / 20 : 0.7}]));
+  }
+  return {tplId: text(a.tplId, 40), tplKnown: Array.isArray(a.tplKnown) ? a.tplKnown.map(x => text(x, 40)).filter(Boolean).slice(0, 12) : null, tplLoras, source: a.source === 'page' ? 'page' : 'preset', useLora: a.useLora !== false, useRecipe: a.useRecipe !== false, model: typeof a.model === 'string' && /^[\w.-]{0,40}$/.test(a.model) ? a.model : '', ratio, size, width: width && height ? width : 0, height: width && height ? height : 0, count: Number(a.count) === 1 ? 1 : 4, loraWeight: weight};
 }
 export function normalizePixai(value) {
   const p = value && typeof value === 'object' ? value : {};
@@ -87,6 +94,6 @@ export function pixaiRequest({prompt, negative = '', characters = [], params, ba
     // A picture that is alone in its request still says so: the bridge then draws one, not four.
     bridge_batch: normalizeBatch(batch) || {run: crypto.randomUUID(), index: 0, size: 1},
     // Which way to draw, so the bridge does what this plugin's settings say (an older bridge ignores it).
-    ...(pixai ? {bridge_mode: pixai.mode === 'direct' ? {mode: 'direct'} : {mode: 'api', source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false}} : {})};
+    ...(pixai ? {bridge_mode: pixai.mode === 'direct' ? {mode: 'direct'} : {mode: 'api', source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false, template: pixai.api?.tplId || '', loraTweaks: pixai.api?.tplLoras?.[pixai.api?.tplId] || {}}} : {})};
   return {body: {input, model: p.model, action: 'generate', parameters}, seed, params: {width, height}};
 }

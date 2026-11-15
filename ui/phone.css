@@ -3357,3 +3357,17 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .reading-note-inline p{margin:0;font-family:"Kaiti SC","STKaiti","KaiTi","楷体","PingFang SC",serif;font-size:14px;line-height:1.65;text-indent:0}
 .reading-reader[data-paper=night] .reading-note-inline,[data-theme=dark] .reading-note-inline{background:linear-gradient(170deg,#3c3a30,#33312a);color:#e8e2cf;box-shadow:0 5px 14px -8px #000a,inset 0 0 0 1px rgba(255,255,255,.08)}
 .fish-account .fish-account-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}.fish-account-head>div{flex:1;min-width:0}.fish-account-head strong{display:block;font-size:16px}.fish-account-head small{display:block;color:var(--ink2);font-size:12px;margin-top:3px}.fish-account-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:14px;background:var(--card2);color:var(--accent-ink)}.fish-account-badge{flex:none;border-radius:99px;padding:5px 9px;background:var(--card2);font-size:11px;font-weight:800;color:var(--ink2)}.fish-account-badge.on{background:var(--e-soft,var(--card2));color:var(--e-ink,var(--accent-ink))}.fish-account-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0;padding:12px;border-radius:16px;background:var(--card2)}.fish-account-facts div{min-width:0}.fish-account-facts dt{font-size:11px;color:var(--ink2)}.fish-account-facts dd{margin:3px 0 0;font-size:14px;font-weight:800;overflow-wrap:anywhere}.fish-account .actions{display:flex;gap:8px;margin:12px 0 4px}.fish-account .actions button{flex:1;min-width:0}.fish-account-help{margin-bottom:0}.fish-account-help summary{font-size:12px}
+
+/* PixAI API mode: compact, and the records of page settings. */
+.px-api{gap:14px}
+.px-api .field{margin:0}
+.tpl-list{display:grid;gap:8px}
+.tpl-item{display:flex;align-items:center;gap:6px}
+.tpl-item>button:first-child{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:9px 12px;border-radius:14px;background:var(--card);box-shadow:inset 0 0 0 2px var(--line);font-size:13px;font-weight:800;text-align:left}
+.tpl-item>button:first-child small{font:600 11px "JetBrains Mono",ui-monospace,monospace;opacity:.7;white-space:normal}
+.tpl-item[aria-current=true]>button:first-child{background:var(--e-soft);color:var(--e-ink);box-shadow:inset 0 0 0 2.5px var(--e)}
+.tpl-del{flex:none;width:34px;height:34px;border-radius:50%;font-size:20px;line-height:1;opacity:.55}
+.tpl-actions{display:flex;flex-wrap:wrap;gap:8px}
+.tpl-lora{display:grid;gap:4px;padding:10px 0 0;border-top:1px solid var(--line)}
+.tpl-lora .row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:800}
+.tpl-lora .row small{display:block;font-weight:600;font-size:11px;opacity:.65;word-break:break-all}

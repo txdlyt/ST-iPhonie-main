@@ -1732,15 +1732,15 @@ export class TTSBackend {
         this.pixaiRemember(info);
         return info;
     }
-    /** PixAI 反代 (API mode, 网页设置): 'arm' = the bridge catches the next 「生成」 on its PixAI page (not sent, nothing charged) and keeps its settings; 'cancel' / 'clear'. */
-    async pixaiTemplate(action) {
+    /** PixAI 反代 (API mode, 网页设置): 'arm' = the bridge catches the next 「生成」 on its PixAI page (not sent, nothing charged) and keeps its settings as one more record; 'cancel'; 'delete' one record (id); 'clear' all. */
+    async pixaiTemplate(action, id = '') {
         this.assertOpen();
         const url = this.settings.draw.pixai.url;
         if (!url) throw Error('还没有填写 PixAI 反代地址');
         this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
         let response;
         try {
-            response = await this.pixai.call('/ai/template', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify({ action }) });
+            response = await this.pixai.call('/ai/template', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {}) }, body: JSON.stringify({ action, id }) });
         } catch (error) {
             throw Error(error?.status === 409 ? '反代正在出图，画完再记' : error?.status === 404 || error?.status === 405 ? '反代版本太旧，换成新的 server.js' : '没能完成，检查反代的日志' + pixaiWhy(error));
         }
@@ -4172,7 +4172,7 @@ export class TTSBackend {
             pixaiSetCount: count => this.pixaiSetCount(count),
             pixaiSetPage: patch => this.pixaiSetPage(patch),
             pixaiReadResolutions: () => this.pixaiReadResolutions(),
-            pixaiTemplate: action => this.pixaiTemplate(action),
+            pixaiTemplate: (action, id) => this.pixaiTemplate(action, id),
             imageHost: () => this.imageHost(), saveImageHost: patch => this.saveImageHost(clone(patch || {})), hostTest: () => this.hostTest(),
             hostUpload: photoId => this.hostUpload(photoId), hostLinksOf: photoId => this.hostLinksOf(photoId), hostForget: photoId => this.hostForget(photoId), hostProblem: () => this.hostProblem(),
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
