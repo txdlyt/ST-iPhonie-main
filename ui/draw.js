@@ -220,15 +220,21 @@ export function drawApp(ctx) {
   function pixaiApiParams() {
     const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null, ratios = table ? Object.keys(table) : [];
     const chip = (action, value, on, label, extra = '') => `<button type="button" data-action="${action}" data-value="${esc(value)}" aria-pressed="${on}"${extra}>${label}</button>`;
-    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。「跟网页」就用反代网页上当前的模型。LoRA 随模型自带，权重在下面调。')}</span><div class="size-chips">${chip('pixai-api-model', '', !a.model, '跟网页')}${models.map(m => chip('pixai-api-model', m.id, a.model === m.id, esc(m.name))).join('')}</div>${models.length ? '' : '<p class="hint" style="padding:0">读不到模型列表，反代要换成新的 server.js。</p>'}</div>`;
+    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。LoRA 和 Recipe 随模型预设自带，下面可以各自关掉。')}</span><div class="size-chips">${models.map(m => chip('pixai-api-model', m.id, a.model === m.id, esc(m.name))).join('')}</div>${models.length ? '' : '<p class="hint" style="padding:0">读不到模型列表，反代要换成新的 server.js。</p>'}</div>`;
     const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 16 / Math.max(x, y); return chip('pixai-api-ratio', r, a.ratio === r, `<i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}`); };
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
     const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
     const sizeRow = `<div class="field"><div class="meter-label"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</span><output>${a.width && a.height ? esc(a.width + '×' + a.height) : '未选'}</output></div>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}<div>${read}</div>` : `<p class="hint" style="padding:0">还没有分辨率表，让反代去网页读一次：</p><div>${read}</div>`}</div>`;
-    const lora = `<div class="field"><div class="meter-label"><span>LoRA 权重${help('只在 API 模式生效，所有带 LoRA 的模型共用这一个值（以前反代里固定 0.7）。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>`;
-    return `<div class="group pad px-sync">${pixaiModeBar()}${modelRow}${sizeRow}${lora}</div>`;
+    const cur = models.find(m => m.id === a.model), hasLora = !cur || cur.loras.length > 0, hasRecipe = !cur || cur.recipes > 0;
+    const sw = (key, label, on, tip) => `<div class="setting-row"><span class="switch-label">${label}${help(tip)}</span><input class="switch" type="checkbox" data-pxapi-on="${key}" aria-label="${label}" ${on ? 'checked' : ''}></div>`;
+    const lora = hasLora ? `${sw('useLora', '使用 LoRA', a.useLora, '关掉就不带 LoRA 出图。LoRA 是模型预设里自带的那个。')}${a.useLora ? `<div class="field"><div class="meter-label"><span>LoRA 权重${help('所有带 LoRA 的模型共用这一个值（以前反代里固定 0.7）。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>` : ''}` : '';
+    const recipe = hasRecipe ? sw('useRecipe', '使用 Recipe', a.useRecipe, '关掉就不带模型预设自带的 Recipe 出图。') : '';
+    const sourceRow = `<div class="field"><span>参数来源${help('模型预设：模型、LoRA、Recipe 用反代里预设好的，LoRA 和 Recipe 可以各自关掉。\n\n网页设置：你在网页上把模型、LoRA、Recipe、步数这些都设好，反代把它记下来；API 出图时，酒馆只决定提示词和分辨率，其余全照网页设置。')}</span>${seg('pixai-api-source', a.source, [['preset', '模型预设'], ['page', '网页设置']])}</div>`;
+    const t = i.template || {}, when = t.at && !Number.isNaN(Date.parse(t.at)) ? new Date(t.at).toLocaleString('zh-CN', {hour12: false}) : '';
+    const pageRow = `<div class="field"><span>网页上的设置${help('先在反代的网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数、负面词这些调好，然后点下面的「记录网页设置」，再去网页上点一次「生成」。这一次点击会被反代拦下来，只用来抄设置，不会真的出图，也不扣积分。以后你在网页上改了设置，要重新记录一次。')}</span><b style="display:block">${t.has ? esc(t.summary || '已记录') : '还没有记录'}</b>${t.has && when ? `<em>记录于 ${esc(when)}</em>` : ''}${t.armed ? '<p class="hint" style="padding:0">等网页点「生成」……点一次就记下了（不会真出图）。</p>' : ''}<div class="size-chips">${t.armed ? btn('pixai-tpl-cancel', '取消', 'chip-button') : btn('pixai-tpl-arm', t.has ? '重新记录网页设置' : '记录网页设置', 'chip-button', i.generating ? 'disabled' : '')}${t.has && !t.armed ? btn('pixai-tpl-clear', '清除', 'chip-button') : ''}</div></div>`;
+    return `<div class="group pad px-sync">${pixaiModeBar()}${sourceRow}${a.source === 'page' ? pageRow : modelRow + lora + recipe}${sizeRow}</div>`;
   }
   function pixaiParams(size) {
     return state().pixai.mode === 'api' ? pixaiApiParams() : `<div class="group pad" style="margin-bottom:8px">${pixaiModeBar()}</div>` + pixaiDirectParams(size);
@@ -376,7 +382,7 @@ export function drawApp(ctx) {
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at]);
+  const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at, i.template?.at, !!i.template?.armed]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
   const pixaiSize = () => { if (eng() === 'pixai' && state().pixai.mode === 'api') { const a = state().pixai.api; return a.width && a.height ? {width: a.width, height: a.height} : {}; } const r = eng() === 'pixai' ? pixaiInfo?.resolution : null; return Number.isInteger(r?.width) && Number.isInteger(r?.height) ? {width: r.width, height: r.height} : {}; };
   /** What `n` pictures cost now: the page's pictures-per-task decides how many tasks, and a task costs what the page's button says. */
@@ -539,6 +545,7 @@ export function drawApp(ctx) {
   });
   v.on('change', '[data-param]', el => { api.saveDraw({params: {[el.dataset.param]: Number(el.value)}}); render(); });
   v.on('input', '[data-pxapi]', el => { el.previousElementSibling.querySelector('output').textContent = Number(el.value).toFixed(2); });
+  v.on('change', '[data-pxapi-on]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapiOn]: el.checked}}}); render(); });
   v.on('change', '[data-pxapi]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapi]: Number(el.value)}}}); });
   v.on('input', '[data-queue]', el => { el.previousElementSibling.querySelector('output').textContent = el.value + (el.dataset.queue === 'gap' ? ' 秒' : ' 次'); });
   v.on('change', '[data-queue]', el => { api.saveDraw({queue: {[el.dataset.queue]: Number(el.value)}}); });
@@ -595,6 +602,12 @@ export function drawApp(ctx) {
       case 'tab': tab = el.dataset.tab; await render(); break;
       case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; if (state().pixai.mode === 'api') count = state().pixai.api.count; } render(); refreshSubscription(); refreshPixai(); break;
       case 'pixai-mode': { const mode = el.dataset.value; if (mode === state().pixai.mode) break; api.saveDraw({pixai: {mode}}); if (mode === 'api') count = state().pixai.api.count; render(); refreshPixai(); break; }
+      case 'pixai-api-source': api.saveDraw({pixai: {api: {source: el.dataset.value}}}); render(); break;
+      case 'pixai-tpl-arm': case 'pixai-tpl-cancel': case 'pixai-tpl-clear': {
+        const act = el.dataset.action === 'pixai-tpl-arm' ? 'arm' : el.dataset.action === 'pixai-tpl-cancel' ? 'cancel' : 'clear';
+        try { await api.pixaiTemplate(act); if (act === 'arm') ctx.notify('已准备好：去网页上点一次「生成」，设置就记下来了'); } catch (error) { ctx.notify(error.message); }
+        await refreshPixai(); render(); break;
+      }
       case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
       case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: {ratio, size, width: hit.width, height: hit.height}}}); render(); } break; }
       case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: {ratio, size: hit.size, width: hit.width, height: hit.height}}}); render(); } break; }
