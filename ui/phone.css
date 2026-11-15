@@ -3382,3 +3382,26 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .switch.tpl-switch:after{top:3px;left:3px;width:18px;height:18px}
 .switch.tpl-switch:checked:after{transform:translateX(16px)}
 .tpl-item>.style-cover{flex:none}
+
+/* PixAI params: slim mode bars, one record card; the LoRA rows live in the 记录 sheet. */
+.px-api{display:grid;gap:12px}
+.px-line{display:flex;align-items:center;gap:8px}
+.px-line .segmented{flex:1;min-width:0;padding:3px}
+.px-line .segmented button{min-height:32px;font-size:12.5px}
+.px-record{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border-radius:18px;text-align:left;background:var(--e-soft,var(--card));color:var(--e-ink,var(--ink));box-shadow:inset 0 0 0 2px var(--e,var(--line))}
+.px-record:active{transform:scale(.98)}
+.px-record>.style-cover{width:48px;height:60px}
+.px-record>svg{flex:none;width:18px;height:18px;opacity:.55}
+.px-record-main{flex:1;min-width:0;display:grid;gap:6px}
+.px-record-main strong{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.px-record-main small{font-size:12px;font-weight:600;opacity:.7}
+.px-facts{display:flex;flex-wrap:wrap;gap:5px}
+.px-facts i{font:700 11px "JetBrains Mono",ui-monospace,monospace;font-style:normal;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--e,var(--accent-btn)) 16%,transparent)}
+.px-record.empty{box-shadow:inset 0 0 0 2px var(--line);background:var(--card)}
+.rec-loras{display:grid;gap:2px;margin-top:14px}
+.rec-loras h4{display:flex;align-items:baseline;gap:8px;margin:0 0 2px;font-size:14px}
+.rec-loras h4 small{font-size:11px;font-weight:600;opacity:.6}
+.tpl-item{display:none}
+.style-row .tpl-del{margin-left:auto}
+/* PixAI's accent is pale, so a switch painted with it vanished on the card: use the app's own green. */
+.px-api .switch:checked,.rec-loras .switch:checked{background:var(--accent-btn)}
