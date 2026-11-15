@@ -522,7 +522,9 @@ export function validateDrawPreset(p) {
 /** The 画风 of the engine in use: each engine remembers its own (NovelAI artist tags mean nothing to GPT). GPT and
  *  ComfyUI start with NovelAI's until one is picked for them. */
 export const styleIdFor = (draw, engine = draw.engine) => (engine === 'nai' ? '' : draw[engine]?.style) || draw.activeStyle;
-export const activeStyle = draw => draw.styles.find(s => s.id === styleIdFor(draw)) || draw.styles[0];
+// PixAI has no 画风: its look is the page settings recorded in 参数, so it adds no style prompt of its own.
+export const PIXAI_STYLE = Object.freeze({id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}});
+export const activeStyle = draw => draw.engine === 'pixai' ? PIXAI_STYLE : draw.styles.find(s => s.id === styleIdFor(draw)) || draw.styles[0];
 const activePreset = (draw, preset) => preset || draw.presets.find(x => x.id === draw.activePreset) || draw.presets[0];
 const countOf = p => Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1));
 

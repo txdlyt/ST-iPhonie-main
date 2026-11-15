@@ -390,8 +390,15 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   /** Saves 新外貌 lines of a reply to the 角色 App: new named characters, or roles that have no appearance yet. */
   function registerAppearances(message) {
     const added = [];
+    // Only for a reply still in the open chat, and only once the open card is known: a role made after the chat was left, or
+    // before the card was known, would be filed under the wrong card (or none).
+    if (!message || context().chat.indexOf(message) < 0 || backend.here?.()?.pending) return added;
+    const key = backend.cardKey?.() || '', save = backend.saveKey?.() || '';
+    // A role of the same name in ANOTHER card is another person (each card's 姐姐 is her own): it neither has the look for this card
+    // nor gets this card's. Only this card's roles, and the ones that belong to no card, count.
+    const here = x => !x.cards?.length || x.cards.some(k => k === key || k === save || (!!key && k.split('#')[0] === key));
     for (const tag of parsePictures(message?.mes || '')) for (const r of tag.spec?.register || []) {
-      const route = settings().routes.find(x => sameExact(x.name, r.name));
+      const route = settings().routes.find(x => sameExact(x.name, r.name) && here(x));
       if (route?.appearance?.trim() || added.includes(r.name)) continue;
       try {
         backend.saveRoute(route ? {...route, appearance: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', appearance: r.appearance});

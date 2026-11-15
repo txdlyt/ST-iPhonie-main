@@ -89,7 +89,10 @@ export function pixaiRequest({prompt, negative = '', characters = [], params, ba
   const seed = p.seed >= 0 ? p.seed : Math.floor(Math.random() * 4294967295);
   const input = [expand(prompt), ...people.map(c => c.prompt)].filter(Boolean).join(', ');
   const unwanted = [expand(negative), ...people.map(c => c.negative)].filter(Boolean).join(', ');
-  const width = exactSize(params?.width, p.width), height = exactSize(params?.height, p.height);
+  // API mode: the size picked in the plugin's own PixAI settings is the size, whatever the caller's NovelAI-style params say
+  // (automatic drawing and re-draws pass none, and would otherwise draw at the NovelAI size).
+  const own = pixai?.mode === 'api' && pixai.api?.width && pixai.api?.height ? pixai.api : null;
+  const width = exactSize(own?.width, params?.width, p.width), height = exactSize(own?.height, params?.height, p.height);
   const parameters = {width, height, seed, n_samples: 1, negative_prompt: unwanted, characters: people,
     // A picture that is alone in its request still says so: the bridge then draws one, not four.
     bridge_batch: normalizeBatch(batch) || {run: crypto.randomUUID(), index: 0, size: 1},

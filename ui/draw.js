@@ -70,7 +70,7 @@ export function drawApp(ctx) {
   };
   // Each engine remembers its own 画风; GPT and ComfyUI use NovelAI's until one is picked for them.
   const styleId = () => { const d = state(); return (d.engine === 'nai' ? '' : d[d.engine]?.style) || d.activeStyle; };
-  const style = () => { const d = state(); return d.styles.find(s => s.id === styleId()) || d.styles[0]; };
+  const style = () => { const d = state(); if (d.engine === 'pixai') return {id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}}; return d.styles.find(s => s.id === styleId()) || d.styles[0]; };
   // A result as a file: NovelAI_种子.png.
   const resultFile = async result => { const photo = await api.getPhoto(result.photoId); if (!photo) throw Error('这张图已经不在相册里了'); return {source: photo.blob, name: `${(api.drawCatalog.engineNames?.[result.engine] || 'NovelAI').replace(/\s+/g, '')}_${result.seed >= 0 ? result.seed : photo.name}`}; };
   // 收藏: right there on what was just drawn.
@@ -185,7 +185,7 @@ export function drawApp(ctx) {
       + `<div class="segmented draw-engines" role="group" aria-label="用哪个画">${api.drawCatalog.engines.map(k => `<button data-action="draw-engine" data-pick="${k}" aria-pressed="${k === e}">${esc(engineName(k))}</button>`).join('')}</div>`
       + (keyed ? '' : `<div class="banner">${icon('key')}<span>${esc(api.drawMissing())}。</span>${btn('go-key', '去填写', 'chip-button')}</div>`)
       + queueCard()
-      + `<div class="draw-meta">${btn('pick-style', (style().cover ? `<img class="chip-cover" src="${esc(style().cover.thumb)}" alt="" draggable="false">` : icon('layers')) + esc(style().name) + icon('down'), 'chip-button')}${costChip(q)}${e === 'nai' ? `<label class="chip-button file-button read-png" title="从 NovelAI 画的 PNG 读回提示词、角色和参数">${icon('import')}读图<input type="file" data-read-png accept="image/png,image/jpeg,image/webp" aria-label="从 NovelAI 的图读参数" hidden></label>` : ''}</div>
+      + `<div class="draw-meta">${btn(e === 'pixai' ? 'pixai-record-tab' : 'pick-style', (style().cover ? `<img class="chip-cover" src="${esc(style().cover.thumb)}" alt="" draggable="false">` : icon('layers')) + esc(style().name) + icon('down'), 'chip-button')}${costChip(q)}${e === 'nai' ? `<label class="chip-button file-button read-png" title="从 NovelAI 画的 PNG 读回提示词、角色和参数">${icon('import')}读图<input type="file" data-read-png accept="image/png,image/jpeg,image/webp" aria-label="从 NovelAI 的图读参数" hidden></label>` : ''}</div>
         <div class="canvas-card"><div class="canvas-main${main ? '' : ' empty'}" style="aspect-ratio:${p.width}/${p.height}">${main ? `<button type="button" class="canvas-zoom" data-action="zoom" aria-label="放大查看"><img src="${esc(main)}" alt="生成的图片"></button><button type="button" class="canvas-heart" data-action="heart" aria-pressed="${hearts.has(shown?.photoId)}" aria-label="${hearts.has(shown?.photoId) ? '取消收藏' : '收藏'}">${icon('heart', hearts.has(shown?.photoId))}</button>` : `<span>${comfy && !(comfy.controls.includes('width') && comfy.controls.includes('height')) ? '尺寸由工作流决定' : `${p.width} × ${p.height}`}<br>还没有图</span>`}${busy ? `<span class="canvas-busy">${esc(engineName(e))} 正在画……</span>` : ''}</div>
           ${results.length ? `<div class="canvas-side" data-keep-scroll="results">${thumbs.map((url, i) => `<button class="thumb" data-action="thumb" data-index="${i}" aria-pressed="${i === current}" aria-label="第 ${i + 1} 张"${hearts.has(results[i].photoId) ? ' data-fav' : ''}>${url ? `<img src="${esc(url)}" alt="">` : ''}</button>`).join('')}</div>` : ''}</div>
         ${shown ? `<p class="hint canvas-meta">${[shown.tool ? (shown.prompt || '') : shown.params.model, `${shown.params.width}×${shown.params.height}`, shown.params.steps ? shown.params.steps + ' 步' : '', shown.seed >= 0 ? '种子 ' + shown.seed : ''].filter(Boolean).map(esc).join(' · ')}</p>` : ''}
@@ -751,6 +751,7 @@ export function drawApp(ctx) {
         });
         break;
       case 'pick-style': pickStyle(); break;
+      case 'pixai-record-tab': tab = 'params'; await render(); break;
       case 'count': { const k = Number(el.dataset.count) || 1; if (eng() === 'pixai' && (k === 2 || k === 3)) break; count = k; if (eng() === 'pixai' && state().pixai.mode === 'api') api.saveDraw({pixai: {api: {count: k}}}); render(); if (eng() === 'pixai' && state().pixai.mode === 'direct') setPixaiCount(k); break; }
       case 'tools-toggle': toolsOpen = !toolsOpen; render(); break;
       case 'generate': await generate(); break;
