@@ -350,7 +350,10 @@ class DrawSettings {
         let small, big;
         try { [small, big] = [await makeThumb(blob, COVER_SIZES.s), await makeThumb(blob, COVER_SIZES.l)]; } catch { throw Error('这张图读不出来，换一张试试'); }
         const stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), file = (kind, made) => `user/images/ST-iPhonie/style-rec-${stamp}-${kind}.${made.blob.type === 'image/webp' ? 'webp' : 'jpg'}`;
-        const cover = { thumb: await this.syncFiles.writePath(file('s', small), small.blob), full: await this.syncFiles.writePath(file('l', big), big.blob) };
+        // A phone's connection drops now and then ("Load failed"): one more try before giving up.
+        const put = async (kind, made) => { try { return await this.syncFiles.writePath(file(kind, made), made.blob); } catch (error) { if (error?.name !== 'TypeError') throw error; await new Promise(r => setTimeout(r, 600)); return this.syncFiles.writePath(file(kind, made), made.blob); } };
+        let cover;
+        try { cover = { thumb: await put('s', small), full: await put('l', big) }; } catch (error) { throw Error('效果图没能传到酒馆（网络断了一下），再试一次：' + (error?.message || '')); }
         const next = this.getState(), covers = next.draw.pixai.api.tplCovers = {...next.draw.pixai.api.tplCovers}, old = covers[id];
         covers[id] = cover;
         this.save(next);
