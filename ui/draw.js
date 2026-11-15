@@ -9,7 +9,7 @@ import {comfyNodePanel} from './comfy-nodes.js';
 import {styleSheets, watchCovers} from './draw-styles.js';
 import {tokenBudget, loadCounter, countPicture, countField, tagCost} from '../core/tokens.js';
 import {refPanel} from './draw-refs.js';
-import {swipeRow} from './swipe-list.js';
+import {swipeRow, mountSwipeList} from './swipe-list.js';
 import {pickPicture, pictureData, readNovelAI, fitBase, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
 import {DIRECTOR_TOOLS, DIRECTOR_WORDS, EMOTIONS, upscaleBy, UPSCALE_MAX, naiFeatures, samplersFor, schedulesFor, qualityPresets, ucPresets, finalWords, NAI_SAMPLER_NAMES, maxEnhanceSize, usageImages, usageRefillPerDay} from '../core/novelai.js';
 import {LOCKS, unlockedParams, POSITION_GRIDS} from '../core/draw.js';
@@ -221,58 +221,91 @@ export function drawApp(ctx) {
   function pixaiApiParams() {
     const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null, ratios = table ? Object.keys(table) : [];
     const chip = (action, value, on, label, extra = '') => `<button type="button" data-action="${action}" data-value="${esc(value)}" aria-pressed="${on}"${extra}>${label}</button>`;
-    const modelRow = `<div class="field"><span>模型${help('API 模式下模型跟着请求走，不会去切网页。LoRA 和 Recipe 随模型预设自带，下面可以各自关掉。')}</span><div class="size-chips">${models.map(m => chip('pixai-api-model', m.id, a.model === m.id, esc(m.name))).join('')}</div>${models.length ? '' : '<p class="hint" style="padding:0">读不到模型列表，反代要换成新的 server.js。</p>'}</div>`;
     const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 16 / Math.max(x, y); return chip('pixai-api-ratio', r, a.ratio === r, `<i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}`); };
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
     const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
     const sizeRow = `<div class="field"><div class="meter-label"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</span><output>${a.width && a.height ? esc(a.width + '×' + a.height) : '未选'}</output></div>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}<div>${read}</div>` : `<p class="hint" style="padding:0">还没有分辨率表，让反代去网页读一次：</p><div>${read}</div>`}</div>`;
-    const cur = models.find(m => m.id === a.model), hasLora = !cur || cur.loras.length > 0, hasRecipe = !cur || cur.recipes > 0;
-    const sw = (key, label, on, tip) => `<div class="setting-row"><span class="switch-label">${label}${help(tip)}</span><input class="switch" type="checkbox" data-pxapi-on="${key}" aria-label="${label}" ${on ? 'checked' : ''}></div>`;
-    const lora = hasLora ? `${sw('useLora', '使用 LoRA', a.useLora, '关掉就不带 LoRA 出图。LoRA 是模型预设里自带的那个。')}${a.useLora ? `<div class="field"><div class="meter-label"><span>LoRA 权重${help('所有带 LoRA 的模型共用这一个值（以前反代里固定 0.7）。')}</span><output>${a.loraWeight.toFixed(2)}</output></div><input class="slider" type="range" data-pxapi="loraWeight" min="0" max="1" step="0.05" value="${a.loraWeight}" aria-label="LoRA 权重"></div>` : ''}` : '';
-    const recipe = hasRecipe ? sw('useRecipe', '使用 Recipe', a.useRecipe, '关掉就不带模型预设自带的 Recipe 出图。') : '';
-    const sourceRow = `<div class="px-line">${seg('pixai-api-source', a.source, [['preset', '模型预设'], ['page', '网页设置']])}${help('模型预设：模型、LoRA、Recipe 用反代里预设好的，LoRA 和 Recipe 可以各自关掉。\n\n网页设置：你在网页上把模型、LoRA、Recipe、步数这些都设好，反代把它记下来；API 出图时，酒馆只决定提示词和分辨率，其余全照网页设置。')}</div>`;
     const sel = recordNow(), covers = a.tplCovers || {}, offs = sel ? sel.loras.filter(l => (a.tplLoras[sel.id]?.[l.id] || {}).on === false).length : 0;
     const facts = sel ? [`${sel.loras.length - offs}${offs ? '/' + sel.loras.length : ''} LoRA`, ...(sel.recipes ? [`${sel.recipes} Recipe`] : []), ...(sel.steps ? [`${sel.steps} 步`] : []), ...(sel.width ? [`${sel.width}×${sel.height}`] : [])] : [];
-    const pageRow = `<button type="button" class="px-record${sel ? '' : ' empty'}" data-action="pixai-records"><span class="style-cover">${icon('image')}${sel && covers[sel.id] ? `<img src="${esc(covers[sel.id].thumb)}" alt="" draggable="false">` : ''}</span><span class="px-record-main">${sel ? `<strong>${esc(sel.model)}</strong><span class="px-facts">${facts.map(x => `<i>${esc(x)}</i>`).join('')}</span>` : '<strong>还没有记录</strong><small>先在反代网页里调好设置，再来记录一条</small>'}</span>${icon('chevron')}</button>`;
-    return `<div class="group pad px-sync px-api">${pixaiModeBar()}${sourceRow}${a.source === 'page' ? pageRow : modelRow + lora + recipe}${sizeRow}</div>`;
+    const pageRow = `<button type="button" class="px-record${sel ? '' : ' empty'}" data-action="pixai-records"><span class="style-cover">${icon('image')}${sel && covers[sel.id] ? `<img src="${esc(covers[sel.id].thumb)}" alt="" draggable="false">` : ''}</span><span class="px-record-main">${sel ? `<strong>${esc(recName(sel))}</strong><span class="px-facts">${facts.map(x => `<i>${esc(x)}</i>`).join('')}</span>` : '<strong>还没有记录</strong><small>先在反代网页里调好设置，再来记录一条</small>'}</span>${icon('chevron')}</button>`;
+    return `<div class="group pad px-sync px-api">${pixaiModeBar()}${pageRow}${sizeRow}</div>`;
   }
   // 记录: the page settings the bridge has recorded, kept in one sheet (PixAI has no 画风; this takes its place).
   const recordList = () => { const t = pixaiInfo?.template || {}; return Array.isArray(t.list) ? t.list : []; };
   const recordNow = () => { const t = pixaiInfo?.template || {}, list = recordList(), id = state().pixai.api.tplId; return list.find(x => x.id === id) || list.find(x => x.id === t.current) || list[list.length - 1]; };
-  const recordName = () => recordNow()?.model || '记录';
-  function openRecords() {
-    const d = ctx.dialog('记录', '');
-    const stamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
-    const row = (x, on) => swipeRow(x.id, `<div class="list-row style-row" data-rec="pick" data-value="${esc(x.id)}"><button type="button" class="style-cover" data-rec="cover" data-value="${esc(x.id)}" aria-label="给这条记录加效果图">${icon('image')}${state().pixai.api.tplCovers?.[x.id] ? `<img src="${esc(state().pixai.api.tplCovers[x.id].thumb)}" alt="" draggable="false">` : ''}</button><span><strong>${esc(x.model)}</strong><small class="mono picker-preview">${x.loras.length} LoRA${x.recipes ? ` · ${x.recipes} Recipe` : ''}${x.steps ? ` · ${x.steps} 步` : ''}${x.width ? ` · ${x.width}×${x.height}` : ''}</small><small class="style-params">${esc(stamp(x))}</small></span><button type="button" class="tpl-del" data-rec="del" data-value="${esc(x.id)}" aria-label="删除这条记录">×</button></div>`, [], {label: x.model, ...(on ? {className: 'style-on'} : {})});
-    const loras = sel => { if (!sel?.loras.length) return ''; const a = state().pixai.api; return `<div class="rec-loras"><h4>LoRA<small>只影响酒馆发出的请求，不改网页</small></h4>${sel.loras.map(l => { const w = {on: true, weight: l.weight, ...(a.tplLoras[sel.id]?.[l.id] || {})}; return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name" title="${esc(l.trigger || '')}">${esc(l.name)}</span><output>${Number(w.weight).toFixed(2)}</output><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label>${w.on ? `<input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('')}</div>`; };
-    const paint = () => {
-      const list = recordList(), sel = recordNow(), t = pixaiInfo?.template || {};
-      d.body.innerHTML = `<div class="style-picker"><div class="style-list">${list.map(x => row(x, x === sel)).join('') || '<p class="hint">还没有记录。先在反代网页（6080 端口）里调好模型、LoRA、Recipe、步数，再点下面的按钮。</p>'}</div></div>`
-        + (t.armed ? '<p class="hint">反代没能自己点「生成」，正在等你在网页上点一次（不会真出图）。</p>' : '')
-        + `<div class="tpl-actions">${t.armed ? btn('pixai-tpl-cancel', '取消', 'chip-button') : `<button type="button" class="chip-button" data-rec="add" ${pixaiRecording || pixaiInfo?.generating ? 'disabled' : ''}>${pixaiRecording ? '记录中……' : '＋ 记录网页设置'}</button>`}${list.length && !t.armed ? '<button type="button" class="chip-button" data-rec="clear">全部清除</button>' : ''}</div>`
-        + loras(sel);
+  const recName = x => state().pixai.api.tplNames?.[x.id] || x.model;
+  const recordName = () => { const x = recordNow(); return x ? recName(x) : '记录'; };
+  const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="给「${esc(recName(x))}」${c ? '换' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
+  const recFacts = x => [`${x.loras.length} LoRA`, ...(x.recipes ? [`${x.recipes} Recipe`] : []), ...(x.steps ? [`${x.steps} 步`] : []), ...(x.width ? [`${x.width}×${x.height}`] : [])].join(' · ');
+  const recStamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
+  const recAdd = async () => {
+    if (pixaiRecording) return;
+    pixaiRecording = true; ctx.notify('正在去网页上记录……');
+    try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); } catch (error) { ctx.notify(error.message, {error: true}); }
+    pixaiRecording = false; await refreshPixai(); render();
+  };
+  /** A 记录, in a sheet like a 画风's: 效果图, 名字, and the LoRA it carries (weights and switches only touch what the tavern sends). */
+  function editRecord(rec) {
+    const d = ctx.dialog('记录', `<div class="style-edit-cover" data-edit-cover></div>${field('名字', input('name', recName(rec), 'text', 'maxlength="40"'))}<div data-rec-loras></div><div class="actions">${btn('save-record', '保存', 'primary')}</div>`);
+    let name = recName(rec);
+    const tile = () => { const now = recordList().find(x => x.id === rec.id) || rec, has = !!state().pixai.api.tplCovers?.[rec.id]; d.body.querySelector('[data-edit-cover]').innerHTML = `${recCover(now)}<span><strong>效果图</strong><small>${has ? '点图换一张' : '点一下加一张，列表里一眼能认出它'}</small></span>`; };
+    const loras = () => {
+      const a = state().pixai.api, now = recordList().find(x => x.id === rec.id) || rec;
+      d.body.querySelector('[data-rec-loras]').innerHTML = now.loras.length ? field('LoRA', `<div class="rec-loras">${now.loras.map(l => { const w = {on: true, weight: l.weight, ...(a.tplLoras[now.id]?.[l.id] || {})}; return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name" title="${esc(l.trigger || '')}">${esc(l.name)}</span><output>${Number(w.weight).toFixed(2)}</output><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label>${w.on ? `<input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('')}</div>`, '只影响酒馆发出的请求，不改网页上的设置。') : '';
     };
-    d.body.addEventListener('input', e => { const el = e.target.closest('[data-pxtpl-w]'); if (el) el.closest('.tpl-lora').querySelector('output').textContent = Number(el.value).toFixed(2); });
+    tile(); loras();
+    d.body.addEventListener('input', e => {
+      const w = e.target.closest('[data-pxtpl-w]');
+      if (w) w.closest('.tpl-lora').querySelector('output').textContent = Number(w.value).toFixed(2);
+      else if (e.target.dataset.field === 'name') name = e.target.value;
+    });
     d.body.addEventListener('change', e => {
       const w = e.target.closest('[data-pxtpl-w]'), on = e.target.closest('[data-pxtpl-on]');
-      if (w) tplTweak(w.dataset.pxtplW, {weight: Number(w.value)}); else if (on) tplTweak(on.dataset.pxtplOn, {on: on.checked}); else return;
-      render(); if (on) paint();
+      if (w) tplTweak(w.dataset.pxtplW, {weight: Number(w.value)}, rec.id); else if (on) { tplTweak(on.dataset.pxtplOn, {on: on.checked}, rec.id); loras(); } else return;
+      render();
     });
-    d.body.addEventListener('click', async event => {
-      const el = event.target.closest('[data-rec],[data-action="pixai-tpl-cancel"]'); if (!el) return;
-      const kind = el.dataset.rec || 'cancel';
-      try {
-        if (kind === 'pick') { const rec = recordList().find(x => x.id === el.dataset.value); if (rec) { api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); render(); paint(); } return; }
-        else if (kind === 'cover') { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(el.dataset.value, blob); ctx.notify('已放到这条记录的效果图'); }
-        else if (kind === 'add') { if (pixaiRecording) return; pixaiRecording = true; paint(); const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); }
-        else await api.pixaiTemplate(kind === 'del' ? 'delete' : kind, kind === 'del' ? el.dataset.value : undefined);
-      } catch (error) { ctx.notify(error.message); }
-      pixaiRecording = false; await refreshPixai(); render(); if (d.live !== false) paint();
+    d.body.addEventListener('click', async e => {
+      if (e.target.closest('[data-rec-cover]')) {
+        try { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(rec.id, blob); ctx.notify('已放到这条记录的效果图'); if (d.live !== false) tile(); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
+        return;
+      }
+      if (!e.target.closest('[data-action=save-record]')) return;
+      const names = {...state().pixai.api.tplNames}; if (name.trim() && name.trim() !== rec.model) names[rec.id] = name.trim().slice(0, 40); else delete names[rec.id];
+      api.saveDraw({pixai: {api: {tplNames: names}}}); d.close(); render(); ctx.notify('记录已保存');
     });
+  }
+  /** The 记录 list, the way the 画风 list is: tap to use, swipe for 改 / 删除, ＋ to record the page's settings again. */
+  function openRecords() {
+    const d = ctx.dialog('记录', '<div class="style-picker"><div class="style-list" data-rec-list></div></div>', {add: '记录网页设置'});
+    const list = d.body.querySelector('[data-rec-list]');
+    const row = (x, on) => swipeRow(x.id, `<div class="list-row style-row" aria-current="${on}">${recCover(x)}<span><strong>${esc(recName(x))}</strong><small class="mono picker-preview">${esc(recFacts(x))}</small><small class="style-params">${esc(recStamp(x))}</small></span></div>`, [{key: 'edit', label: '改', icon: 'edit'}, {key: 'delete', label: '删除', icon: 'trash', danger: true}], {label: recName(x), ...(on ? {className: 'style-on'} : {})});
+    const paint = () => {
+      const all = recordList(), sel = recordNow(), t = pixaiInfo?.template || {};
+      list.innerHTML = (t.armed ? `<p class="hint">反代没能自己点「生成」，正在等你在网页上点一次（不会真出图）。</p><div class="tpl-actions">${btn('pixai-tpl-cancel', '取消', 'chip-button')}</div>` : '')
+        + (all.map(x => row(x, x === sel)).join('') || '<p class="hint">还没有记录。先在反代网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数调好，再点右上角的＋。</p>');
+    };
     paint();
-    refreshPixai().then(() => { render(); if (d.live !== false) paint(); }).catch(() => {});
+    const swipe = mountSwipeList(list, {ctx,
+      hint: '点一下用这条记录，点左边的图加或换效果图；左滑：改、删除',
+      mouseHint: '点一下用这条记录，点左边的图加或换效果图；⋯ 或右键：改、删除',
+      onTap: id => { const rec = recordList().find(x => x.id === id); if (!rec) return; api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); swipe.dispose(); d.close(); render(); },
+      onAction: async (key, id) => {
+        const rec = recordList().find(x => x.id === id); if (!rec) return;
+        try {
+          if (key === 'edit') { swipe.dispose(); d.close(); editRecord(rec); }
+          else if (key === 'delete' && await ctx.confirm(`删除记录「${recName(rec)}」？`, '只删酒馆里记的这条，不影响网页。')) { await api.pixaiTemplate('delete', id); api.clearRecordCover(id); await refreshPixai(); render(); if (d.live !== false) { swipe.done?.(); paint(); } }
+        } catch (error) { ctx.notify(error.message, {error: true}); }
+      }});
+    d.onClose?.(() => swipe.dispose());
+    list.addEventListener('click', async e => {
+      const tile = e.target.closest('[data-rec-cover]'); if (!tile) return;
+      try { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(tile.dataset.recCover, blob); ctx.notify('已放到这条记录的效果图'); if (d.live !== false) paint(); render(); } catch (error) { ctx.notify(error.message, {error: true}); }
+    });
+    d.body.addEventListener('click', async e => { if (!e.target.closest('[data-action=pixai-tpl-cancel]')) return; try { await api.pixaiTemplate('cancel'); } catch (error) { ctx.notify(error.message, {error: true}); } await refreshPixai(); if (d.live !== false) paint(); });
+    d.overlay.addEventListener('click', async e => { if (!e.target.closest('[data-sheet-add]')) return; await recAdd(); if (d.live !== false) paint(); });
+    refreshPixai().then(() => { if (d.live !== false) paint(); }).catch(() => {});
   }
   function pixaiParams(size) {
     return state().pixai.mode === 'api' ? pixaiApiParams() : `<div class="group pad" style="margin-bottom:8px">${pixaiModeBar()}</div>` + pixaiDirectParams(size);
@@ -604,7 +637,7 @@ export function drawApp(ctx) {
   });
   v.on('change', '[data-param]', el => { api.saveDraw({params: {[el.dataset.param]: Number(el.value)}}); render(); });
   v.on('input', '[data-pxapi]', el => { el.previousElementSibling.querySelector('output').textContent = Number(el.value).toFixed(2); });
-  const tplTweak = (versionId, patch) => { const a = state().pixai.api, id = recordNow()?.id; if (!id) return; const rec = recordList().find(x => x.id === id), l = rec?.loras.find(x => x.id === versionId); const cur = {on: true, weight: l?.weight ?? 0.7, ...(a.tplLoras[id]?.[versionId] || {})}; api.saveDraw({pixai: {api: {tplLoras: {...a.tplLoras, [id]: {...(a.tplLoras[id] || {}), [versionId]: {...cur, ...patch}}}}}}); };
+  const tplTweak = (versionId, patch, rid) => { const a = state().pixai.api, id = rid || recordNow()?.id; if (!id) return; const rec = recordList().find(x => x.id === id), l = rec?.loras.find(x => x.id === versionId); const cur = {on: true, weight: l?.weight ?? 0.7, ...(a.tplLoras[id]?.[versionId] || {})}; api.saveDraw({pixai: {api: {tplLoras: {...a.tplLoras, [id]: {...(a.tplLoras[id] || {}), [versionId]: {...cur, ...patch}}}}}}); };
   v.on('input', '[data-pxtpl-w]', el => { el.previousElementSibling.querySelector('output').textContent = Number(el.value).toFixed(2); });
   v.on('change', '[data-pxtpl-w]', el => tplTweak(el.dataset.pxtplW, {weight: Number(el.value)}));
   v.on('change', '[data-pxtpl-on]', el => { tplTweak(el.dataset.pxtplOn, {on: el.checked}); render(); });
