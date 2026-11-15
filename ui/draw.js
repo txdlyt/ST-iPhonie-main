@@ -9,7 +9,7 @@ import {comfyNodePanel} from './comfy-nodes.js';
 import {styleSheets, watchCovers} from './draw-styles.js';
 import {tokenBudget, loadCounter, countPicture, countField, tagCost} from '../core/tokens.js';
 import {refPanel} from './draw-refs.js';
-import {pictureData, readNovelAI, fitBase, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
+import {pickPicture, pictureData, readNovelAI, fitBase, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
 import {DIRECTOR_TOOLS, DIRECTOR_WORDS, EMOTIONS, upscaleBy, UPSCALE_MAX, naiFeatures, samplersFor, schedulesFor, qualityPresets, ucPresets, finalWords, NAI_SAMPLER_NAMES, maxEnhanceSize, usageImages, usageRefillPerDay} from '../core/novelai.js';
 import {LOCKS, unlockedParams, POSITION_GRIDS} from '../core/draw.js';
 import {embeddedVibeFile} from '../core/vibes.js';
@@ -70,7 +70,7 @@ export function drawApp(ctx) {
   };
   // Each engine remembers its own 画风; GPT and ComfyUI use NovelAI's until one is picked for them.
   const styleId = () => { const d = state(); return (d.engine === 'nai' ? '' : d[d.engine]?.style) || d.activeStyle; };
-  const style = () => { const d = state(); if (d.engine === 'pixai') return {id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}}; return d.styles.find(s => s.id === styleId()) || d.styles[0]; };
+  const style = () => { const d = state(); if (d.engine === 'pixai') return {id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}, cover: d.pixai.api.tplCovers?.[recordNow()?.id]}; return d.styles.find(s => s.id === styleId()) || d.styles[0]; };
   // A result as a file: NovelAI_种子.png.
   const resultFile = async result => { const photo = await api.getPhoto(result.photoId); if (!photo) throw Error('这张图已经不在相册里了'); return {source: photo.blob, name: `${(api.drawCatalog.engineNames?.[result.engine] || 'NovelAI').replace(/\s+/g, '')}_${result.seed >= 0 ? result.seed : photo.name}`}; };
   // 收藏: right there on what was just drawn.
@@ -236,7 +236,7 @@ export function drawApp(ctx) {
     const stamp = x => { const d = new Date(x.at); return Number.isNaN(+d) ? '' : d.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
     const item = x => `<div class="tpl-item" aria-current="${x === sel}"><button type="button" data-action="pixai-tpl-pick" data-value="${esc(x.id)}">${esc(x.model)}<small>${x.loras.length} LoRA · ${x.recipes} Recipe${x.steps ? ' · ' + x.steps + '步' : ''}${x.width ? ' · ' + x.width + '×' + x.height : ''} · ${esc(stamp(x))}</small></button><button type="button" class="tpl-del" data-action="pixai-tpl-del" data-value="${esc(x.id)}" aria-label="删除这条记录">×</button></div>`;
     const tweak = (x, l) => ({on: true, weight: l.weight, ...(a.tplLoras[x.id]?.[l.id] || {})});
-    const loraList = sel && sel.loras.length ? sel.loras.map(l => { const w = tweak(sel, l); return `<div class="tpl-lora"><div class="row"><span>${esc(l.name)}${l.trigger ? `<small> ${esc(l.trigger)}</small>` : ''}</span><input class="switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></div>${w.on ? `<div class="meter-label"><span>权重</span><output>${Number(w.weight).toFixed(2)}</output></div><input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('') : '';
+    const loraList = sel && sel.loras.length ? `<div class="tpl-loras">${sel.loras.map(l => { const w = tweak(sel, l); return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name" title="${esc(l.trigger || '')}">${esc(l.name)}</span><output>${Number(w.weight).toFixed(2)}</output><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label>${w.on ? `<input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('')}</div>` : '';
     const pageRow = `<div class="field"><span>网页上的设置${help('先在反代的网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数、负面词调好，然后点顶部的「记录」，再点「＋ 记录网页设置」。反代会自己去点网页上的「生成」，把这次请求拦下来抄设置，不会真的出图，也不扣积分（反代点不成时，你在网页上自己点一次也行）。可以记好几条，点哪条就用哪条；记下时分辨率会一起同步。LoRA 可以逐个开关、调权重，只影响酒馆发出的请求，不改网页。')}</span>${sel ? `<p class="hint" style="padding:0">在用：${esc(sel.model)} · ${sel.loras.length} LoRA${sel.width ? ' · ' + sel.width + '×' + sel.height : ''}</p>` : '<p class="hint" style="padding:0">还没有记录。</p>'}<div class="tpl-actions">${btn('pixai-records', '记录（' + list.length + '）', 'chip-button')}</div>${loraList}</div>`;
     return `<div class="group pad px-sync px-api">${pixaiModeBar()}${sourceRow}${a.source === 'page' ? pageRow : modelRow + lora + recipe}${sizeRow}</div>`;
   }
@@ -249,7 +249,7 @@ export function drawApp(ctx) {
     const stamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
     const paint = () => {
       const list = recordList(), sel = recordNow(), t = pixaiInfo?.template || {};
-      d.body.innerHTML = `<div class="tpl-list">${list.map(x => `<div class="tpl-item" aria-current="${x === sel}"><button type="button" data-rec="pick" data-value="${esc(x.id)}">${esc(x.model)}<small>${x.loras.length} LoRA · ${x.recipes} Recipe${x.steps ? ' · ' + x.steps + '步' : ''}${x.width ? ' · ' + x.width + '×' + x.height : ''} · ${esc(stamp(x))}</small></button><button type="button" class="tpl-del" data-rec="del" data-value="${esc(x.id)}" aria-label="删除这条记录">×</button></div>`).join('') || '<p class="hint">还没有记录。</p>'}</div>`
+      d.body.innerHTML = `<div class="tpl-list">${list.map(x => `<div class="tpl-item" aria-current="${x === sel}"><button type="button" class="style-cover" data-rec="cover" data-value="${esc(x.id)}" aria-label="给这条记录加效果图">${icon('image')}${state().pixai.api.tplCovers?.[x.id] ? `<img src="${esc(state().pixai.api.tplCovers[x.id].thumb)}" alt="" draggable="false">` : ''}</button><button type="button" data-rec="pick" data-value="${esc(x.id)}">${esc(x.model)}<small>${x.loras.length} LoRA · ${x.recipes} Recipe${x.steps ? ' · ' + x.steps + '步' : ''}${x.width ? ' · ' + x.width + '×' + x.height : ''} · ${esc(stamp(x))}</small></button><button type="button" class="tpl-del" data-rec="del" data-value="${esc(x.id)}" aria-label="删除这条记录">×</button></div>`).join('') || '<p class="hint">还没有记录。</p>'}</div>`
         + (t.armed ? '<p class="hint">反代没能自己点「生成」，正在等你在网页上点一次（不会真出图）。</p>' : '')
         + `<div class="tpl-actions">${t.armed ? btn('pixai-tpl-cancel', '取消', 'chip-button') : `<button type="button" class="chip-button" data-rec="add" ${pixaiRecording || pixaiInfo?.generating ? 'disabled' : ''}>${pixaiRecording ? '记录中……' : '＋ 记录网页设置'}</button>`}${list.length && !t.armed ? '<button type="button" class="chip-button" data-rec="clear">全部清除</button>' : ''}</div>`;
     };
@@ -258,6 +258,7 @@ export function drawApp(ctx) {
       const kind = el.dataset.rec || 'cancel';
       try {
         if (kind === 'pick') { const rec = recordList().find(x => x.id === el.dataset.value); if (rec) { api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); render(); d.close(); return; } }
+        else if (kind === 'cover') { const blob = await pickPicture(ctx, api, '给这条记录选效果图'); if (!blob) return; await api.setRecordCover(el.dataset.value, blob); ctx.notify('已放到这条记录的效果图'); }
         else if (kind === 'add') { if (pixaiRecording) return; pixaiRecording = true; paint(); const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); }
         else await api.pixaiTemplate(kind === 'del' ? 'delete' : kind, kind === 'del' ? el.dataset.value : undefined);
       } catch (error) { ctx.notify(error.message); }

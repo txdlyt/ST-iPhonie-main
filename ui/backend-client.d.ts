@@ -815,6 +815,8 @@ export interface BackendFacade {
     arrangeStyles(tree: Array<{style: string} | {group: Partial<DrawStyleGroup>; styles: string[]}>): DrawSettings;
     /** 效果图 of a 画风, from any picture: kept as files in the tavern. */
     setStyleCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
+    setRecordCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
+    clearRecordCover(id: string): void;
     clearStyleCover(id: string): void;
     /** 角色参考图: kept at once, as tavern files; the role must be saved first. */
     setRoleRef(id: string, blob: Blob): Promise<{thumb: string; full: string}>;

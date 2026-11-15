@@ -341,6 +341,29 @@ class DrawSettings {
         sweepCovers(this, [old]);
         return clone(this.settings.draw.styles.find(s => s.id === id).cover);
     }
+    /** 效果图 of a PixAI 记录 (a recorded page setting): same files and sizes as a 画风's. */
+    async setRecordCover(id, blob) {
+        this.assertOpen();
+        if (!this.syncFiles?.writePath) throw Error('要在酒馆里打开小手机，才能存效果图');
+        if (!/^[\w-]{1,40}$/.test(id)) throw Error('这条记录已经不在了');
+        if (!blob) throw Error('这张图已经不在了');
+        let small, big;
+        try { [small, big] = [await makeThumb(blob, COVER_SIZES.s), await makeThumb(blob, COVER_SIZES.l)]; } catch { throw Error('这张图读不出来，换一张试试'); }
+        const stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), file = (kind, made) => `user/images/ST-iPhonie/style-rec-${stamp}-${kind}.${made.blob.type === 'image/webp' ? 'webp' : 'jpg'}`;
+        const cover = { thumb: await this.syncFiles.writePath(file('s', small), small.blob), full: await this.syncFiles.writePath(file('l', big), big.blob) };
+        const next = this.getState(), covers = next.draw.pixai.api.tplCovers = {...next.draw.pixai.api.tplCovers}, old = covers[id];
+        covers[id] = cover;
+        this.save(next);
+        if (old) for (const path of [old.thumb, old.full]) if (COVER_FILE.test(path)) this.syncFiles?.removePath?.(path).catch(() => {});
+        return clone(cover);
+    }
+    clearRecordCover(id) {
+        const next = this.getState(), covers = next.draw.pixai.api.tplCovers || {}, old = covers[id];
+        if (!old) return;
+        delete covers[id];
+        this.save(next);
+        for (const path of [old.thumb, old.full]) if (COVER_FILE.test(path)) this.syncFiles?.removePath?.(path).catch(() => {});
+    }
     clearStyleCover(id) {
         const next = this.getState(), style = next.draw.styles.find(s => s.id === id), old = style?.cover;
         if (!old) return;
