@@ -772,7 +772,7 @@ export interface BackendFacade {
     /** PixAI 反代: switch the PixAI page to draw 1 or 4 pictures per task; answers like pixaiStatus. */
     pixaiSetCount(count: 1 | 4): ReturnType<BackendFacade['pixaiStatus']>;
     /** PixAI 反代 (API mode, 网页设置): arm = catch the next 「生成」 on the bridge's PixAI page and keep its settings; cancel / clear. */
-    pixaiTemplate(action: 'arm' | 'cancel' | 'delete' | 'clear', id?: string): Promise<{ ok?: boolean; template?: { armed?: boolean; current?: string; list?: Array<{ id: string; at: string; summary: string }> } }>;
+    pixaiTemplate(action: 'record' | 'arm' | 'cancel' | 'delete' | 'clear', id?: string): Promise<{ ok?: boolean; recorded?: boolean; message?: string; template?: { armed?: boolean; current?: string; list?: Array<{ id: string; at: string; summary: string }> } }>;
     /** PixAI 反代 (API mode): the bridge reads the page's ratio → size table once and keeps it; answers {ok, resolutions, at}. */
     pixaiReadResolutions(): Promise<{ ok?: boolean; resolutions?: Record<string, Array<{ size: string; width: number; height: number; locked?: boolean }>>; at?: string }>;
     /** PixAI 反代: switch the PixAI page's ratio ('9:16'), size tier ('M'), portrait/landscape (swap) and/or pictures per task; answers like pixaiStatus. */

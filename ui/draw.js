@@ -237,7 +237,7 @@ export function drawApp(ctx) {
     const item = x => `<div class="tpl-item" aria-current="${x === sel}"><button type="button" data-action="pixai-tpl-pick" data-value="${esc(x.id)}">${esc(x.model)}<small>${x.loras.length} LoRA · ${x.recipes} Recipe${x.steps ? ' · ' + x.steps + '步' : ''}${x.width ? ' · ' + x.width + '×' + x.height : ''} · ${esc(stamp(x))}</small></button><button type="button" class="tpl-del" data-action="pixai-tpl-del" data-value="${esc(x.id)}" aria-label="删除这条记录">×</button></div>`;
     const tweak = (x, l) => ({on: true, weight: l.weight, ...(a.tplLoras[x.id]?.[l.id] || {})});
     const loraList = sel && sel.loras.length ? sel.loras.map(l => { const w = tweak(sel, l); return `<div class="tpl-lora"><div class="row"><span>${esc(l.name)}${l.trigger ? `<small> ${esc(l.trigger)}</small>` : ''}</span><input class="switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></div>${w.on ? `<div class="meter-label"><span>权重</span><output>${Number(w.weight).toFixed(2)}</output></div><input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('') : '';
-    const pageRow = `<div class="field"><span>网页上的设置${help('先在反代的网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数、负面词调好，然后点「记录网页设置」，再去网页上点一次「生成」。这一次点击会被反代拦下来，只用来抄设置，不会真的出图，也不扣积分。可以记好几条，点哪条就用哪条；记下时分辨率会一起同步。LoRA 可以逐个开关、调权重，只影响酒馆发出的请求，不改网页。')}</span>${list.length ? `<div class="tpl-list">${list.map(item).join('')}</div>` : '<p class="hint" style="padding:0">还没有记录。</p>'}${t.armed ? '<p class="hint" style="padding:0">等网页点「生成」……点一次就记下了（不会真出图）。</p>' : ''}<div class="tpl-actions">${t.armed ? btn('pixai-tpl-cancel', '取消', 'chip-button') : btn('pixai-tpl-arm', '＋ 记录网页设置', 'chip-button', i.generating ? 'disabled' : '')}${list.length && !t.armed ? btn('pixai-tpl-clear', '全部清除', 'chip-button') : ''}</div>${loraList}</div>`;
+    const pageRow = `<div class="field"><span>网页上的设置${help('先在反代的网页（6080 端口那个浏览器）里把模型、LoRA、Recipe、步数、负面词调好，然后点「记录网页设置」。反代会自己去点网页上的「生成」，把这次请求拦下来抄设置，不会真的出图，也不扣积分（反代点不成时，你在网页上自己点一次也行）。可以记好几条，点哪条就用哪条；记下时分辨率会一起同步。LoRA 可以逐个开关、调权重，只影响酒馆发出的请求，不改网页。')}</span>${list.length ? `<div class="tpl-list">${list.map(item).join('')}</div>` : '<p class="hint" style="padding:0">还没有记录。</p>'}${t.armed ? '<p class="hint" style="padding:0">反代没能自己点「生成」，正在等你在网页上点一次（不会真出图）。</p>' : ''}<div class="tpl-actions">${t.armed ? btn('pixai-tpl-cancel', '取消', 'chip-button') : btn('pixai-tpl-arm', pixaiRecording ? '记录中……' : '＋ 记录网页设置', 'chip-button', pixaiRecording || i.generating ? 'disabled' : '')}${list.length && !t.armed ? btn('pixai-tpl-clear', '全部清除', 'chip-button') : ''}</div>${loraList}</div>`;
     return `<div class="group pad px-sync px-api">${pixaiModeBar()}${sourceRow}${a.source === 'page' ? pageRow : modelRow + lora + recipe}${sizeRow}</div>`;
   }
   function pixaiParams(size) {
@@ -382,7 +382,7 @@ export function drawApp(ctx) {
 
   // PixAI 反代: the bridge's /ai/status (undefined: not read yet, null: could not be read).
   // Kept while the bridge cannot be reached (shown as stale) so the numbers do not vanish; read again every 10 s and whenever the app comes back.
-  let pixaiReading = false;
+  let pixaiReading = false, pixaiRecording = false;
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
@@ -636,7 +636,13 @@ export function drawApp(ctx) {
       case 'pixai-tpl-del': { try { await api.pixaiTemplate('delete', el.dataset.value); } catch (error) { ctx.notify(error.message); } await refreshPixai(); render(); break; }
       case 'pixai-tpl-arm': case 'pixai-tpl-cancel': case 'pixai-tpl-clear': {
         const act = el.dataset.action === 'pixai-tpl-arm' ? 'arm' : el.dataset.action === 'pixai-tpl-cancel' ? 'cancel' : 'clear';
-        try { await api.pixaiTemplate(act); if (act === 'arm') ctx.notify('已准备好：去网页上点一次「生成」，设置就记下来了'); } catch (error) { ctx.notify(error.message); }
+        if (act === 'arm') {
+          // The bridge presses the page's own 「生成」 button (the one 直控 draws with): caught before it is sent, so nothing is drawn or charged.
+          if (pixaiRecording) break;
+          pixaiRecording = true; render();
+          try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); } catch (error) { ctx.notify(error.message); }
+          pixaiRecording = false;
+        } else { try { await api.pixaiTemplate(act); } catch (error) { ctx.notify(error.message); } }
         await refreshPixai(); render(); break;
       }
       case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
