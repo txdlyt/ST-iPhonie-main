@@ -19,7 +19,7 @@ export const PIXAI_MODES = ['api', 'direct'];
 // source: 'preset' — the model, LoRA and Recipe are the bridge's preset (each of LoRA / Recipe can be switched off);
 //         'page'   — the model, LoRA, Recipe, steps … are what was set on the PixAI page and recorded by the bridge: this side only decides the prompt and the size.
 // tplId: which recorded page setting is in use; tplKnown: the records seen so far (null = none yet), so a newly recorded one is noticed; tplLoras: per record, per LoRA {on, weight}.
-export const defaultPixaiApi = () => ({tplId: '', tplKnown: null, tplLoras: {}, tplCovers: {}, tplNames: {}, tplOrder: [], source: 'page', model: '', useLora: true, useRecipe: true, ratio: '', size: '', width: 0, height: 0, count: 4, loraWeight: 0.7});
+export const defaultPixaiApi = () => ({tplId: '', tplKnown: null, tplLoras: {}, tplCovers: {}, tplNames: {}, tplOrder: [], tplRes: {}, source: 'page', model: '', useLora: true, useRecipe: true, ratio: '', size: '', width: 0, height: 0, count: 4, loraWeight: 0.7});
 export const defaultPixai = () => ({url: '', style: '', mode: 'api', api: defaultPixaiApi()});
 export function normalizePixaiApi(value) {
   const a = value && typeof value === 'object' ? value : {}, d = defaultPixaiApi();
@@ -36,9 +36,11 @@ export function normalizePixaiApi(value) {
   const tplCovers = {}, path = v => typeof v === 'string' && /^\/?user\/images\/[^"\\?#]+$/.test(v);
   for (const [tid, c] of Object.entries(a.tplCovers && typeof a.tplCovers === 'object' ? a.tplCovers : {}).slice(0, 24)) if (text(tid, 40) && c && path(c.thumb) && path(c.full)) tplCovers[tid] = {thumb: c.thumb, full: c.full};
   const tplOrder = [...new Set((Array.isArray(a.tplOrder) ? a.tplOrder : []).map(x => text(x, 40)).filter(Boolean))].slice(0, 24);
+  const tplRes = {};
+  for (const [tid, r] of Object.entries(a.tplRes && typeof a.tplRes === 'object' ? a.tplRes : {}).slice(0, 24)) if (text(tid, 40) && r && Number.isInteger(r.width) && Number.isInteger(r.height)) tplRes[tid] = {ratio: text(r.ratio, 12), size: text(r.size, 4), width: r.width, height: r.height};
   const tplNames = {};
   for (const [tid, n] of Object.entries(a.tplNames && typeof a.tplNames === 'object' ? a.tplNames : {}).slice(0, 24)) if (text(tid, 40) && typeof n === 'string' && n.trim()) tplNames[tid] = n.trim().slice(0, 40);
-  return {tplId: text(a.tplId, 40), tplCovers, tplNames, tplOrder, tplKnown: Array.isArray(a.tplKnown) ? a.tplKnown.map(x => text(x, 40)).filter(Boolean).slice(0, 12) : null, tplLoras, source: 'page', useLora: a.useLora !== false, useRecipe: a.useRecipe !== false, model: typeof a.model === 'string' && /^[\w.-]{0,40}$/.test(a.model) ? a.model : '', ratio, size, width: width && height ? width : 0, height: width && height ? height : 0, count: Number(a.count) === 1 ? 1 : 4, loraWeight: weight};
+  return {tplId: text(a.tplId, 40), tplCovers, tplNames, tplOrder, tplRes, tplKnown: Array.isArray(a.tplKnown) ? a.tplKnown.map(x => text(x, 40)).filter(Boolean).slice(0, 12) : null, tplLoras, source: 'page', useLora: a.useLora !== false, useRecipe: a.useRecipe !== false, model: typeof a.model === 'string' && /^[\w.-]{0,40}$/.test(a.model) ? a.model : '', ratio, size, width: width && height ? width : 0, height: width && height ? height : 0, count: Number(a.count) === 1 ? 1 : 4, loraWeight: weight};
 }
 export function normalizePixai(value) {
   const p = value && typeof value === 'object' ? value : {};

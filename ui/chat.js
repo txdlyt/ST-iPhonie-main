@@ -1,3 +1,4 @@
+import {eraseBefore} from '../core/text-edit.js';
 import {currentDm, chatWindows, currentWindow, groupKey, EDITABLE_KINDS, lastRound, forwardLine, REACTIONS, CHAIN_MODES, GAME_LIMITS} from '../core/chats.js';
 import {eggOf, playEgg} from './chat-eggs.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
@@ -11,7 +12,7 @@ import {editTags} from '../host-ask.js';
 import {saveFile, downloadAction, shareFile, canShareFiles} from '../download.js';
 import {momentsPanel, momentsNew, momentsSeen} from './moments.js';
 import {PROFILE_STATUS, BUBBLES, FRAMES, BACKGROUNDS, parseStickers, STICKER_MOODS, ROLE_STICKER_LIMIT, stickerName, contactStatus, statusText} from '../core/chat.js';
-import {BOARDS, cellsOf, cellName} from '../core/board.js';
+import {BOARDS, BOARD_TYPES, cellsOf, cellName} from '../core/board.js';
 import {NARRATOR} from '../core/narration.js';
 import {wornSet} from '../core/bubble-css.js';
 import {syncBubbleCss, bubbleSetsSheet, bubblePreview} from './chat-bubbles.js';
@@ -85,6 +86,7 @@ export function chatApp(ctx) {
   /** In a group (0.9.36): someone's 群昵称 when they have one, else their name (备注 first); 'me' is the user. */
   const groupName = (who, t = thread) => who === 'me' ? t?.nicks?.me || myName() : t?.nicks?.[who] || shown(who);
   const you = who => who === 'me' ? '你' : shown(who);
+  const myNamesIn = t => [myName(), t?.nicks?.me, api.userName?.()].filter(Boolean);
   // mode: list (the tabs) · thread · profile (a contact's card) · me (the user's card and 个性装扮) · contact-edit
   // selecting: the messages picked (null when not picking); pickFor: what for, 'bring' (带进剧情) or 'delete' (多选删除).
   // hits: what the search found in the messages ({q, found}, ui/chat.js findHits); jump: the message to show when the thread is drawn.
@@ -217,12 +219,12 @@ export function chatApp(ctx) {
   // ---------- 消息 ----------
   function convRow(t, me) {
     const last = t.last, line = last && LINE_KINDS.includes(last.kind);
-    const who = line || !last ? '' : last.from === 'me' ? '我：' : t.type === 'group' ? last.from + '：' : '';
-    const atMe = t.type === 'group' && t.unread && last && last.from !== 'me' && String(last.text || '').includes('@' + me) ? '<em class="at-me">[有人@我]</em>' : '';
+    const who = line || !last ? '' : last.from === 'me' ? '我：' : t.type === 'group' ? shown(last.from) + '：' : '';
+    const atMe = t.type === 'group' && t.unread && last && last.from !== 'me' && myNamesIn(t).some(name => String(last.text || '').includes('@' + name)) ? '<em class="at-me">[有人@我]</em>' : '';
     const badge = t.unread ? `<span class="badge${t.muted ? ' muted' : ''}">${t.unread > 99 ? '99+' : t.unread}</span>` : '';
     const spark = t.type === 'dm' && t.streak >= 3 ? `<span class="spark" title="聊天火花：连续 ${t.streak} 天">🔥${t.streak}</span>` : '';
     // A chat with words typed and not sent shows them, as phones do.
-    const typed = draftOf(t.id).trim(), pvLine = typed ? `<em class="draft-mark">[草稿]</em>${esc(typed)}` : `${atMe}${esc(who + preview(last))}`;
+    const typed = draftOf(t.id).trim(), pvLine = typed ? `<em class="draft-mark">[草稿]</em>${esc(typed)}` : `${atMe}${esc(who + preview(last, you))}`;
     return `<button class="conv${t.pinned ? ' pinned' : ''}" data-action="open" data-id="${esc(t.id)}" data-conv="${esc(t.id)}">${threadAvatar(t, 50)}<span class="grow"><span class="conv-top"><strong>${esc(t.type === 'group' ? t.name : shown(t.members[0] || t.name))}</strong>${t.type === 'group' ? `<span class="tag-s">${t.watch ? '旁观' : '群'}</span>` : t.label ? `<span class="tag-s">${esc(t.label)}</span>` : ''}${t.type !== 'group' && t.blocked ? '<span class="tag-s tag-blocked">已拉黑</span>' : ''}${spark}<span class="conv-time">${last ? stamp(last.at) : ''}</span></span><span class="conv-bot"><span class="pv">${pvLine}</span>${t.muted ? `<span class="mute-ico" aria-label="免打扰">${icon('mute')}</span>` : ''}${badge}</span></span></button>`;
   }
   /** The messages found, under what the list found by name. */
@@ -259,8 +261,8 @@ export function chatApp(ctx) {
     // count goes on the one in use.
     const inUse = t => currentWindow(threads, t)?.id === t.id;
     const unreadOf = t => chatWindows(threads, t).reduce((n, x) => n + (x.unread || 0), 0);
-    const rows = threads.filter(t => !(t.type === 'dm' && t.friend?.by === 'me')).filter(t => q ? [t.name, t.label, ...t.members, preview(t.last)].some(x => String(x || '').toLowerCase().includes(q)) : inUse(t)).map(t => ({...t, unread: q ? t.unread : unreadOf(t)}));
-    const people = q ? api.chatContacts().filter(c => c.name.toLowerCase().includes(q) && !away.has(c.name) && !threads.some(t => t.type === 'dm' && t.members[0] === c.name)) : [];
+    const rows = threads.filter(t => !(t.type === 'dm' && t.friend?.by === 'me')).filter(t => q ? [t.name, t.label, ...t.members, ...t.members.map(shown), preview(t.last, you)].some(x => String(x || '').toLowerCase().includes(q)) : inUse(t)).map(t => ({...t, unread: q ? t.unread : unreadOf(t)}));
+    const people = q ? api.chatContacts().filter(c => [c.name, shown(c.name)].some(name => name.toLowerCase().includes(q)) && !away.has(c.name) && !threads.some(t => t.type === 'dm' && t.members[0] === c.name)) : [];
     const bring = pendingBring();
     listEmpty = !rows.length && !people.length;
     const known = hits?.q === q;
@@ -284,7 +286,7 @@ export function chatApp(ctx) {
     const contacts = api.chatContacts().filter(c => !away.has(c.name)), stars = starred(), groups = threads.filter(t => t.type === 'group' && currentWindow(threads, t)?.id === t.id);
     const blockedAsks = threads.filter(t => t.type === 'dm' && t.blocked?.requests?.length && t.friend?.by !== 'me');
     const asks = cut.reduce((n, t) => n + (t.friend.requests?.length || t.blocked?.requests?.length ? 1 : 0), 0) + blockedAsks.length;
-    const row = c => `<button class="list-row" data-action="profile" data-name="${esc(c.name)}">${avatar(c.name, c.engine, 42)}<span><strong>${esc(c.name)}</strong><small>${contactLine(c, threads)}</small></span>${stars.includes(c.name) ? '<span class="star-mark" aria-label="特别关心">★</span>' : icon('next')}</button>`;
+    const row = c => `<button class="list-row" data-action="profile" data-name="${esc(c.name)}">${avatar(c.name, c.engine, 42)}<span><strong>${esc(shown(c.name))}</strong><small>${contactLine(c, threads)}</small></span>${stars.includes(c.name) ? '<span class="star-mark" aria-label="特别关心">★</span>' : icon('next')}</button>`;
     const special = contacts.filter(c => stars.includes(c.name));
     v.draw(frame(heading('联系人', btn('contact-add', icon('add'), 'round-button', 'aria-label="添加联系人"'), 'Contacts')
       + (cut.length || blockedAsks.length ? `<div class="group"><button class="list-row" data-action="new-friends"><i class="friend-ico" aria-hidden="true">${icon('person')}</i><span><strong>新的朋友</strong><small>${asks ? `${asks} 个好友申请` : `删掉的好友（${cut.length}）可以在这里加回来`}</small></span>${asks ? `<b class="badge friend-badge">${asks}</b>` : icon('next')}</button></div>` : '')
@@ -480,7 +482,7 @@ export function chatApp(ctx) {
     const t = esc(text);
     if (thread?.type !== 'group' || !t.includes('@')) return t;
     // The user by the phone's name, the group's nickname, or the tavern's name (the one the model is told).
-    const mine = [myName(), thread.nicks?.me, api.userName?.()].filter(Boolean), names =[...new Set([...thread.members, ...Object.values(thread.nicks || {}), ...mine])].filter(Boolean).sort((a, b) => b.length - a.length);
+    const mine = myNamesIn(thread), names =[...new Set([...thread.members, ...Object.values(thread.nicks || {}), ...mine])].filter(Boolean).sort((a, b) => b.length - a.length);
     const re = new RegExp(`@(${names.map(n => esc(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'g');
     return t.replace(re, (all, name) => `<span class="at${mine.map(esc).includes(name) ? ' at-me' : ''}">${all}</span>`);
   }
@@ -488,7 +490,7 @@ export function chatApp(ctx) {
   function atPicker(el, e) {
     if (thread?.type !== 'group' || thread.watch || !['@', '＠'].includes(e?.data) || e.inputType === 'insertFromPaste') return;
     const at = el.selectionStart;
-    if (e.data === '＠') { el.value = el.value.slice(0, at - 1) + '@' + el.value.slice(at); el.setSelectionRange(at, at); }
+    if (e.data === '＠') { el.value = el.value.slice(0, at - 1) + '@' + el.value.slice(at); el.setSelectionRange(at, at); keepDraft(threadId, el.value); }
     const d = sheet('@ 谁', `<div class="pick-list">${thread.members.map(n => `<button type="button" class="list-row" data-action="at-pick" data-name="${esc(n)}">${avatar(n, engine(n), 32)}<span><strong>${esc(groupName(n))}</strong>${thread.nicks?.[n] ? `<small>${esc(n)}</small>` : ''}</span></button>`).join('')}</div>`, {
       'at-pick': btnEl => {
         d.close();
@@ -507,8 +509,8 @@ export function chatApp(ctx) {
     const mid = `data-mid="${esc(m.id)}"`;
     // 「N 条消息会带进下一次正文」is the line under the chat while a choice waits; older versions also wrote it in as a note.
     if (m.kind === 'system') return /^\d+ 条消息会带进下一次正文$/.test(m.text || '') ? '' : `<div class="sys">${icon('book')}${esc(m.text)}</div>`;
-    if (m.kind === 'pat') return `<div class="note-line" ${mid}>${esc(patText(m))}</div>`;
-    if (m.kind === 'notice') return `<div class="note-line" ${mid}>${/红包/.test(m.text) ? '<span class="pk-dot" aria-hidden="true"></span>' : ''}${esc(noticeText(m))}</div>`;
+    if (m.kind === 'pat') return `<div class="note-line" ${mid}>${esc(patText(m, you))}</div>`;
+    if (m.kind === 'notice') return `<div class="note-line" ${mid}>${/红包/.test(m.text) ? '<span class="pk-dot" aria-hidden="true"></span>' : ''}${esc(noticeText(m, you))}</div>`;
     const again = m.from === 'me' && recalled.has(m.id) ? btn('re-edit', '重新编辑', 'text-button', mid) : '';
     if (m.said && m.from !== 'me') {
       const open = peeked.has(m.id);
@@ -830,7 +832,7 @@ export function chatApp(ctx) {
     if (panel) {
       wrap.insertAdjacentHTML('beforeend', toolsHTML());
       if (!old) wrap.querySelector('.chat-panel').classList.add('enter');
-      bindPicker(wrap, ctx.win); fillPicker(wrap, ctx.win);
+      bindPicker(wrap, ctx.win); fillPicker(wrap, ctx.win); paintStickers(wrap);
     }
     wrap.querySelector('[data-action=panel]')?.setAttribute('aria-expanded', String(!!panel));
     if (msgs && atBottom) msgs.scrollTop = msgs.scrollHeight;
@@ -961,11 +963,12 @@ export function chatApp(ctx) {
 
   // ---------- Sending ----------
   /** Puts the user's messages in the chat. Nothing goes to the model until the user asks for a reply. */
-  async function post(messages) {
+  async function post(messages, {onSaved = () => {}} = {}) {
     stick = true;
     failed.delete(threadId);
     const asked = asks, id = threadId, turn = spaceTurn;
     await api.appendChat(id, messages, {read: true});
+    onSaved();
     // 自动回复: the user's own words (not a letter, which takes its time) set the clock going — unless a reply was asked
     // for by hand while they were being kept, or the tavern switched to another phone meanwhile.
     if (turn === spaceTurn && asked === asks && messages.some(m => m.from === 'me' && !['system', 'letter'].includes(m.kind)) && !thread?.watch) scheduleAuto(id);
@@ -979,21 +982,28 @@ export function chatApp(ctx) {
     if (!live || api.getState().chat.autoReply !== true || !id) return;
     ctx.win.clearTimeout(autoTimer);
     autoFor = id;
-    autoTimer = ctx.win.setTimeout(() => { const target = autoFor; autoFor = null; if (target && !api.chatTyping?.(target)) requestReply(target); }, AUTO_WAIT);
+    autoTimer = ctx.win.setTimeout(() => { const target = autoFor; autoFor = null; if (target && api.getState().chat.autoReply === true && !api.chatTyping?.(target)) requestReply(target); }, AUTO_WAIT);
   }
   /** Typing again: the reply waits for the user to stop. */
   const holdAuto = () => { if (autoFor) scheduleAuto(autoFor); };
+  const sendingMessages = new Set();
   async function send() {
-    const el = v.root.querySelector('[data-field=draft]'), text = el?.value.trim();
-    // An empty box asks the other side to reply to everything sent so far.
+    const id = threadId;
+    if (sendingMessages.has(id)) return;
+    const el = v.root.querySelector('[data-field=draft]'), raw = el?.value || '', text = raw.trim();
     if (!text) { if (live && el) requestReply(); return; }
-    el.value = '';
-    keepDraft(threadId, '');
-    syncSend();
     const q = quote;
-    quote = null;
-    petsLayer.sent();
-    await post([{from: 'me', kind: 'text', text, ...(q ? {quote: q} : {})}]);
+    sendingMessages.add(id);
+    try {
+      await post([{from: 'me', kind: 'text', text, ...(q ? {quote: q} : {})}], {onSaved: () => {
+        if (draftOf(id) === raw) keepDraft(id, '');
+        if (threadId === id) {
+          if (el.value === raw) el.value = '';
+          if (quote === q) quote = null;
+          petsLayer.sent(); syncSend();
+        }
+      }});
+    } finally { sendingMessages.delete(id); }
   }
   /** Paper plane while there is text; 让对方回复 when the box is empty; 停止 while the reply is being written. */
   const sendButton = () => {
@@ -1191,7 +1201,7 @@ export function chatApp(ctx) {
   function gameHTML(m) {
     const g = m.game, mid = `data-mid="${esc(m.id)}"`, name = n => n === 'me' ? myName() : shown(n);
     // 小游戏对战 (0.9.35): the board; the user's cells can be tapped on the user's turn.
-    if (BOARDS[g.type]) {
+    if (BOARD_TYPES.includes(g.type)) {
       const size = BOARDS[g.type].size, cells = cellsOf(g), last = g.moves.at(-1)?.at, line = new Set(g.line || []), mark = who => who === g.first ? 'x' : 'o';
       const mine = g.open && g.turn === 'me' && !typing();
       const state = g.winner === 'draw' ? '平局' : g.resigned ? `${g.resigned === 'me' ? '你' : name(g.resigned)}认输了` : g.winner ? (g.winner === 'me' ? '你赢了 🎉' : `${name(g.winner)}赢了`) : g.turn === 'me' ? '轮到你了' : `${name(g.them)}在想……`;
@@ -1495,7 +1505,9 @@ export function chatApp(ctx) {
   function deleteChar() {
     const el = v.root.querySelector('[data-field=draft]');
     if (!el?.value) return;
-    el.value = [...el.value].slice(0, -1).join('');
+    const erased = eraseBefore(el.value, el.selectionStart, el.selectionEnd, ctx.win.Intl?.Segmenter);
+    el.value = erased.text;
+    el.setSelectionRange(erased.caret, erased.caret);
     keepDraft(threadId, el.value);
     syncSend();
   }
@@ -2370,7 +2382,7 @@ export function chatApp(ctx) {
     ctx.win.clearTimeout(convPress.timer); convPress = null;
   });
   v.on('contextmenu', '.conv[data-conv]', (el, e) => { e.preventDefault(); if (Date.now() - convPressedAt > 1000) convMenu(el.dataset.conv); });
-  v.on('keydown', '[data-field=draft]', (el, e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); return send(); } });
+  v.on('keydown', '[data-field=draft]', (el, e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); return send(); } });
   // Typing closes the + panel, like a phone keyboard replacing it.
   v.on('focusin', '[data-field=draft]', () => { if (panel) { panel = null; syncPanel(); } });
   v.on('pointerdown', '.range-bar', (bar, e) => {
@@ -2395,7 +2407,7 @@ export function chatApp(ctx) {
       const start = box.querySelector('.range-bar[data-edge=start]'), end = box.querySelector('.range-bar[data-edge=end]');
       if (first && start) first.before(start);
       if (last && end) last.after(end);
-      const label = v.root.querySelector('.bring-bar span');
+      const label = v.root.querySelector('.bring-bar span, .select-head > span:first-child');
       if (label) label.textContent = pickedLabel(picked.size);
     }
     // Near the top or bottom edge the list scrolls on its own, so a long stretch can be taken in one drag.
@@ -2497,7 +2509,7 @@ export function chatApp(ctx) {
     if (action === 'open' && el.dataset.conv && Date.now() - convPressedAt < 700) return;
     // The click that ends a long-press only closes the press, it does not play or open anything.
     if (Date.now() - pressedAt < 700 && el.closest('.msg')) return;
-    if (selecting && ['message', 'voice', 'photo', 'packet', 'transfer', 'gift', 'react-chip', 'peek', 'forward-open', 'game-vote', 'game-end', 'game-choice', 'game-again', 'game-chain'].includes(action)) return;
+    if (selecting && el.closest('.msg[data-mid]') && !['bring', 'pick-up', 'pick-down'].includes(action)) return;
     const find = () => thread.messages.find(x => x.id === el.dataset.mid);
     switch (action) {
       case 'tab': {
@@ -2698,7 +2710,7 @@ export function chatApp(ctx) {
         break;
       }
       case 'board-resign': { const m = find(); if (m?.game?.open && await ctx.confirm('认输？', '这一盘算你输。')) { await api.updateChatMessage(threadId, m.id, {game: {resigned: 'me'}}); requestReply(); } break; }
-      case 'board-again': { const g = find()?.game; if (g && BOARDS[g.type]) await startBoard(g.type, g.first === 'me' ? g.them : 'me'); break; }
+      case 'board-again': { const g = find()?.game; if (g && BOARD_TYPES.includes(g.type)) await startBoard(g.type, g.first === 'me' ? g.them : 'me'); break; }
       case 'post-open': { const m = find(); if (m?.post?.id) ctx.openForumPost?.(m.post.id); else if (m) messageMenu(m); break; }
       case 'outfit-open': { const m = find(); if (m) outfitSheet(m); break; }
       case 'book-open': { const m = find(); if (m?.book?.id) ctx.openBook?.(m.book.id); else if (m) messageMenu(m); break; }

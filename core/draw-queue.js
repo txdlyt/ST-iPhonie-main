@@ -104,7 +104,8 @@ export class DrawQueue {
     try {
       for (let job; (job = this.jobs.find(j => j.lane === lane));) {
         const run = () => this.run(job);
-        await (this.locks?.request ? this.locks.request('st-iphonie-' + (lane === 'nai' ? 'novelai' : lane), run) : run());
+        try { await (this.locks?.request ? this.locks.request('st-iphonie-' + (lane === 'nai' ? 'novelai' : lane), {signal: job.controller.signal}, run) : run()); }
+        catch (error) { job.settled = true; job.reject(job.controller.signal.aborted ? cancelled() : error); }
         const index = this.jobs.indexOf(job);
         if (index >= 0) this.jobs.splice(index, 1);
         this.changed();
@@ -115,6 +116,7 @@ export class DrawQueue {
     const signal = job.controller.signal;
     try {
       for (let attempt = 0; ; attempt++) {
+        if (signal.aborted) throw cancelled();
         // free: answered from a cache that is already there (PixAI's 2nd–4th picture of one task), so no gap is kept.
         const readyAt = job.free && attempt === 0 ? 0 : this.store(job.lane).get() + this.gap();
         if (readyAt > this.now()) {
@@ -124,7 +126,9 @@ export class DrawQueue {
         const lease = await this.turn(job, signal);
         job.state = 'running'; job.attempt = attempt; job.until = 0; job.cloud = null; this.changed();
         try {
+          if (signal.aborted) throw cancelled();
           const result = await job.task(signal);
+          if (signal.aborted) throw cancelled();
           if (!job.free) this.store(job.lane).set(this.now());
           lease?.release('done');
           job.settled = true;

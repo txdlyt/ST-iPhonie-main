@@ -13,7 +13,7 @@ import {pictureInputs, sizeFor, photoPicture} from './core/draw.js';
 const PEOPLE = 12;
 
 export function createAppsHost({context, settings, backend, memory = null, notice = () => {}}) {
-  const busy = {forum: null, peek: null};
+  const busy = {forum: null, peek: null}, pending = new Map();
   const userName = () => context()?.name1 || '我';
   const userPersona = () => String(context()?.powerUserSettings?.persona_description || '').slice(0, 1500);
   function card(name) {
@@ -34,10 +34,16 @@ export function createAppsHost({context, settings, backend, memory = null, notic
     return cleanTagged(String(await backend.generateText(ctx, {prompt, trimNames: false, use}) || ''), preset.cleanTags);
   }
   /** One request per app at a time; the phone shows it as busy. */
-  function run(app, task) {
-    if (busy[app]) return busy[app];
-    busy[app] = (async () => { backend.emit(app, {busy: true}); return task(context()); })().finally(() => { busy[app] = null; backend.emit(app, {busy: false}); });
-    return busy[app];
+  function run(app, key, task) {
+    if (pending.has(key)) return pending.get(key);
+    const previous = busy[app], ctx = context(), valid = backend.spaceGuard?.() || (() => true);
+    const result = (previous ? previous.catch(() => {}) : Promise.resolve()).then(() => {
+      if (!valid()) throw Error('酒馆聊天已切换，请回原聊天重试');
+      return task(ctx);
+    });
+    const next = result.finally(() => { pending.delete(key); if (busy[app] === next) busy[app] = null; backend.emit(app, {busy: !!busy[app]}); });
+    pending.set(key, next); busy[app] = next; backend.emit(app, {busy: true});
+    return next;
   }
   const base = () => {
     const s = settings(), preset = activeChatPreset(s.chat);
@@ -54,7 +60,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
   }
   /** New posts and the 热搜. */
   function forumRefresh({auto=false}={}) {
-    return run('forum', async ctx => {
+    return run('forum', 'forum:refresh', async ctx => {
       backend.assertSpaceReady();const valid=auto?backend.spaceGuard():()=>true;
       // The card asked for: the tavern may move to another one while the model writes.
       const space = backend.cardKey(), save = backend.saveKey(), hotId = backend.hotId(), {preset, everyone, user} = base(), handles = netNames();
@@ -73,7 +79,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
   }
   /** Replies to the user's new post. */
   function forumReact(postId) {
-    return run('forum', async ctx => {
+    return run('forum', `forum:react:${postId}`, async ctx => {
       const {preset, everyone, user} = base(), handles = netNames();
       const post = await backend.apps.get(postId);
       if (!post) throw Error('这个帖子已经不在了');
@@ -87,7 +93,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
   }
   /** Answers to the user's reply. */
   function forumReply(postId, replyId) {
-    return run('forum', async ctx => {
+    return run('forum', `forum:reply:${postId}:${replyId}`, async ctx => {
       const {preset, everyone, user} = base(), handles = netNames();
       const post = await backend.apps.get(postId), mine = post?.replies.find(r => r.id === replyId);
       if (!post || !mine) throw Error('这条回复已经不在了');
@@ -106,7 +112,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
   // ---------- 查手机 ----------
   /** Looks into a character's phone: a new snapshot, or (keep) what is new since last time put onto the old one. */
   function peekLook(name, {keep = false} = {}) {
-    return run('peek', async ctx => {
+    return run('peek', `peek:${name}:${keep}`, async ctx => {
       const key = backend.spaceKey(), {preset, user} = base(), contact = backend.contacts().find(c => c.name === name);
       if (!contact) throw Error(`联系人里没有「${name}」`);
       const person = {name, persona: contact.persona, card: contact.persona ? '' : card(name)};
@@ -139,7 +145,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
     if (!photo) throw Error(wall ? '没有壁纸，「再看一次」后就有了' : '这张照片已经不在了');
     if (!photo.tags) throw Error((wall ? '壁纸' : '这张照片') + '没有画图用的描述，「再看一次」后就有了');
     if (!backend.drawReady()) throw Error(backend.drawMissing() + '，相册只能看文字');
-    const set = patch => backend.appsMutate('peek', () => backend.apps.change(id, doc => { const target = pick(doc); Object.assign(target, patch); for (const k of Object.keys(patch)) if (patch[k] === '') delete target[k]; }));
+    const set = patch => backend.appsMutate('peek', () => backend.apps.change(id, doc => { const target = pick(doc); if (doc.at !== snap.at || !target || target.tags !== photo.tags || target.text !== photo.text) throw Error('查手机的内容已经更新，这次画好的图保留在相册里'); Object.assign(target, patch); for (const k of Object.keys(patch)) if (patch[k] === '') delete target[k]; }));
     // The saved looks of who the photo shows: the people its description names, else the owner (a selfie).
     const names = [...settings().routes.map(r => r.name), userName()], picture = photoPicture(settings(), {text: photo.text, tags: photo.tags, owner: name, names});
     try {
@@ -152,7 +158,7 @@ export function createAppsHost({context, settings, backend, memory = null, notic
       await set({photoId: result.photoId, state: 'done', note: ''});
       return result.photoId;
     } catch (error) {
-      await set({state: 'failed', note: error.code === 'PAID' ? backend.paidPrompt().note : error.message.slice(0, 200)});
+      await set({state: 'failed', note: error.code === 'PAID' ? backend.paidPrompt().note : error.message.slice(0, 200)}).catch(() => {});
       throw error;
     }
   }

@@ -1,3 +1,5 @@
+import {redactSecrets} from './secrets.js';
+import {withTimeout} from './request-timeout.js';
 // 文字模型: which model writes the phone's text (chat replies, 朋友圈, calls, picture plans). 'tavern' uses the model the
 // tavern is connected to (generateRaw), as before; 'custom' calls an OpenAI-compatible Chat Completions API directly
 // from the browser with its own address, key and model. The story itself always stays on the tavern's model.
@@ -124,7 +126,7 @@ export async function streamText(response, info = {}) {
     if (!data || data === '[DONE]') return;
     let json; try { json = JSON.parse(data); } catch { return; }
     const message = json?.error?.message || (typeof json?.error === 'string' ? json.error : '');
-    if (message) throw Error(String(message).slice(0, 300));
+    if (message) throw Error(redactSecrets(message, [info.key]).slice(0, 300));
     info.alive?.();
     const choice = json?.choices?.[0];
     if (choice?.delta?.reasoning_content || choice?.delta?.reasoning || json?.candidates?.[0]?.content?.parts?.some?.(p => p?.thought)) info.thought = true;
@@ -150,11 +152,10 @@ export async function streamText(response, info = {}) {
 
 /** A readable reason for a failed request. The key is never part of it. */
 export function failure(status, body, key = '') {
-  if (status === 403 && /CORS proxy is disabled/i.test(typeof body === 'string' ? body : JSON.stringify(body))) return Error('酒馆的跨域代理未开启：在 config.yaml 里把 enableCorsProxy 改成 true，然后重启酒馆');
+  if (/CORS proxy is disabled/i.test(typeof body === 'string' ? body : JSON.stringify(body))) return Error('酒馆的跨域代理未开启：在 config.yaml 里把 enableCorsProxy 改成 true，然后重启酒馆');
   let detail = '';
-  try { const json = typeof body === 'string' ? JSON.parse(body) : body; detail = json?.error?.message || json?.message || json?.detail || ''; } catch { detail = String(body || '').slice(0, 200); }
-  detail = String(detail).slice(0, 300);
-  if (key) detail = detail.split(key).join('••••');
+  try { const json = typeof body === 'string' ? JSON.parse(body) : body; detail = json?.error?.message || json?.message || json?.detail || ''; } catch { detail = String(body || ''); }
+  detail = redactSecrets(detail, [key]).slice(0, 300);
   const reason = {401: '密钥无效或已过期', 403: '这个密钥没有权限', 404: '地址或模型名不对', 408: '接口超时了', 413: '请求内容太长', 429: '请求太频繁或额度用完了', 500: '接口服务出错了', 502: '接口服务暂时不可用', 503: '接口服务暂时不可用'}[status] || `接口返回错误 ${status}`;
   return Error(`文字模型：${reason}${detail ? '（' + detail + '）' : ''}`);
 }
@@ -242,7 +243,7 @@ export async function customRequest({text, key, prompt, responseLength, fetch: s
     if (reply) return finish(reply);
   } else {
     const info = details ? {onChunk: json => responseMetadata(json, meta), onProgress: content => onProgress?.(content, meta)} : {};
-    const reply = await first.read(alive => streamText(first.response, Object.assign(info, {alive})));
+    const reply = await first.read(alive => streamText(first.response, Object.assign(info, {alive, key})));
     if (info.finish) meta.finish = info.finish;
     if (reply.trim()) return finish(reply);
     if (info.thought) throw thoughtOnly(info.finish);
@@ -261,14 +262,21 @@ export async function customRequest({text, key, prompt, responseLength, fetch: s
 /** Model ids the API lists (GET /models): for picking a model and checking the connection. Listing costs nothing. */
 export async function listModels({text, key, fetch: send = globalThis.fetch}) {
   const base = apiBase(text.url);
-  let response;
+  let response, raw;
   // Some APIs (火山方舟 among them) have no list of models: the model is written by hand then.
   // 火山方舟 has none to read: said at once, without asking.
   if (ARK.test(base)) throw Error('文字模型：' + ARK_MODEL);
   const byHand = '这个接口读不出模型列表：在「模型」里直接填模型名就行（接口的文档或控制台里能找到）';
-  try { response = await send(base + '/models', {headers: key ? {Authorization: 'Bearer ' + key} : {}}); }
-  catch { throw Error('文字模型：连不上这个接口。可能是地址写错了，或者这个接口不允许网页直接访问（CORS）'); }
-  const raw = await response.text();
+  try {
+    await withTimeout(async signal => {
+      response = await send(base + '/models', {signal, headers: key ? {Authorization: 'Bearer ' + key} : {}});
+      raw = await response.text();
+    }, 60000);
+  } catch (error) {
+    if (['AbortError', 'TimeoutError'].includes(error?.name)) throw Error('文字模型：读取模型列表等太久了，请稍后重试，或直接填写模型名');
+    throw Error('文字模型：连不上这个接口。可能是地址写错了，或者这个接口不允许网页直接访问（CORS）');
+  }
+  if (!response.ok && /CORS proxy is disabled/i.test(raw)) throw failure(response.status, raw, key);
   if (response.status === 404 || response.status === 405) throw Error('文字模型：' + byHand);
   if (!response.ok) throw failure(response.status, raw, key);
   let json;

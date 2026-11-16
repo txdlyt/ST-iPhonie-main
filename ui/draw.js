@@ -188,7 +188,7 @@ export function drawApp(ctx) {
       + `<div class="segmented draw-engines" role="group" aria-label="用哪个画">${api.drawCatalog.engines.map(k => `<button data-action="draw-engine" data-pick="${k}" aria-pressed="${k === e}">${esc(engineName(k))}</button>`).join('')}</div>`
       + (keyed ? '' : `<div class="banner">${icon('key')}<span>${esc(api.drawMissing())}。</span>${btn('go-key', '去填写', 'chip-button')}</div>`)
       + queueCard()
-      + `<div class="draw-meta">${btn(e === 'pixai' ? 'pixai-records' : 'pick-style', (style().cover ? `<img class="chip-cover" src="${esc(style().cover.thumb)}" alt="" draggable="false">` : icon('layers')) + esc(e === 'pixai' ? recordName() : style().name) + icon('down'), 'chip-button')}${costChip(q)}${e === 'nai' ? `<label class="chip-button file-button read-png" title="从 NovelAI 画的 PNG 读回提示词、角色和参数">${icon('import')}读图<input type="file" data-read-png accept="image/png,image/jpeg,image/webp" aria-label="从 NovelAI 的图读参数" hidden></label>` : ''}</div>
+      + `<div class="draw-meta">${btn(e === 'pixai' ? 'pixai-records' : 'pick-style', (style().cover ? `<img class="chip-cover" src="${esc(style().cover.thumb)}" alt="" draggable="false">` : icon('layers')) + esc(e === 'pixai' ? recordName() : style().name) + icon('down'), 'chip-button')}${e === 'pixai' ? btn('pixai-checkin', checkingIn ? '签到中……' : '签到', 'chip-button', checkingIn ? 'disabled' : '') : ''}${costChip(q)}${e === 'nai' ? `<label class="chip-button file-button read-png" title="从 NovelAI 画的 PNG 读回提示词、角色和参数">${icon('import')}读图<input type="file" data-read-png accept="image/png,image/jpeg,image/webp" aria-label="从 NovelAI 的图读参数" hidden></label>` : ''}</div>
         <div class="canvas-card"><div class="canvas-main${main ? '' : ' empty'}" style="aspect-ratio:${p.width}/${p.height}">${main ? `<button type="button" class="canvas-zoom" data-action="zoom" aria-label="放大查看"><img src="${esc(main)}" alt="生成的图片"></button><button type="button" class="canvas-heart" data-action="heart" aria-pressed="${hearts.has(shown?.photoId)}" aria-label="${hearts.has(shown?.photoId) ? '取消收藏' : '收藏'}">${icon('heart', hearts.has(shown?.photoId))}</button>` : `<span>${comfy && !(comfy.controls.includes('width') && comfy.controls.includes('height')) ? '尺寸由工作流决定' : `${p.width} × ${p.height}`}<br>还没有图</span>`}${busy ? `<span class="canvas-busy">${esc(engineName(e))} 正在画……</span>` : ''}</div>
           ${results.length ? `<div class="canvas-side" data-keep-scroll="results">${thumbs.map((url, i) => `<button class="thumb" data-action="thumb" data-index="${i}" aria-pressed="${i === current}" aria-label="第 ${i + 1} 张"${hearts.has(results[i].photoId) ? ' data-fav' : ''}>${url ? `<img src="${esc(url)}" alt="">` : ''}</button>`).join('')}</div>` : ''}</div>
         ${shown ? `<p class="hint canvas-meta">${[shown.tool ? (shown.prompt || '') : shown.params.model, `${shown.params.width}×${shown.params.height}`, shown.params.steps ? shown.params.steps + ' 步' : '', shown.seed >= 0 ? '种子 ' + shown.seed : ''].filter(Boolean).map(esc).join(' · ')}</p>` : ''}
@@ -242,7 +242,7 @@ export function drawApp(ctx) {
   const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="${c ? '看' : '给'}「${esc(recName(x))}」${c ? '的' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
   const recFacts = x => [`${x.loras.length} LoRA`, ...(x.recipes ? [`${x.recipes} Recipe`] : []), ...(x.steps ? [`${x.steps} 步`] : []), ...(x.width ? [`${x.width}×${x.height}`] : [])].join(' · ');
   const recStamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
-  const recUse = rec => { api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); render(); };
+  const recUse = rec => { api.saveDraw({pixai: {api: {tplId: rec.id, ...resOf(rec)}}}); render(); };
   const recAdd = async () => {
     if (pixaiRecording) return;
     pixaiRecording = true; ctx.notify('正在去网页上记录……');
@@ -477,7 +477,7 @@ export function drawApp(ctx) {
 
   // PixAI 反代: the bridge's /ai/status (undefined: not read yet, null: could not be read).
   // Kept while the bridge cannot be reached (shown as stale) so the numbers do not vanish; read again every 10 s and whenever the app comes back.
-  let pixaiReading = false, pixaiRecording = false;
+  let pixaiReading = false, pixaiRecording = false, checkingIn = false;
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
@@ -518,6 +518,10 @@ export function drawApp(ctx) {
     for (const [ratio, list] of Object.entries(table)) { const hit = (list || []).find(x => x.width === rec.width && x.height === rec.height); if (hit) return {ratio, size: hit.size, width: rec.width, height: rec.height}; }
     return {ratio: '', size: '', width: rec.width, height: rec.height};
   };
+  /** A 记录's own resolution: the one chosen for it, else the size its page settings carried. */
+  const resOf = rec => { const r = state().pixai.api.tplRes?.[rec?.id]; return r ? {ratio: r.ratio, size: r.size, width: r.width, height: r.height} : sizePatch(rec); };
+  /** A resolution picked while a 记录 is in use belongs to that 记录. */
+  const bindRes = patch => { const id = state().pixai.api.tplId || recordNow()?.id; return id ? {...patch, tplRes: {...state().pixai.api.tplRes, [id]: {ratio: patch.ratio, size: patch.size, width: patch.width, height: patch.height}}} : patch; };
   /** Records are made on the bridge: a new one is picked, with its size; one that is gone is let go. Looking never changes the size by itself. */
   function adoptTemplates(t) {
     if (!t || !Array.isArray(t.list)) return;
@@ -528,7 +532,7 @@ export function drawApp(ctx) {
     const patch = {};
     if (pick !== a.tplId) patch.tplId = pick;
     if (!seen || ids.length !== a.tplKnown.length || ids.some((id, n) => id !== a.tplKnown[n])) patch.tplKnown = ids;
-    if (fresh.length) Object.assign(patch, sizePatch(t.list.find(x => x.id === pick)));
+    if (fresh.length) { const own = sizePatch(t.list.find(x => x.id === pick)); Object.assign(patch, own, {tplRes: {...a.tplRes, [pick]: own}}); }
     if (Object.keys(patch).length) { api.saveDraw({pixai: {api: patch}}); if (fresh.length) ctx.notify('已记下网页设置，分辨率也同步了'); }
   }
   function takePixai(info) {
@@ -634,7 +638,7 @@ export function drawApp(ctx) {
     else if (key === 'negative') { negative = el.value; meters(); words.typed(el); }
     else if (key === 'char') { characters[Number(el.dataset.index)].prompt = el.value; grow(el); meters(); words.typed(el); }
     else if (key === 'char-neg') { characters[Number(el.dataset.index)].negative = el.value; words.typed(el); }
-    else if (key === 'seed') seed = el.value === '' ? -1 : Math.max(-1, Math.floor(Number(el.value) || -1));
+    else if (key === 'seed') { const n = Number(el.value); seed = el.value === '' || !Number.isFinite(n) ? -1 : Math.max(-1, Math.floor(n)); }
   });
   v.root.addEventListener('focusout', event => { if (event.target.matches?.('[data-field]')) words.left(); });
   v.on('input', '[data-param]', el => { el.previousElementSibling.querySelector('output').textContent = el.dataset.param === 'scale' ? Number(el.value).toFixed(1) : el.dataset.param === 'cfgRescale' ? Number(el.value).toFixed(2) : el.value; });
@@ -741,8 +745,8 @@ export function drawApp(ctx) {
         await refreshPixai(); render(); break;
       }
       case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
-      case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: {ratio, size, width: hit.width, height: hit.height}}}); render(); } break; }
-      case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: {ratio, size: hit.size, width: hit.width, height: hit.height}}}); render(); } break; }
+      case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: bindRes({ratio, size, width: hit.width, height: hit.height})}}); render(); } break; }
+      case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: bindRes({ratio, size: hit.size, width: hit.width, height: hit.height})}}); render(); } break; }
       case 'pixai-res': {
         if (pixaiReading) break;
         pixaiReading = true; render();
@@ -847,6 +851,13 @@ export function drawApp(ctx) {
         break;
       case 'pick-style': pickStyle(); break;
       case 'pixai-records': openRecords(); break;
+      case 'pixai-checkin': {
+        if (checkingIn) break;
+        checkingIn = true; render(); ctx.notify('正在去网页上签到，要等一会儿……');
+        try { const r = await api.pixaiCheckin(); ctx.notify(r.message || (r.ok ? '签到完成' : '签到没成功'), {error: !r.ok || r.warn}); }
+        catch (error) { ctx.notify(error.message, {error: true}); }
+        checkingIn = false; refreshPixai().then(() => render()).catch(() => {}); render(); break;
+      }
       case 'count': { const k = Number(el.dataset.count) || 1; if (eng() === 'pixai' && (k === 2 || k === 3)) break; count = k; if (eng() === 'pixai' && state().pixai.mode === 'api') api.saveDraw({pixai: {api: {count: k}}}); render(); if (eng() === 'pixai' && state().pixai.mode === 'direct') setPixaiCount(k); break; }
       case 'tools-toggle': toolsOpen = !toolsOpen; render(); break;
       case 'generate': await generate(); break;
@@ -1020,6 +1031,7 @@ export function drawApp(ctx) {
     let most = null;
     if (naiFeatures(shown?.params?.model || state().params.model).maxEnhance) { try { most = maxEnhanceSize(picture.width, picture.height); } catch { /* too long and thin: only the plain sizes */ } }
     const sizes = [...plain, ...(most ? [['max', most.width, most.height]] : [])];
+    if (!sizes.length) { ctx.notify('这张图已经超过增强能处理的大小，无法再放大（普通增强最多约 2048×1536）', {error: true}); return; }
     let size = plain[0] || sizes[0], magnitude = 3, strength = MAGNITUDES[2][0], noise = MAGNITUDES[2][1], apart = false;
     const d = ctx.dialog('增强', '');
     const draw = () => {

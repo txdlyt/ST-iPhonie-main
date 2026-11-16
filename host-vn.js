@@ -149,16 +149,25 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
     const tavern = avatars();
     // Avatars picked in the phone (an album photo; 只显示文字: none) come before the tavern's.
     const mine = {}, made = [];
+    let alive = true, ownStage;
     try {
       for (const [key, a] of Object.entries(backend.getState?.().chat?.avatars || {})) {
         if (a?.kind === 'text') mine[key] = '';
-        else if (a?.kind === 'photo' && a.photoId) backend.library?.getPhoto?.(a.photoId).then(p => { if (p?.blob && !stage?.closed) { const u = URL.createObjectURL(p.blob); made.push(u); mine[key] = u; } }).catch(() => {});
+        else if (a?.kind === 'photo' && a.photoId) backend.library?.getPhoto?.(a.photoId).then(p => { if (p?.blob && alive && stage === ownStage && !ownStage?.closed) { const u = URL.createObjectURL(p.blob); made.push(u); mine[key] = u; } }).catch(() => {});
       }
     } catch {}
-    stage = openVnStage({
+    stage = ownStage = openVnStage({
       doc, title: title(), subtitle: start > 0 ? `从第 ${start} 楼开始` : '从头开始', backdrop: backdrop(start), scene: chatBackground(),
       look: vn,
-      source: {next: () => { while (cursor < chat().length) { const id = cursor++, steps = stepsOf(id); if (steps?.length) return {id, steps}; } return null; }},
+      source: {next: () => {
+        while (cursor < chat().length) {
+          const id = cursor, ctx = context(), message = chat()[id];
+          if (id === chat().length - 1 && !message?.is_user && !message?.is_system && (ctx?.streamingProcessor && !ctx.streamingProcessor.isFinished || ctx?.is_generating === true || ctx?.isGenerating === true)) return null;
+          cursor++;
+          const steps = stepsOf(id); if (steps?.length) return {id, steps};
+        }
+        return null;
+      }},
       voice: {play: s => play(s.id, s.line), narrate: s => narrate(s.text), stop, on: voiceOn, enable: () => backend.updateGeneral({voiceEnabled: true}), mouth},
       models: {
         has: name => !!currentModel(vn().cast?.[castKey(name)]),
@@ -181,7 +190,8 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
       send,
       save: patch => { try { backend.saveVn(patch); } catch (error) { notice(error.message); } },
       onClose: id => {
-        stage = null;
+        alive = false;
+        if (stage === ownStage) stage = null;
         for (const u of made) URL.revokeObjectURL(u);
         // Back in the chat where the story was left.
         if (id != null) doc.querySelector(`#chat .mes[mesid="${id}"]`)?.scrollIntoView?.({block: 'center'});
@@ -257,7 +267,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
     name = String(name || '').trim();
     if (!name) throw Error('没有角色名');
     if (blob) blob = await ownFile(blob);
-    const s = settings(), store = castKey(name), entry = s.vn.cast?.[store] || {sprite: '', looks: {}, actions: [], outfits: []};
+    let s = settings(); const store = castKey(name); let entry = s.vn.cast?.[store] || {sprite: '', looks: {}, actions: [], outfits: []};
     let models = [...(entry.models || [])], useModel = entry.useModel || '', target = id || useModel, gone = null;
     if (blob) {
       if (models.length >= MODEL_LIMIT) throw Error(`一个角色最多存 ${MODEL_LIMIT} 个模型，先删掉一个不用的`);
@@ -268,6 +278,9 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
       if (!response.ok) throw Error(response.status === 413 ? '模型文件太大，酒馆（或它前面的服务器）不让上传这么大的文件' : '模型没能存进酒馆（' + response.status + '）');
       const made = {id: 'm-' + key, kind: info.kind, version: info.version, path: 'user/files/' + file, file: String(blob.name || (info.kind === 'vrm' ? 'model.vrm' : 'model.zip')), size: blob.size, title: info.title, frame: 'half', zoom: 1, lift: 0, map: {}, at: Date.now()};
       if (!normalizeModel(made)) throw Error('模型设置无效');
+      s = settings(); entry = s.vn.cast?.[store] || {sprite: '', looks: {}, actions: [], outfits: []};
+      models = [...(entry.models || [])];
+      if (models.length >= MODEL_LIMIT) throw Error(`一个角色最多存 ${MODEL_LIMIT} 个模型，先删掉一个不用的`);
       models.push(made); useModel = target = made.id;
     } else if (remove) {
       gone = models.find(m => m.id === target) || null;
@@ -322,7 +335,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
    * else the one with this id is renamed / given words, or removed (its file deleted). Resolves to the list.
    */
   async function setMoveFile(blob, {id = '', label, words, remove = false} = {}) {
-    const s = settings(), list = [...(s.vn.moves || [])];
+    let list = [...(settings().vn.moves || [])];
     let gone = null;
     if (blob) {
       blob = await ownFile(blob);
@@ -332,6 +345,8 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
       const response = await fetch('/api/files/upload', {method: 'POST', headers: context().getRequestHeaders(), body: JSON.stringify({name: file, data: await backend.base64(blob)})});
       if (!response.ok) throw Error('动作文件没能存进酒馆（' + response.status + '）');
       const base = String(blob.name || '').replace(/\.vrma$/i, '').trim();
+      list = [...(settings().vn.moves || [])];
+      if (list.length >= MOVE_FILE_LIMIT) throw Error(`动作文件最多存 ${MOVE_FILE_LIMIT} 个，先删掉不用的`);
       list.push({id: 'v-' + key, label: String(label || base || '动作').slice(0, 20), words: wordList(words ?? base), path: 'user/files/' + file, file: String(blob.name || file), size: blob.size, seconds: info.seconds, at: Date.now()});
     } else {
       const at = list.findIndex(m => m.id === id);
@@ -362,7 +377,7 @@ export function createVnHost({context, settings, backend, linesOf, voiced, play,
     /** A reply was drawn: the stage goes on with it. */
     rendered() { clearTimeout(endTimer); stage?.more(); },
     /** The tavern stopped writing: if nothing new came, the box comes back. */
-    ended() { clearTimeout(endTimer); endTimer = setTimeout(() => stage?.failed(), 800); },
+    ended() { clearTimeout(endTimer); stage?.more(); endTimer = setTimeout(() => { stage?.more(); stage?.failed(); }, 800); },
     close() { clearTimeout(endTimer); stage?.close(); stage = null; },
     dispose() { this.close(); },
     state: () => stage?.state() || null,

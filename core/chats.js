@@ -29,7 +29,7 @@
 // post (0.9.36, private chats): letters on their way to the user — [{id, from, text, sentAt, arriveAt}], put in the chat
 // as a letter when they arrive.
 import {connectionLost, lostError, breath} from './idb.js';
-import {cleanBoard, BOARDS} from './board.js';
+import {cleanBoard, BOARDS, BOARD_TYPES} from './board.js';
 
 export const CHAT_STORE_LIMITS = Object.freeze({messages: 1000, text: 4000, members: 20, fileText: 30000, versions: 10, held: 50});
 export const MUTE_DURATIONS = Object.freeze({'600000': '10 分钟', '3600000': '1 小时', '43200000': '12 小时', '86400000': '1 天', '0': '解除'});
@@ -67,7 +67,7 @@ export const GAME_LIMITS = Object.freeze({options: 6, option: 30, question: 80, 
 export const CHAIN_MODES = Object.freeze({idiom: '成语接龙', story: '故事接龙'});
 export function cleanGame(g) {
   const type = String(g?.type || '');
-  if (BOARDS[type]) return cleanBoard(g, fail);
+  if (BOARD_TYPES.includes(type)) return cleanBoard(g, fail);
   if (type === 'vote') {
     const options = (Array.isArray(g.options) ? g.options : []).map(o => clip(o, GAME_LIMITS.option).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, GAME_LIMITS.options);
     const question = clip(g.question, GAME_LIMITS.question).replace(/\s+/g, ' ').trim();
@@ -94,7 +94,7 @@ export function cleanGame(g) {
 export function gameTitle(g) {
   if (g.type === 'vote') return `投票：${g.question}`;
   if (g.type === 'truth') return `真心话大冒险：转到了${g.target === 'me' ? '你' : g.target}`;
-  if (BOARDS[g.type]) return `${BOARDS[g.type].name}：${g.winner === 'draw' ? '平局' : g.winner === 'me' ? '你赢了' : g.winner ? `${g.winner}赢了` : g.turn === 'me' ? '轮到你' : `轮到${g.them}`}`;
+  if (BOARD_TYPES.includes(g.type)) return `${BOARDS[g.type].name}：${g.winner === 'draw' ? '平局' : g.winner === 'me' ? '你赢了' : g.winner ? `${g.winner}赢了` : g.turn === 'me' ? '轮到你' : `轮到${g.them}`}`;
   return `${CHAIN_MODES[g.mode]}：${g.entries[0]?.text || ''}`;
 }
 /** 合并转发 (0.9.33): at most this many messages in one record, each this long. */
@@ -198,7 +198,7 @@ export function forwardLine(m) {
     case 'dice': return `[骰子] ${m.text} 点`;
     case 'call': return '[语音通话]';
     case 'forward': return `[聊天记录] ${m.title || ''}`;
-    case 'game': return `[${BOARDS[m.game?.type] ? '小游戏' : '群游戏'}] ${m.text || ''}`;
+    case 'game': return `[${BOARD_TYPES.includes(m.game?.type) ? '小游戏' : '群游戏'}] ${m.text || ''}`;
     case 'post': return `[帖子] ${m.post?.title || String(m.post?.text || '').slice(0, 30)}${m.post?.note ? ' ' + m.post.note : ''}`;
     case 'outfit': return `[穿搭] ${m.outfit?.name || ''}${m.outfit?.note ? ' ' + m.outfit.note : ''}`;
     case 'book': return `[绘本] ${m.book?.title || ''}`;
@@ -406,7 +406,7 @@ export class ChatStore {
     return structuredClone({pinned: false, muted: false, ...rest, ...(blocked ? {blocked: {at: blocked.at, requests: blocked.requests, count: blocked.held.length, ...refusedOf(blocked.refused)}} : {}), count: messages.length, last: messages.filter(m => m.kind !== 'system').at(-1) || null, streak: this.#streak(messages)});
   }
   #streak(messages) {
-    const day = at => { const d = new Date(at); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+    const day = at => { const d = new Date(at); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()); };
     const mine = new Set(), theirs = new Set();
     for (const m of messages) if (!['system', 'notice', 'recall'].includes(m.kind)) (m.from === 'me' ? mine : theirs).add(day(m.at));
     const both = [...mine].filter(d => theirs.has(d)).sort((a, b) => b - a);
@@ -519,6 +519,17 @@ export class ChatStore {
       if (name !== undefined || members !== undefined) row.updatedAt = this.#now();
     });
   }
+  /** Keep a generated letter and its answered marker in the same transaction; a full mailbox leaves both alone. */
+  async queueLetterReply(id, messageId, letter) {
+    return this.#change(id, row => {
+      const original = row.messages.find(m => m.id === messageId && m.from === 'me' && m.kind === 'letter');
+      if (!original || original.letter.answered || (row.post || []).length >= LETTER_LIMITS.post) return;
+      const post = cleanPost([...(row.post || []), letter]);
+      if (!post.some(l => l.id === letter.id)) throw fail('回信没有保存，请稍后重试');
+      row.post = post; original.letter.answered = true;
+      original.updatedAt = row.updatedAt = this.#now();
+    });
+  }
   /** Adds messages. Replies count as unread unless `read` is set (the chat is open on screen). */
   async append(id, messages, {read = false, receipt = ''} = {}) {
     return this.#change(id, row => {
@@ -528,8 +539,9 @@ export class ChatStore {
       const added = messages.filter(m => m.kind === 'system' || canGroupSpeak(row, m.from, now)).map((m, i) => cleanMessage(m, this.#id(), now + i));
       row.messages.push(...added);
       // Anything coming after the last round ends its versions (it is no longer the last).
-      if (added.length) delete row.alts;
+      if (added.some(m => m.kind !== 'system')) delete row.alts;
       if (!read) row.unread += added.filter(m => m.from !== 'me' && !['system', 'notice', 'recall'].includes(m.kind)).length;
+      else row.readMessages = [...new Set([...(row.readMessages || []), ...added.map(m => m.id)])].slice(-CHAT_STORE_LIMITS.messages);
       row.updatedAt = now;
     });
   }
@@ -549,6 +561,7 @@ export class ChatStore {
       row.messages = [...row.messages.filter(m => !old.has(m.id)), ...added];
       if (versions.length > 1) row.alts = structuredClone({after: last.after, versions, shown: versions.length - 1}); else delete row.alts;
       if (!read) row.unread += added.filter(m => m.from !== 'me' && !['system', 'notice', 'recall'].includes(m.kind)).length;
+      else row.readMessages = [...new Set([...(row.readMessages || []), ...added.map(m => m.id)])].slice(-CHAT_STORE_LIMITS.messages);
       row.updatedAt = now;
     });
   }
@@ -686,7 +699,7 @@ export class ChatStore {
     });
   }
   async markRead(id) {
-    return this.#change(id, row => { row.unread = 0; });
+    return this.#change(id, row => { row.unread = 0; row.readMessages = row.messages.map(m => m.id); });
   }
   async remove(id) {
     return this.#tx('readwrite', (store, done, abort, after) => { store.delete([this.#scope, String(id)]); after(list => list.delete(String(id))); done(true); });
@@ -700,21 +713,27 @@ export class ChatStore {
     return rows.map(row => this.#public(row));
   }
   /** Puts backup threads back with their ids, checked like new ones, in one transaction. replace: other threads go. */
-  async importThreads(threads, {replace = false, merge} = {}) {
+  checkImport(threads) { this.#prepareThreads(threads); }
+  #prepareThreads(threads) {
     if (!Array.isArray(threads)) throw fail('备份里的聊天记录无效');
-    const now = this.#now(), prepare = values => values.map(t => {
+    const now = this.#now();
+    return threads.map(t => {
       if (!t || typeof t !== 'object' || !t.id) throw fail('备份里的聊天记录无效');
       const members = [...new Set((Array.isArray(t.members) ? t.members : []).map(m => clip(m, 40).trim()).filter(Boolean))].slice(0, CHAT_STORE_LIMITS.members);
       if (!members.length) throw fail('备份里有一段聊天没有聊天对象');
       const messages = (Array.isArray(t.messages) ? t.messages : []).slice(-CHAT_STORE_LIMITS.messages).map(m => cleanMessage(m, clip(m?.id || this.#id(), 512), Number.isFinite(m?.at) ? m.at : now));
       const row = {scope: this.#scope, id: clip(t.id, 512), type: t.type === 'group' ? 'group' : 'dm', name: clip(t.name, 40).trim() || members.join('、').slice(0, 40), members: t.type === 'group' ? members : [members[0]], pinned: t.pinned === true, muted: t.muted === true, ...(t.story === true ? {story: true} : {}), ...(Number.isFinite(t.openedAt) ? {openedAt: t.openedAt} : {}), ...(typeof t.label === 'string' && t.label.trim() ? {label: clip(t.label, 40).trim()} : {}), ...(t.type === 'group' && t.windowOf ? {windowOf: clip(t.windowOf, 512)} : {}), ...(t.type === 'group' ? {silenced: cleanSilenced(t.silenced, members)} : {}), ...(t.type === 'group' && t.watch === true ? {watch: true} : {}), ...(t.type === 'group' && cleanNotice(t.notice) ? {notice: cleanNotice(t.notice)} : {}), ...(t.type === 'group' && Object.keys(cleanNicks(t.nicks)).length ? {nicks: cleanNicks(t.nicks)} : {}), ...(t.type !== 'group' && cleanPost(t.post).length ? {post: cleanPost(t.post)} : {}),
         unread: Math.max(0, Math.min(CHAT_STORE_LIMITS.messages, Math.round(Number(t.unread)) || 0)), createdAt: Number.isFinite(t.createdAt) ? t.createdAt : now, updatedAt: Number.isFinite(t.updatedAt) ? t.updatedAt : now, messages, ...(t.space ? {space: clip(t.space, 300)} : {}), ...(t.save ? {save: clip(t.save, 400)} : {}), ...(t.type !== 'group' && cleanFriend(t.friend) ? {friend: cleanFriend(t.friend)} : {}), ...(t.type !== 'group' && cleanBlocked(t.blocked) ? {blocked: cleanBlocked(t.blocked)} : {}), ...(t.type !== 'group' && Number.isFinite(t.befriended) && t.befriended > 0 ? {befriended: t.befriended} : {})};
+      if (Array.isArray(t.readMessages)) row.readMessages = messages.filter(m => t.readMessages.includes(m.id)).map(m => m.id);
       if (Array.isArray(t.phoneReceipts)) row.phoneReceipts = [...new Set(t.phoneReceipts.filter(k => typeof k === 'string' && k).map(k => clip(k, 600)))].slice(-500);
       // 重新回复的版本 come along with a backup or a sync, while they still belong to the chat's last round.
       const alts = cleanAlts(t.alts, () => this.#id());
       if (alts && lastRound(messages).after === alts.after) row.alts = alts;
       return row;
     });
+  }
+  async importThreads(threads, {replace = false, merge} = {}) {
+    const prepare = values => this.#prepareThreads(values);
     const rows = prepare(threads);
     return this.#tx('readwrite', (store, done, abort) => {
       const write = incoming => { for (const row of incoming) store.put(row); done(incoming.length); };

@@ -3408,3 +3408,5 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 /* Inside a 字段 sheet the generic text-input look was stretching these switches into big squares. */
 .field input.switch.tpl-switch{width:40px;min-width:40px;max-width:40px;height:24px;min-height:24px;padding:0;border:0;border-radius:999px;background:var(--line);line-height:1;font-size:0}
 .field input.switch.tpl-switch:checked{background:var(--accent-btn)}
+/* 从聊天读取: the answer, shown before anything is written. */
+.code.readonly{white-space:pre-wrap;word-break:break-word;padding:10px 12px;border-radius:14px;background:var(--card);font:12.5px/1.5 "JetBrains Mono",ui-monospace,monospace}

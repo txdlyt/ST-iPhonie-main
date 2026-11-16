@@ -306,12 +306,13 @@ const DEFAULT_PRESET = {id: 'default', name: '默认出图规则', rev: PRESET_R
  * Vibe Transfer in the drawing app: on or off for every picture (whatever the 画风), what is in use (a group, or one
  * vibe), and the groups: [{id, name, items: [{vibe, strength}]}]. The vibes themselves live in the local library.
  */
+export const VIBE_GROUP_LIMIT = 50;
 export const defaultVibe = () => ({enabled: false, use: {kind: '', id: ''}, groups: []});
 export function normalizeVibeSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const groups = (Array.isArray(v.groups) ? v.groups : []).slice(0, 200).map(g => ({
     id: /^[\w-]{1,64}$/.test(String(g?.id || '')) ? String(g.id) : crypto.randomUUID(), name: text(g?.name, 40).trim() || 'Vibe 组',
-    items: (Array.isArray(g?.items) ? g.items : []).filter(i => /^[0-9a-f]{64}$/.test(String(i?.vibe || ''))).filter((i, n, all) => all.findIndex(x => x.vibe === i.vibe) === n).slice(0, 50).map(i => ({vibe: i.vibe, strength: vibeStrength(i.strength), ...(i.enabled === false ? {enabled: false} : {})}))
+    items: (Array.isArray(g?.items) ? g.items : []).filter(i => /^[0-9a-f]{64}$/.test(String(i?.vibe || ''))).filter((i, n, all) => all.findIndex(x => x.vibe === i.vibe) === n).slice(0, VIBE_GROUP_LIMIT).map(i => ({vibe: i.vibe, strength: vibeStrength(i.strength), ...(i.enabled === false ? {enabled: false} : {})}))
   }));
   const kind = ['group', 'vibe'].includes(v.use?.kind) ? v.use.kind : '', id = typeof v.use?.id === 'string' ? v.use.id : '';
   const use = kind === 'group' && groups.some(g => g.id === id) || kind === 'vibe' && /^[0-9a-f]{64}$/.test(id) ? {kind, id} : {kind: '', id: ''};
@@ -815,10 +816,13 @@ export function insertPlanned(message, reply, {outfits = false, ...scope} = {}) 
     const spec = parseBlock(body);
     if (!spec || !spec.tags && !spec.cast.length && !spec.nl) continue;
     const index = Math.min(paras.length, Math.max(1, Number(at?.[1]) || paras.length)) - 1;
-    blocks.push({end: paras[index]?.end ?? source.length, text: `<img>\n${body}\n</img>`});
+    blocks.push({index: blocks.length, end: paras[index]?.end ?? source.length, text: `<img>\n${body}\n</img>`});
   }
   let out = source;
-  for (const b of [...blocks].sort((a, b) => b.end - a.end)) out = out.slice(0, b.end) + '\n\n' + b.text + '\n' + out.slice(b.end);
+  const places = new Map();
+  for (const b of blocks) { if (!places.has(b.end)) places.set(b.end, []); places.get(b.end).push(b.text); }
+  for (const [end, pictures] of [...places].sort((a, b) => b[0] - a[0]))
+    out = out.slice(0, end) + '\n\n' + pictures.join('\n\n') + '\n' + out.slice(end);
   return {text: out, count: blocks.length};
 }
 /** The reply without picture blocks, for prompts ('strip' setting) and for planning again. */

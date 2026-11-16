@@ -1,3 +1,4 @@
+import {KEY_ENGINES} from '../core/keys.js';
 import {storyLinkSheet as openStoryPhone, storyLinkNote} from './story-phone.js';
 import {createView, esc, btn, field, input, select, textArea, toggle, heading, size, languageField, typedLanguages, groupTitle, help, copyText, bindCombos} from './common.js';
 import {buildReport} from '../core/diagnostics.js';
@@ -186,7 +187,7 @@ export function settingsApp(ctx) {
   }
   /** How many 立绘 and 模型 files the 视觉小说 uses (they live in the tavern; the backup carries them). */
   const vnFileCount = s => { const files = new Set(), json = JSON.stringify(s.vn?.cast || {}); for (const m of json.matchAll(/"(\/?user\/(?:images|files)\/[^"\\]+)"/g)) files.add(m[1]); const models = [...files].filter(f => /user\/files\//.test(f)).length; return `${files.size - models} 张立绘${models ? ` · ${models} 个模型` : ''}`; };
-  const savedKeys = () => ['fish', 'mini', 'eleven', 'mimo', 'doubao', 'nai', 'llm'].filter(engine => { try { return api.keyStatus(engine); } catch { return false; } }).length;
+  const savedKeys = () => KEY_ENGINES.filter(engine => { try { return api.keyStatus(engine); } catch { return false; } }).length;
   const passwordOk = () => !backup.parts.has('keys') || backup.password.length >= 6 && backup.password === backup.again;
   const canBackup = () => backup.parts.size > 0 && passwordOk();
   function keyPasswordFields() {
@@ -254,7 +255,7 @@ export function settingsApp(ctx) {
    * once more on the button itself: a confirm would close this sheet.
    */
   async function packOld() {
-    let plan = await api.packablePhotos(30), part = 0, sure = false;
+    let plan = await api.packablePhotos(30), part = 0, sure = false, packing = false;
     const sync = api.syncStatus?.()?.enabled;
     const d = ctx.dialog('压缩相册里的旧图', `<p class="help-copy" data-keep-hint>压缩后原图就没有了，想留原图请先打包下载。</p>
       <p class="help-copy">画出来的图多是 PNG，一张一两 MB，大的更多。压成同样大小的 WebP，看起来基本一样，一般只剩十分之一。图里带的 NovelAI 参数会去掉（点开照片看到的「参数」还在）。设成壁纸、图标、头像和聊天背景的图，还有会动的图，不会压缩。${sync ? '开着「保存到酒馆」，酒馆里那份也会换成压缩后的。' : ''}</p>
@@ -271,7 +272,7 @@ export function settingsApp(ctx) {
     const show = (note = '') => {
       const n = parts().length;
       $('[data-pack-plan]').textContent = note || (plan.count ? `${plan.count} 张，共 ${size(plan.bytes)}${n > 1 ? `；原图分 ${n} 包下载，每包不到 150 MB` : ''}` : '没有要压缩的图');
-      $('[data-action=pack-download]').disabled = $('[data-action=pack-go]').disabled = !plan.count;
+      $('[data-action=pack-download]').disabled = $('[data-action=pack-go]').disabled = packing || !plan.count;
       $('[data-action=pack-download]').innerHTML = icon('download') + (n && part >= n ? '原图都下载好了' : n > 1 ? `先打包下载原图（第 ${part + 1}/${n} 包）` : '先打包下载原图');
       $('[data-action=pack-go]').textContent = sure ? '确定压缩？原图会没有' : '压缩';
     };
@@ -283,7 +284,7 @@ export function settingsApp(ctx) {
     });
     d.body.addEventListener('click', async e => {
       const b = e.target.closest('[data-action]');
-      if (!b || b.disabled) return;
+      if (!b || b.disabled || packing) return;
       if (b.dataset.action === 'pack-download') {
         const all = parts(), list = all[part];
         if (!list) return;
@@ -300,6 +301,7 @@ export function settingsApp(ctx) {
       }
       if (b.dataset.action === 'pack-go') {
         if (!sure) { sure = true; show(); return; }
+        packing = true;
         const ids = plan.photos.map(p => p.id), total = {count: 0, skipped: 0, before: 0, after: 0};
         d.body.querySelectorAll('button, select').forEach(x => { x.disabled = true; });
         try {
@@ -553,11 +555,13 @@ export function settingsApp(ctx) {
       case 'photo-off': { const p = await api.getPhone(); appearance.wallpaper = {kind: 'builtin', key: p.skin || 'sky'}; await api.savePhone({wallpaper: appearance.wallpaper}); await render(); ctx.notify('已换回主题壁纸'); break; }
       case 'photo-delete': {
         if (!await ctx.confirm('删除这张照片？', '照片会从相册删除，壁纸换回主题壁纸。')) break;
-        await api.deletePhoto(appearance.wallpaper.photoId);
+        const target = appearance, removedPhoto = target.wallpaper.photoId;
+        await api.deletePhoto(removedPhoto);
+        if (appearance !== target) break;
         const p = await api.getPhone();
         if (p.wallpaper.kind !== 'builtin' || p.wallpaper.key !== (p.skin || 'sky')) await api.savePhone({wallpaper: {kind: 'builtin', key: p.skin || 'sky'}});
         const now = await api.getPhone();
-        appearance = appearanceOf(now);
+        if (appearance) { appearance.wallpaper = appearanceOf(now).wallpaper; for (const [app, icon] of Object.entries(appearance.icons)) if (icon?.kind === 'photo' && icon.photoId === removedPhoto) delete appearance.icons[app]; }
         await render();
         ctx.notify('照片已删除');
         break;

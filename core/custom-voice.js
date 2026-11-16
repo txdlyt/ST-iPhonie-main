@@ -165,12 +165,12 @@ export function referenceFile(audio) { const bytes = bytesOf(audio); return new 
  * line is being sent again).
  */
 export function customInit(request, key = '', {audio = '', uploaded = '', id = crypto.randomUUID()} = {}) {
-  const headers = {}, stamp = text => text.replace(ID_SLOT, id);
+  const headers = {}, stamp = text => text.replace(ID_SLOT, id).replace(KEY_SLOT, key);
   for (const line of request.headers.split('\n')) {
     const m = line.match(/^\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*:\s*(.*)$/);
     if (m) headers[m[1]] = stamp(m[2].replace(KEY_SLOT, key)).trim();
   }
-  if (key && !/\{\{\s*key\s*\}\}/.test(request.headers) && !Object.keys(headers).some(h => h.toLowerCase() === 'authorization')) headers.Authorization = 'Bearer ' + key;
+  if (key && !/\{\{\s*key\s*\}\}/.test([request.headers, request.url, JSON.stringify(request.body)].join('\n')) && !Object.keys(headers).some(h => h.toLowerCase() === 'authorization')) headers.Authorization = 'Bearer ' + key;
   const init = {method: request.method, headers};
   if (request.method === 'POST' && request.body !== undefined) {
     const named = Object.keys(headers).find(h => h.toLowerCase() === 'content-type');
@@ -200,6 +200,7 @@ export function audioType(bytes, said = '') {
   if (b.length >= 4 && ascii(0, 4) === 'fLaC') return 'audio/flac';
   if (b.length >= 3 && (ascii(0, 3) === 'ID3' || b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
   if (b.length >= 8 && ascii(4, 4) === 'ftyp') return 'audio/mp4';
+  if (audioKind(b) === 'webm') return 'audio/webm';
   return /^audio\//i.test(said) ? said.split(';')[0] : 'audio/wav';
 }
 const fromBase64 = bytesOf;

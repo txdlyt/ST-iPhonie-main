@@ -14,7 +14,7 @@ import {normalizeMemory} from './memory.js';
 import {NARRATOR} from './narration.js';
 import {storyText, NARRATION_SKIP} from './story-scope.js';
 import {normalizeBubbleSets, normalizeBubbleOf} from './bubble-css.js';
-import {BOARDS, boardText, cellName} from './board.js';
+import {BOARDS, BOARD_TYPES, boardText, cellName} from './board.js';
 import {ownerName} from './wardrobe.js';
 import {normalizePets} from './pets.js';
 
@@ -575,7 +575,7 @@ function gameLine(m, user) {
   if (g.type === 'vote') return `${who}：[发起投票] ${g.question}（选项：${g.options.join('、')}）${g.votes.length ? `已投：${g.votes.map(v => `${nameOf(v.from, user)}投了「${g.options[v.option]}」${v.why ? '（' + v.why + '）' : ''}`).join('，')}` : ''}${g.open ? '' : '（投票已结束）'}`;
   if (g.type === 'truth') return `（${who}转了真心话大冒险的转盘，转到了${nameOf(g.target, user)}${g.choice ? `，${nameOf(g.target, user)}选了${g.choice}` : ''}）`;
   if (g.type === 'chain') return `${who}：[发起${CHAIN_MODES[g.mode]}] 接龙记录：${g.entries.map(e => `${nameOf(e.from, user)}：${e.text}`).join(' → ')}${g.loser ? `（${nameOf(g.loser, user)}认输了）` : g.open ? '' : '（已结束）'}`;
-  if (BOARDS[g.type]) return `（${who}开了一盘${BOARDS[g.type].name}，${nameOf(g.first, user)}先下${g.winner ? '：' + boardResult(g, user) : '，还没下完'}）`;
+  if (BOARD_TYPES.includes(g.type)) return `（${who}开了一盘${BOARDS[g.type].name}，${nameOf(g.first, user)}先下${g.winner ? '：' + boardResult(g, user) : '，还没下完'}）`;
   return `${who}：[群游戏]`;
 }
 /**
@@ -590,7 +590,7 @@ export function gameNotes(prompts, messages, user = '我') {
   if (truth && messages.indexOf(truth) >= messages.length - 8) { const g = truth.game; out.push(promptText(prompts, 'games', 'truth', {'用户': user, '谁': nameOf(g.target, user), '是用户': g.target === 'me', '已选': g.choice})); }
   if (chain) { const g = chain.game; out.push(promptText(prompts, 'games', 'chain', {'用户': user, '玩法': CHAIN_MODES[g.mode], '最后一句': `${nameOf(g.entries.at(-1).from, user)}：${g.entries.at(-1).text}`, '成语': g.mode === 'idiom'})); }
   // 小游戏对战 (0.9.35): the board going on (or just over: they may say something about it), as it stands.
-  const board = games.findLast(m => BOARDS[m.game.type]);
+  const board = games.findLast(m => BOARD_TYPES.includes(m.game.type));
   if (board && (board.game.open || messages.indexOf(board) >= messages.length - 4)) {
     const g = board.game, last = g.moves.at(-1), size = BOARDS[g.type].size;
     out.push(promptText(prompts, 'games', 'board', {'用户': user, '对象': g.them, '棋': BOARDS[g.type].name, '五子棋': g.type === 'gomoku',
@@ -691,7 +691,8 @@ function outfitNote(prompts, history, partner, user) {
   return promptText(prompts, 'wardrobe', 'chat', {'用户': user, '对象': partner, '名字': m.outfit.name});
 }
 
-const fill = (template, values) => Object.entries(values).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), template);
+import {fillSlots} from './prompt-rules.js';
+const fill = fillSlots;
 
 /** The words of the files still in the chat window: the latest three, at most 30000 characters together. */
 export const CHAT_FILES = Object.freeze({count: 3, chars: 30000});
@@ -763,7 +764,7 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
     !watch && promptOn(prompts, 'memo') ? promptText(prompts, 'memo', 'rule', {'用户': user}) : '',
     !watch && posts.length && promptOn(prompts, 'forum-share') ? promptText(prompts, 'forum-share', 'rule', {'用户': user, '帖子': posts.slice(0, 8).map(p => `「${p.title}」${p.author ? `（${p.author}）` : ''}`).join('、')}) : '',
     // 0.9.36: a group's 群公告 and 群昵称, and how to change them or @ someone.
-    group ? promptText(prompts, 'group-extra', 'rule', {'用户': user, '群公告': thread.notice?.text || '', '群昵称': Object.entries(thread.nicks || {}).map(([who, nick]) => `${nameOf(who, user)}在群里叫「${nick}」`).join('，')}) : ''].filter(Boolean);
+    group ? promptText(prompts, 'group-extra', 'rule', {'用户': user, '旁观': watch, '群公告': thread.notice?.text || '', '群昵称': Object.entries(thread.nicks || {}).map(([who, nick]) => `${nameOf(who, user)}在群里叫「${nick}」`).join('，')}) : ''].filter(Boolean);
   // pictures: [{id, url}] — photos sent along for a model that sees; the record numbers them [图片1], [图片2]… in order.
   const seen = new Map(pictures.map((p, i) => [p.id, i + 1]));
   const history = thread.messages.filter(m => m.kind !== 'system').slice(-preset.history).map(m => seen.has(m.id) ? {...m, seen: seen.get(m.id)} : m);

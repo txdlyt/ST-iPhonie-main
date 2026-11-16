@@ -178,7 +178,8 @@ export function sentences(value, size = 160) {
     let cut = at(['。', '！', '？', '…', '；', '!', '?', ';']);
     if (cut < size / 3) cut = Math.max(cut, at(['，', '、', ',', ' ']));
     let end = cut >= size / 3 ? cut + 1 : size;
-    while (end < rest.length && /[」』”’）)】]/.test(rest[end])) end++;
+    while (end < rest.length && end < size && /[」』”’）)】]/.test(rest[end])) end++;
+    if (/[\uD800-\uDBFF]/.test(rest[end - 1]) && /[\uDC00-\uDFFF]/.test(rest[end] || '')) end--;
     out.push(rest.slice(0, end).trim());
     rest = rest.slice(end).trim();
   }
@@ -197,6 +198,7 @@ export function storySpreads(messages, {size = 180} = {}) {
   let lines = [], picture = null, count = 0, sound = {ambience: '', sfx: ''};
   const flush = () => {
     if (!lines.length) return;
+    if (spreads.length >= BOOK_LIMIT.spreads) throw Error(`原文超过绘本的 ${BOOK_LIMIT.spreads} 个跨页上限，请减少选取的回复范围`);
     spreads.push(normalizeSpread({layout: 'page', side: spreads.length % 2 ? 'left' : 'right', pictures: [{prompt: '', picture, people: true}], words: lines, sound}));
     lines = []; picture = null; count = 0; sound = {ambience: '', sfx: ''};
   };
@@ -208,12 +210,13 @@ export function storySpreads(messages, {size = 180} = {}) {
     if (s.kind !== 'say' && s.kind !== 'narrate') continue;
     const whole = storyWords(s.text);
     if (!whole) continue;
-    for (const t of s.kind === 'narrate' ? sentences(whole, size) : [whole]) {
-      if (count && count + t.length > size) flush();
+    let piece = 0;
+    for (const t of sentences(whole, Math.min(size, BOOK_LIMIT.word))) {
+      if (count && count + t.length > size || lines.length >= BOOK_LIMIT.words) flush();
       const prev = lines.at(-1);
-      if (s.kind === 'say' && s.part && prev?.from?.line === s.line && prev.from.id === m.id) prev.text += t;
-      else lines.push(s.kind === 'say' ? {role: s.role || '', text: t, emotion: s.emotion || '', ...(s.user ? {} : Number.isInteger(s.line) ? {from: {id: m.id, line: s.line}} : {})} : {role: '', text: t, emotion: ''});
-      count += t.length;
+      if (s.kind === 'say' && s.part && prev?.from?.line === s.line && prev.from.id === m.id && prev.text.length + t.length <= BOOK_LIMIT.word) prev.text += t;
+      else lines.push(s.kind === 'say' ? {role: s.role || '', text: t, emotion: s.emotion || '', ...(s.user || piece > 0 ? {} : Number.isInteger(s.line) ? {from: {id: m.id, line: s.line}} : {})} : {role: '', text: t, emotion: ''});
+      count += t.length; piece++;
     }
   }
   flush();
@@ -298,14 +301,14 @@ export function retoldSpreads(answer, {pictures = [], cast = [], staged = [], al
       const n = Number(s?.picture), url = Number.isInteger(n) && n > 0 ? pictures[n - 1] : '';
       return {prompt: url ? '' : text(s?.scene ?? s?.prompt, 600), picture: url ? {url} : null, people: s?.people !== false, who: s?.people === false ? [] : known(s?.who)};
     }).filter(s => s.prompt || s.picture);
-    let castOn = (Array.isArray(raw?.cast) ? raw.cast : []).map(c => ({name: text(c?.name, 40), emotion: text(c?.emotion, 40)})).filter(c => names.has(c.name));
+    let castOn = (Array.isArray(raw?.cast) ? raw.cast : []).map(c => ({name: resolveName(c?.name, cast, aliases), emotion: text(c?.emotion, 40)})).filter(c => c.name);
     // Standing on the paper takes a 立绘: without one, they are drawn alone in white space.
     if (layout === 'stage' && (!castOn.length || castOn.some(c => !standing.has(c.name)))) {
       layout = 'quiet';
       if (!shots.length) shots.push({prompt: castOn.map(c => [c.name, c.emotion].filter(Boolean).join(', ')).join(', '), picture: null, people: true});
       castOn = [];
     }
-    const said = (Array.isArray(raw?.words) ? raw.words : Array.isArray(raw?.read) ? raw.read : []).map(w => ({role: names.has(text(w?.role ?? w?.who, 40)) ? text(w.role ?? w.who, 40) : '', text: clean(w?.text), emotion: text(w?.emotion, 40), bubble: w?.bubble === true, at: w?.at})).filter(w => w.text);
+    const said = (Array.isArray(raw?.words) ? raw.words : Array.isArray(raw?.read) ? raw.read : []).map(w => ({role: resolveName(w?.role ?? w?.who, cast, aliases), text: clean(w?.text), emotion: text(w?.emotion, 40), bubble: w?.bubble === true, at: w?.at})).filter(w => w.text);
     if (!said.length && !shots.length && !castOn.length) continue;
     out.push({layout, side: raw?.side, space: raw?.space, tone: raw?.tone, heading: raw?.heading ?? raw?.chapter, pictures: shots, words: said, cast: castOn, fx: raw?.fx,
       sound: {ambience: raw?.ambience ?? raw?.sound?.ambience, sfx: raw?.sfx ?? raw?.sound?.sfx}});
@@ -371,20 +374,21 @@ export function castSpread(people) {
   return list.length ? normalizeSpread({layout: 'cast', side: 'left', cast: list.map(p => ({name: p.name, line: p.line || '', emotion: p.emotion || '', picture: p.picture || null}))}) : null;
 }
 /** The slots pictures go in on sheet n: a spread's pictures, the people page's people, the cover. */
-export const slotsOf = (book, n) => { const sheet = sheetOf(book, n); return sheet.kind === 'cover' ? [book.cover] : sheet.kind === 'spread' ? (sheet.spread.layout === 'cast' ? sheet.spread.cast : sheet.spread.pictures.slice(0, SPREADS[sheet.spread.layout].pictures)) : []; };
+export const slotsOf = (book, n) => { const sheet = sheetOf(book, n); return sheet.kind === 'cover' || sheet.kind === 'end' ? [book.cover] : sheet.kind === 'spread' ? (sheet.spread.layout === 'cast' ? sheet.spread.cast : sheet.spread.pictures.slice(0, SPREADS[sheet.spread.layout].pictures)) : []; };
 /**
  * The book's words for someone to read it (sent into a chat): the title, each spread's words, the last line; at most
  * `max` characters, cut at a spread.
  */
 export function bookText(book, max = 2500) {
   const parts = [`《${book.title}》${book.subtitle ? ' ' + book.subtitle : ''}`];
+  let cut = false;
   for (const s of book.spreads) {
     const line = (s.heading ? `【${s.heading}】` : '') + s.words.map(w => w.role ? `${w.role}：「${w.text}」` : w.text).join('');
     if (!line) continue;
-    if (parts.join('\n').length + line.length > max) { parts.push('（后面还有）'); break; }
+    if (parts.join('\n').length + line.length > max) { cut = true; parts.push('（后面还有）'); break; }
     parts.push(line);
   }
-  if (book.ending && !parts.at(-1).startsWith('（')) parts.push(book.ending);
+  if (book.ending && !cut) parts.push(book.ending);
   return parts.join('\n');
 }
 /** All the words of some spreads (to guess the kind of story from). */

@@ -237,7 +237,7 @@ export function rolesApp(ctx) {
         <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
           ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
-          <div class="actions role-try">${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
+          <div class="actions role-try">${api.readLook ? btn('role-from-chat', icon('chat') + '从聊天读取', 'secondary') : ''}${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
           ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}
           ${refField(r)}</div></details>
         <div class="savebar" data-engine="${r.engine}"><span class="save-state" data-save-state>草稿</span>${btn('audition', icon('play', true) + '试听', 'secondary')}${btn('save-role', '保存', 'primary')}</div>
@@ -424,6 +424,23 @@ export function rolesApp(ctx) {
       ...(api.outfitSave ? [{label: '服装写进当前服装', run: sel => apply(sel.outfit, text => { outfitDraft = text; }, '已写进「这个聊天里现在穿的」，点保存生效')}] : [])
     ]});
   });
+  // 从聊天读取: the text model reads this chat for her looks and what she wears; the person sees the answer and chooses what to keep.
+  async function lookFromChat(button) {
+    const name = String(current?.name || '').trim();
+    if (!name) { ctx.notify('先写角色名', {error: true}); return; }
+    button.disabled = true;
+    ctx.notify('正在读聊天，要等一会儿……');
+    let got;
+    try { got = await api.readLook(name); } catch (error) { ctx.notify(error.message, {error: true}); return; } finally { button.disabled = false; }
+    const d = ctx.dialog('从聊天读取', `<p class="hint">读出来的内容，先看一眼再决定写不写。</p>${field('外貌 tag', `<div class="code readonly">${esc(got.appearance || '（没读出来）')}</div>`)}${api.outfitSave ? field('这个聊天里现在穿的', `<div class="code readonly">${esc(got.outfit || '（没读出来）')}</div>`) : ''}<div class="actions">${btn('look-chat-all', '全部写入', 'primary')}${btn('look-chat-look', '只写外貌', 'secondary')}${api.outfitSave ? btn('look-chat-outfit', '只写服装', 'secondary') : ''}</div>`);
+    d.body.addEventListener('click', e => {
+      const kind = e.target.closest('[data-action]')?.dataset.action; if (!kind) return;
+      const look = kind === 'look-chat-all' || kind === 'look-chat-look', outfit = (kind === 'look-chat-all' || kind === 'look-chat-outfit') && api.outfitSave;
+      if (look && got.appearance) current.appearance = got.appearance;
+      if (outfit && got.outfit) outfitDraft = got.outfit;
+      d.close(); changed(); render(); openLook(); ctx.notify('已写进表单，点保存生效');
+    });
+  }
   // 当前服装 (this chat's): not a part of the role; it is kept in the chat when the role is saved.
   let outfitDraft = null;
   const outfitFor = name => { try { return api.outfitsList?.().find(o => o.name === String(name || '').trim())?.outfit || ''; } catch { return ''; } };
@@ -498,6 +515,7 @@ export function rolesApp(ctx) {
         break;
       }
       // 全局的外貌就是这个角色自己的外貌：清空后点保存才生效。
+      case 'role-from-chat': await lookFromChat(el); break;
       case 'role-from-image': v.root.querySelector('[data-role-image]')?.click(); break;
       case 'role-clear-look': current.appearance = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
       case 'audition': api.audition(current); break;

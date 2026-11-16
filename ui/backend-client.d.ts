@@ -815,6 +815,7 @@ export interface BackendFacade {
     arrangeStyles(tree: Array<{style: string} | {group: Partial<DrawStyleGroup>; styles: string[]}>): DrawSettings;
     /** 效果图 of a 画风, from any picture: kept as files in the tavern. */
     setStyleCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
+    pixaiCheckin(): Promise<{ok: boolean; warn: boolean; message: string}>;
     setRecordCover(id: string, blob: Blob): Promise<{thumb: string; full: string}>;
     clearRecordCover(id: string): void;
     clearStyleCover(id: string): void;
@@ -956,7 +957,7 @@ export interface BackendFacade {
     /** 绘本 (core/book.js): the shelf, newest first; one book; keep one (made or changed); throw one away (its drawn pictures stay in 相册). */
     listBooks(): Promise<Book[]>;
     getBook(id: string): Promise<Book | null>;
-    saveBook(book: Book): Promise<Book>;
+    saveBook(book: Book, options?: {fields: ('title' | 'subtitle')[]}): Promise<Book>;
     deleteBook(id: string): Promise<boolean>;
     getPhone(): Promise<PhonePreferences>;
     savePhone(patch: PhonePatch): Promise<PhonePreferences>;
@@ -1277,7 +1278,7 @@ export interface BackendAPI extends BackendFacade {
     assistantReroll(threadId: string, messageId: string, options?: {allowPaid?: boolean}): Promise<AssistantThread>;
     /** 重新绘制 a reply's picture from the same 出图块; its words stay (a new version of the reply). */
     assistantRedraw(threadId: string, messageId: string, options?: {allowPaid?: boolean}): Promise<AssistantThread>;
-    assistantReadFiles(files: File[]): Promise<AssistantAttachment[]>;
+    assistantReadFiles(files: File[], options?: {chat?: boolean}): Promise<AssistantAttachment[]>;
     assistantProgress(threadId: string): {id: string; threadId: string; rerollId: string; startedAt: number; phase: 'waiting' | 'thinking' | 'responding' | 'prompting' | 'drawing'; text: string; meta: Partial<AssistantMeta>} | null;
     assistantBusy(threadId: string): boolean;
     assistantCancel(threadId: string): void;
@@ -1303,6 +1304,7 @@ export interface BackendAPI extends BackendFacade {
     /** 当前服装: what each person wears now in the open chat (kept in the chat's own data). */
     outfitsList?(): OutfitRow[];
     outfitSave?(name: string, outfit: string): OutfitRow[];
+    readLook?(name: string): Promise<{appearance: string; outfit: string}>;
     outfitDelete?(name: string): OutfitRow[];
     outfitsClear?(): OutfitRow[];
     /** Deletes every picture of the open chat from the tavern; their tags show "点击生成" again. */
