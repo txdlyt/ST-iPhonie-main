@@ -50,6 +50,7 @@ import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialog
 import { normalizeMarks, withMarks } from './voice-fx.js';
 import { TTSParameters, FISH_API, tauriTavern } from './parameters.js';
 import { KeyStore, keyTail, validateKey, parseTextKeys, joinTextKeys } from './keys.js';
+const hintTail = key => key ? keyTail(key) || '••••' : '';
 import { Providers, buildRequest } from './providers.js';
 import { AudioCache } from './cache.js';
 import { installDrawSettings, sweepRoleRefs } from './backend-draw.js';
@@ -600,9 +601,23 @@ export class TTSBackend {
         if (typeof route.negative === 'string') { route.negative = route.negative.slice(0, 1000); if (!route.negative.trim()) delete route.negative; } else delete route.negative;
         // 不分组, picked: it stays out of the group of its card too.
         if (route.group) delete route.loose; else { delete route.group; if (value.group === '') route.loose = true; }
+        // 属于: the card a role is of, picked in its editor ('' = 所有卡). Picking a card puts it in that card's group; 所有卡 keeps it
+        // out of every card's claim (global), so a story that names it does not make it some card's.
+        if (typeof value.ownCard === 'string') {
+            const pick = value.ownCard, prev = index >= 0 ? next.routes[index].cards || [] : [];
+            if (pick) {
+                route.cards = [pick, ...prev.filter(k => k.startsWith(pick + '#'))];
+                delete route.global;
+                if (!route.loose) this.#forceGroup(next, route, pick);
+            } else {
+                route.cards = []; route.global = true;
+                if (next.roleGroups?.find(g => g.id === route.group)?.card) delete route.group;
+            }
+        } else if (value.global === true) route.global = true;
+        delete route.ownCard;
         // A new role belongs to the card it was made in (分区), and goes in that card's group unless it was given one
         // (no group at all, when that was picked); one made with no card open is everyone's.
-        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true) {
+        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true && typeof value.ownCard !== 'string') {
             route.cards = [this.cardKey(), ...(this.saveKey() ? [this.saveKey()] : [])];
             if (value.group === undefined) this.#joinCard(next, route, this.cardKey(), this.space.name);
         }
@@ -657,12 +672,32 @@ export class TTSBackend {
         next.roleGroups.push(group);
         for (const r of [...mates, route]) r.group = group.id;
     }
+    /** The card's group, made when there is none (even with no other role in it), and the role put in it. */
+    #forceGroup(next, route, key) {
+        next.roleGroups ??= [];
+        let group = next.roleGroups.find(g => g.card === key);
+        if (!group) {
+            const name = key === this.space.key ? this.space.name : this.settings.cardNames?.[key];
+            group = { id: crypto.randomUUID(), name: String(name || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '') || '角色').slice(0, 40), open: true, card: key };
+            next.roleGroups.push(group);
+        }
+        route.group = group.id;
+    }
     /** The role list in a new order with its groups, in the shape of arrangeStyles (a role's id under `style`). */
     arrangeRoles(tree) {
         if (!Array.isArray(tree)) throw Error('角色顺序无效');
         const next = this.getState(), had = new Set(next.routes.filter(r => r.group).map(r => r.id));
+        const before = new Map(next.routes.map(r => [r.id, r.group || '']));
+        const cardGroups = (next.roleGroups || []).filter(g => g.card);
         [next.routes, next.roleGroups] = arrangeRows(next.routes, tree);
-        for (const r of next.routes) { if (r.group) delete r.loose; else if (had.has(r.id)) r.loose = true; }
+        // A card's group stays, empty too (arrangeRows keeps only groups with roles in them).
+        for (const g of cardGroups) if (!next.roleGroups.some(x => x.id === g.id || x.card === g.card)) next.roleGroups.push(g);
+        for (const r of next.routes) {
+            if (r.group) delete r.loose; else if (had.has(r.id)) r.loose = true;
+            // Moved into a card's group = now that card's role (replaces the old card; its saves of that card stay).
+            const card = r.group && before.get(r.id) !== r.group ? next.roleGroups.find(g => g.id === r.group)?.card : '';
+            if (card) { r.cards = [card, ...(r.cards || []).filter(k => k.startsWith(card + '#'))]; delete r.global; }
+        }
         return clone(this.save(next).routes);
     }
     /**
@@ -838,7 +873,7 @@ export class TTSBackend {
     /** The saved keys of a voice engine as the phone shows them: last characters, in use, refused this time. Never the keys. */
     keyList(engine) {
         engineCheck(engine);
-        if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return key ? [{ tail: keyTail(key) || '••••', current: true, refused: false }] : []; }
+        if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return key ? [{ tail: hintTail(key), current: true, refused: false }] : []; }
         return this.providers.keyList(engine);
     }
     /** 自己的接口: the set in use. */
@@ -847,7 +882,7 @@ export class TTSBackend {
     /** 自己的接口's sets as the card lists them: name, address, voices, key (its last characters), the one in use. */
     customSetList() {
         const sets = this.settings.connections.custom.configs;
-        return sets.presets.map(p => { const key = this.providers.customKeys.get(p.id); return { id: p.id, name: p.name, current: p.id === sets.active, url: String(p.params.url || ''), service: String(p.params.service || ''), voices: (p.params.voices || []).length, configured: !!key, tail: key ? keyTail(key) || '••••' : '' }; });
+        return sets.presets.map(p => { const key = this.providers.customKeys.get(p.id); return { id: p.id, name: p.name, current: p.id === sets.active, url: String(p.params.url || ''), service: String(p.params.service || ''), voices: (p.params.voices || []).length, configured: !!key, tail: hintTail(key) }; });
     }
     /** A set renamed ({id, name}), or with no id a new one, empty and in use from now on. */
     saveCustomSet({ id, name } = {}) {
@@ -901,7 +936,7 @@ export class TTSBackend {
     }
     clearTextKey(id) { const map = new Map(this.textKeys); map.delete(id); this.storeTextKeys(map); }
     /** The last characters of a preset's key ('••••' for a key too short to show any), '' without one. */
-    textKeyHint(id) { const key = this.textKeys.get(id); return key ? keyTail(key) || '••••' : ''; }
+    textKeyHint(id) { const key = this.textKeys.get(id); return hintTail(key); }
     storeTextKeys(map) { this.keyStore.save('llm', joinTextKeys(map)); this.textKeys = map; this.emit('keys', { engine: 'llm', configured: map.has(this.settings.text.active) }); }
     clearKey(engine) {
         keyCheck(engine);
@@ -929,7 +964,7 @@ export class TTSBackend {
         return clone(value);
     }
     /** The last 4 characters of the saved key ('' without one), so the user can tell which key is in use. */
-    keyHint(engine) { keyCheck(engine); if (engine === 'github') return keyTail(this.githubKey) || (this.githubKey ? '••••' : ''); if (engine === 'pixai') return keyTail(this.pixaiKey) || (this.pixaiKey ? '••••' : ''); if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return key ? keyTail(key) || '••••' : ''; } if (SONG_KEYS.includes(engine)) return keyTail(this.songKeys[engine]) || (this.songKeys[engine] ? '••••' : ''); if (engine === 'nai' || engine === 'gpt') return keyTail(this.imageKeys[engine].get(this.settings.draw.connections[engine].active)); if (engine === 'llm') return this.textKeyHint(this.settings.text.active); if (engine === 'embed') return this.embedKey ? keyTail(this.embedKey) || '••••' : ''; return keyTail(this.providers.currentKey(engine)); }
+    keyHint(engine) { keyCheck(engine); if (engine === 'github') return keyTail(this.githubKey) || (this.githubKey ? '••••' : ''); if (engine === 'pixai') return keyTail(this.pixaiKey) || (this.pixaiKey ? '••••' : ''); if (engine === 'custom') { const key = this.providers.customKeys.get(this.customActive()); return hintTail(key); } if (SONG_KEYS.includes(engine)) return hintTail(this.songKeys[engine]); if (engine === 'nai' || engine === 'gpt') return hintTail(this.imageKeys[engine].get(this.settings.draw.connections[engine].active)); if (engine === 'llm') return this.textKeyHint(this.settings.text.active); if (engine === 'embed') return hintTail(this.embedKey); return hintTail(this.providers.currentKey(engine)); }
     /** For a voice engine with keys: how many, which one is in use (1-based) and how many were refused while this page is open. */
     keyPool(engine) { engineCheck(engine); return this.providers.keyPool(engine); }
     keyStatus(engine) { keyCheck(engine); if (engine === 'github') return !!this.githubKey; if (engine === 'pixai') return !!this.pixaiKey; return SONG_KEYS.includes(engine) ? !!this.songKeys[engine] : engine === 'nai' ? this.novelai.configured : engine === 'gpt' ? !!this.gptKey : engine === 'llm' ? this.textKeys.has(this.settings.text.active) : engine === 'embed' ? !!this.embedKey : engine === 'custom' ? this.providers.customKeys.has(this.customActive()) : this.providers.keys.has(engine); }
@@ -1438,7 +1473,7 @@ export class TTSBackend {
     imageConnectionList(engine) {
         if (!['nai', 'gpt'].includes(engine)) throw Error('生图引擎无效');
         const group = this.settings.draw.connections[engine];
-        return group.presets.map(p => ({...clone(p), current: p.id === group.active, configured: this.imageKeys[engine].has(p.id), tail: keyTail(this.imageKeys[engine].get(p.id))}));
+        return group.presets.map(p => ({...clone(p), current: p.id === group.active, configured: this.imageKeys[engine].has(p.id), tail: hintTail(this.imageKeys[engine].get(p.id))}));
     }
     /** Missing id creates and selects an empty connection; a blank key keeps its saved key. */
     saveImageConnection(engine, patch = {}) {
@@ -3215,7 +3250,7 @@ export class TTSBackend {
             this.save(state);
         }
         // The card's own characters belong to it (so they do not show up in other cards as roles no story has met).
-        if (next.key && next.members.length) this.tagRoles(next.members, next.key);
+        if (next.key && next.members.length) { this.tagRoles(next.members, next.key); this.#ensureMembers(next); }
         if (next.key && next.name) this.noteCard(next.key, next.name);
         this.gatherCard();
         this.emit('space', { space: clone(next) });
@@ -3252,7 +3287,7 @@ export class TTSBackend {
         const want = new Set(names.map(String)), next = this.getState();
         let changed = false;
         for (const route of rolesSeen(next.routes, this.space.key)) {
-            if (!want.has(route.name)) continue;
+            if (!want.has(route.name) || route.global) continue;
             const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
             // A role that belongs to other cards only is theirs: this card's person of the same name is another person (each card's 姐姐
             // is her own), so it is not tagged with this card. A role of no card, or of this card already, is.
@@ -3263,6 +3298,19 @@ export class TTSBackend {
         }
         if (changed) this.save(next);
         return changed;
+    }
+    /** The card's own characters have a role each (待配音 until given a voice), in the card's group. */
+    #ensureMembers(space) {
+        const next = this.getState(), key = space.key, mine = rolesSeen(next.routes, key);
+        let changed = false;
+        for (const name of space.members) {
+            if (isPlaceholderRole(name) || mine.some(r => r.name === name || (r.aliases || []).includes(name))) continue;
+            if (next.routes.some(r => r.name === name && r.global)) continue;
+            const route = normalizeRoute({ engine: 'fish', voice: '', model: '', language: '', id: crypto.randomUUID(), name, cards: [key, ...(space.save ? [`${key}#${space.save}`] : [])] });
+            this.#forceGroup(next, route, key);
+            next.routes.push(route); changed = true;
+        }
+        if (changed) this.save(next);
     }
     /** The roles of the card being played go in its group (core/role-groups.js); whether anything moved. */
     gatherCard() {

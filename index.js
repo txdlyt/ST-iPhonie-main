@@ -41,7 +41,7 @@ import { createBookHost } from './host-book.js';
 import { createBedtimeHost } from './host-bedtime.js';
 let bedtimeHost = null, stopChatClock = null;
 import { createSongHost } from './host-song.js';
-const RUNTIME_VERSION='0.9.84';
+const RUNTIME_VERSION='0.9.90';
 const base=new URL('.',import.meta.url),marker=globalThis.crypto?.randomUUID?.()||'unavailable';
 let stopDiagnostics=null,storyWork=null;
 let active=false,hooked=false,settings,player,panel,frame,observer,renderTimer,floating,lineRaf,lineMedia,playbackMessage,selectedMessage,backend,enabling;
@@ -83,7 +83,7 @@ async function prepareReply(id,picks=Promise.resolve()){if(!active||settings.gen
 /** What a character said in the story lately (their lines' translations), for picking their voice. */
 function saidBy(name){const out=[];for(const m of (context()?.chat||[]).slice(-40)){if(!m||m.is_user||m.is_system)continue;for(const line of parsed(String(m.mes||''))?.lines||[])if(line.role===name)out.push(line.translation||line.text);}return out.slice(-8);}
 // Without voice tags a role is still met when the story names it (names of 2+ characters), also one met in other cards.
-function tagSpeakers(messages){if(!active||backend?.here()?.pending)return;const open=openSpace(),key=open.save?`${open.key}#${open.save}`:open.key,names=new Set();if(!key)return;const unmet=(seen().routes||[]).filter(r=>!(Array.isArray(r.cards)&&r.cards.includes(key))&&r.name?.length>=2&&!isPlaceholderRole(r.name)).map(r=>r.name);for(const m of messages){if(!m||m.is_user||m.is_system)continue;const text=String(m.mes||'');for(const line of parsed(text)?.lines||[])if(line.role)names.add(line.role);for(const name of unmet)if(text.includes(name))names.add(name);}try{backend.tagRoles([...names],key);}catch{}}
+function tagSpeakers(messages){if(!active||backend?.here()?.pending)return;const open=openSpace(),key=open.save?`${open.key}#${open.save}`:open.key,names=new Set();if(!key)return;const unmet=(seen().routes||[]).filter(r=>!(Array.isArray(r.cards)&&r.cards.includes(key))&&r.name?.length>=2&&!isPlaceholderRole(r.name)).map(r=>r.name);for(const m of messages){if(!m||m.is_user||m.is_system)continue;const text=String(m.mes||'');for(const line of parsed(text)?.lines||[])if(line.role)names.add(line.role);}try{backend.tagRoles([...names],key);}catch{}}
 /** A chat was opened: close the old scope at once. Some hosts publish CHAT_CHANGED before metadata is ready. */
 let spaceRetry=0,spaceTurn=0;
 function spaceChanged(){if(!active||!backend)return;clearTimeout(spaceRetry);const turn=++spaceTurn;
@@ -436,6 +436,18 @@ const GAMES=new Set(['antarctic','blocks']);
 function closeGame(){if(!gameOverlay)return;gameOverlay.stop();gameOverlay.el.remove();gameOverlay=null;}
 // the phone's copy of a game's save: with 保存到酒馆 on, what the other devices saved is fetched first (a few seconds at most)
 async function gameSaveOf(name){if(!backend)return null;if(backend.settings?.sync?.enabled)await Promise.race([backend.syncNow().catch(()=>{}),new Promise(resolve=>setTimeout(resolve,6000))]);return backend.gameSave?.(name).catch(()=>null)??null;}
+async function saveGameFromFrame(name, request) {
+ try {
+  if (!backend) throw Error('小手机没有连接');
+  const saved = await backend.putGameSave(name, request.data, request.savedAt);
+  if (saved !== true) throw Error('小手机已有较新的存档，本次没有覆盖');
+  return {type: 'st-iphonie-game:saved', id: request.id};
+ } catch (error) {
+  const message = error?.message || '保存失败，请重试';
+  notice('游戏存档没有交给小手机：' + message + '。游戏本机存档不受这次转存影响。');
+  return {type: 'st-iphonie-game:save-failed', id: request.id, error: message};
+ }
+}
 function openGame(name){
  if(!GAMES.has(name))throw Error('没有这个游戏');
  closeGame();if(panel?.open)panel.close();
@@ -445,7 +457,7 @@ function openGame(name){
  const message=e=>{if(e.source!==f.contentWindow)return;const d=e.data;
   if(d?.type==='st-iphonie-game:close')closeGame();
   else if(d?.type==='st-iphonie-game:load')gameSaveOf(name).then(save=>answer({type:'st-iphonie-game:loaded',id:d.id,save}));
-  else if(d?.type==='st-iphonie-game:save')Promise.resolve(backend?.putGameSave(name,d.data,d.savedAt)).catch(()=>false).then(()=>answer({type:'st-iphonie-game:saved',id:d.id}));};
+  else if(d?.type==='st-iphonie-game:save')saveGameFromFrame(name,d).then(answer);};
  window.addEventListener('message',message);f.addEventListener('load',()=>f.contentWindow?.focus());
  el.append(f);document.body.append(el);
  gameOverlay={el,stop:()=>window.removeEventListener('message',message)};return true;}

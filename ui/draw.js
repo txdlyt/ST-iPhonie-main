@@ -246,8 +246,8 @@ export function drawApp(ctx) {
   const recAdd = async () => {
     if (pixaiRecording) return;
     pixaiRecording = true; ctx.notify('正在去网页上记录……');
-    try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); } catch (error) { ctx.notify(error.message, {error: true}); }
-    pixaiRecording = false; await refreshPixai(); render();
+    try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `没记下来${r.message ? '：' + r.message : ''}。反代已停止拦截，可以重试`, r.recorded ? undefined : {error: true}); } catch (error) { ctx.notify(error.message, {error: true}); }
+    finally { pixaiRecording = false; try { await refreshPixai(); } catch {} if (!v.disposed) render(); }
   };
   /** Adding or changing a 记录's 效果图: any picture, from the album or the phone. */
   const recSetCover = async (id, after = () => {}) => {
@@ -266,12 +266,15 @@ export function drawApp(ctx) {
   };
   /** A 记录, in a sheet like a 画风's: 效果图, 名字, and the LoRA it carries (weights and switches only touch what the tavern sends). */
   function editRecord(rec) {
-    const d = ctx.dialog('记录', `<div class="style-edit-cover" data-edit-cover></div>${field('名字', input('name', recName(rec), 'text', 'maxlength="40"'))}<div data-rec-loras></div><div class="actions">${btn('save-record', '保存', 'primary')}</div>`);
+    const d = ctx.dialog('记录', `<div class="style-edit-cover" data-edit-cover></div>${field('名字', input('name', recName(rec), 'text', 'maxlength="40"'))}<div data-rec-loras></div><div data-rec-recipes></div><div class="actions">${btn('save-record', '保存', 'primary')}</div>`);
     let name = recName(rec);
     const tile = () => { const now = recordList().find(x => x.id === rec.id) || rec, has = !!state().pixai.api.tplCovers?.[rec.id]; d.body.querySelector('[data-edit-cover]').innerHTML = `${recCover(now)}<span><strong>效果图</strong><small>${has ? '点图看大图、换图' : '点一下加一张，列表里一眼能认出它'}</small></span>`; };
     const loras = () => {
       const a = state().pixai.api, now = recordList().find(x => x.id === rec.id) || rec;
       d.body.querySelector('[data-rec-loras]').innerHTML = now.loras.length ? field('LoRA', `<div class="rec-loras">${now.loras.map(l => { const w = {on: true, weight: l.weight, ...(a.tplLoras[now.id]?.[l.id] || {})}; return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name" title="${esc(l.trigger || '')}">${esc(l.name)}</span><output>${Number(w.weight).toFixed(2)}</output><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label>${w.on ? `<input class="slider" type="range" data-pxtpl-w="${esc(l.id)}" min="0" max="1" step="0.05" value="${w.weight}" aria-label="${esc(l.name)} 权重">` : ''}</div>`; }).join('')}</div>`, '只影响酒馆发出的请求，不改网页上的设置。') : '';
+      const rl = Array.isArray(now.recipeList) ? now.recipeList : [];
+      const box = d.body.querySelector('[data-rec-recipes]');
+      if (box) box.innerHTML = field('Recipe', rl.length ? `<div class="rec-loras">${rl.map(l => { const w = {on: true, ...(a.tplLoras[now.id]?.[l.id] || {})}; return `<div class="tpl-lora${w.on ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name">${esc(l.name)}</span><input class="switch tpl-switch" type="checkbox" data-pxtpl-on="${esc(l.id)}" aria-label="使用 ${esc(l.name)}" ${w.on ? 'checked' : ''}></label></div>`; }).join('')}</div>` : '<p class="hint" style="padding:0">这条记录里没有 Recipe。如果网页上选了 Recipe 却没显示，说明记录时没带上，请删掉重新记一次。</p>');
     };
     tile(); loras();
     d.body.addEventListener('input', e => {
@@ -729,7 +732,7 @@ export function drawApp(ctx) {
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
       case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; if (state().pixai.mode === 'api') count = state().pixai.api.count; } render(); refreshSubscription(); refreshPixai(); break;
-      case 'pixai-mode': { const mode = el.dataset.value; if (mode === state().pixai.mode) break; api.saveDraw({pixai: {mode}}); if (mode === 'api') count = state().pixai.api.count; render(); refreshPixai(); break; }
+      case 'pixai-mode': { const mode = el.dataset.value; if (mode === state().pixai.mode) break; api.saveDraw({pixai: {mode}}); if (mode === 'api') count = state().pixai.api.count; else { pixaiInfo = undefined; pixaiLast = null; } render(); refreshPixai(); break; }
       case 'pixai-api-source': api.saveDraw({pixai: {api: {source: el.dataset.value}}}); render(); break;
       case 'pixai-tpl-pick': { const rec = (pixaiInfo?.template?.list || []).find(x => x.id === el.dataset.value); if (rec) { api.saveDraw({pixai: {api: {tplId: rec.id, ...sizePatch(rec)}}}); render(); } break; }
       case 'pixai-tpl-del': { try { await api.pixaiTemplate('delete', el.dataset.value); } catch (error) { ctx.notify(error.message); } await refreshPixai(); render(); break; }
@@ -739,8 +742,8 @@ export function drawApp(ctx) {
           // The bridge presses the page's own 「生成」 button (the one 直控 draws with): caught before it is sent, so nothing is drawn or charged.
           if (pixaiRecording) break;
           pixaiRecording = true; render();
-          try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `反代没能自己点「生成」${r.message ? '（' + r.message + '）' : ''}，请在网页上自己点一次，设置就记下来了`); } catch (error) { ctx.notify(error.message); }
-          pixaiRecording = false;
+          try { const r = await api.pixaiTemplate('record'); ctx.notify(r.recorded ? '已记下网页设置' : `没记下来${r.message ? '：' + r.message : ''}。反代已停止拦截，可以重试`, r.recorded ? undefined : {error: true}); } catch (error) { ctx.notify(error.message, {error: true}); }
+          finally { pixaiRecording = false; }
         } else { try { await api.pixaiTemplate(act); } catch (error) { ctx.notify(error.message); } }
         await refreshPixai(); render(); break;
       }
