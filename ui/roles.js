@@ -37,7 +37,7 @@ export function rolesApp(ctx) {
   let listDrawn = '', query = '', filter = '', swipe = null, sort = null, seenCard = null;
   const space = () => api.phoneSpace?.() || {};
   // (Another card's role of the same name is not this card's, though the name is among its people.)
-  const inCard = (r, sp) => !!sp.key && !sp.others?.has(r.id) && ((sp.members || []).includes(r.name) || !!r.cards?.includes(sp.key));
+  const inCard = (r, sp) => !!sp.key && !sp.others?.has(r.id) && (!!r.global || (sp.members || []).includes(r.name) || !!r.cards?.includes(sp.key));
   /** The roles another card has by a name someone here has too, with what is left of the list seen from here. */
   const othersHere = roles => { const here = new Set((api.rolesHere?.() || roles).map(r => r.id)); return new Set(roles.filter(r => !here.has(r.id)).map(r => r.id)); };
   /** Which card a role is of: said on a row when another role has its name. */
@@ -47,6 +47,15 @@ export function rolesApp(ctx) {
     return state.roleGroups?.find(g => g.card === key)?.name || (key === space().key && space().name) || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '');
   };
   /** What the 筛选 chips ask for. */
+  const baseKeys = r => [...new Set((r.cards || []).map(k => String(k).split('#')[0]))];
+  /** 归属: 全局 / 按角色卡 (and which) / 无归属. */
+  function ownerField(r) {
+    const mode = r.ownMode ?? (r.unowned ? 'none' : r.global ? 'global' : 'cards'), picked = new Set(r.ownCards ?? baseKeys(r));
+    const list = (api.cardList?.() || []).map(c => ({key: c.key, name: c.name || c.key}));
+    for (const key of picked) if (!list.some(c => c.key === key)) list.push({key, name: key});
+    const cards = mode === 'cards' ? (list.length ? `<div class="rec-loras">${list.map(c => `<div class="tpl-lora${picked.has(c.key) ? '' : ' off'}"><label class="tpl-lora-head"><span class="tpl-lora-name">${esc(c.name)}</span><input class="switch tpl-switch" type="checkbox" data-own-card="${esc(c.key)}" aria-label="属于 ${esc(c.name)}" ${picked.has(c.key) ? 'checked' : ''}></label></div>`).join('')}</div>` : '<p class="hint" style="padding:0">还没有认识的角色卡。</p>') : '';
+    return field('归属', select('ownMode', mode, [['cards', '按角色卡（只在选中的卡里）'], ['global', '全局（不属于任何卡，每张卡都能用）'], ['none', '无归属（谁也不能认领）']]), '全局和无归属都不会被剧情认领；按角色卡不选卡时，剧情里遇到它才会认领。') + cards;
+  }
   const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim()]};
   const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
   const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
@@ -215,6 +224,7 @@ export function rolesApp(ctx) {
         </div>
         <div class="group pad">${field('角色名称', input('name', r.name, 'text', 'placeholder="与台词里的说话者一致"'))}
           ${field('别名', input('aliases', Array.isArray(r.aliases) ? r.aliases.join('、') : r.aliases || '', 'text', 'placeholder="正文里的其他叫法，用逗号隔开"'), '正文里有时写全名、有时只写名或姓，比如「夏尔」和「夏尔·凡多姆海恩」：把其他叫法填在这里，都用这个角色的音色，不会再多出一个角色。全名里带「·」的会自动认出来。')}
+          ${ownerField(r)}
           ${api.getState().roleGroups.length ? field('分组', select('group', r.group || '', [['', '不分组'], ...api.getState().roleGroups.map(g => [g.id, g.name])])) : ''}</div>
         ${groupTitle('引擎', help('每个角色在各家引擎里各自记住一套音色和模型，切过去再切回来不会丢。'))}
         <div class="engine-tabs">${Object.entries(engines).map(([k, label]) => {
@@ -470,7 +480,12 @@ export function rolesApp(ctx) {
     const n = v.root.querySelector('[data-id-voice]'); if (n) n.textContent = id;
     ctx.notify('取了音色页网址的最后一段：' + id);
   });
-  v.on('change', 'select[data-field]', el => { current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'model' && current.engine === 'mimo') render(); });
+  v.on('change', 'select[data-field]', el => { current[el.dataset.field] = el.value; changed(); if (el.dataset.field === 'ownMode' || (el.dataset.field === 'model' && current.engine === 'mimo')) render(); });
+  v.on('change', 'input[data-own-card]', el => {
+    const set = new Set(current.ownCards ?? baseKeys(current));
+    if (el.checked) set.add(el.dataset.ownCard); else set.delete(el.dataset.ownCard);
+    current.ownCards = [...set]; current.ownMode = current.ownMode ?? 'cards'; changed(); el.closest('.tpl-lora')?.classList.toggle('off', !el.checked);
+  });
   // A 参考图 whose files are gone (another tavern, a backup without them) shows as none.
   v.root.addEventListener('error', e => { if (e.target.matches?.('.role-ref img')) e.target.remove(); }, true);
   v.on('click', '[data-action]', async el => {

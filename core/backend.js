@@ -593,6 +593,16 @@ export class TTSBackend {
         if (!value || typeof value.name !== 'string' || !value.name.trim() || isPlaceholderRole(value.name)) throw Error('请填写实际角色名');
         const id = value.id || crypto.randomUUID(), index = next.routes.findIndex(route => route.id === id);
         const route = normalizeRoute({ ...(index >= 0 ? next.routes[index] : { engine: 'fish', voice: '', model: '', language: '' }), ...clone(value), id, name: value.name.trim() });
+        // 归属 (the role editor): 全局 = no card owns it and every card lists it; 按角色卡 = the cards picked; 无归属 = no card's and nobody
+        // may claim it (not listed under any card). A story naming a 全局 or 无归属 role does not make it some card's.
+        const mode = value.ownMode, chosen = Array.isArray(value.ownCards) ? value.ownCards.map(String) : null;
+        if (mode === 'global') { route.global = true; delete route.unowned; route.cards = []; }
+        else if (mode === 'none') { route.unowned = true; delete route.global; route.cards = []; }
+        else if (mode === 'cards') {
+            delete route.global; delete route.unowned;
+            if (chosen) { const had = index >= 0 && Array.isArray(next.routes[index].cards) ? next.routes[index].cards : []; route.cards = [...new Set(chosen.flatMap(k => [k, ...had.filter(h => h.startsWith(k + '#'))]))].slice(0, 100); }
+        }
+        delete route.ownMode; delete route.ownCards;
         // 参考图 changes only by setRoleRef / clearRoleRef: a page saving a role it read earlier keeps the one there is now.
         if (index >= 0 && next.routes[index].ref) route.ref = clone(next.routes[index].ref); else delete route.ref;
         // 角色资料: who they are, for the phone's apps when the tavern has no card for them.
@@ -603,7 +613,7 @@ export class TTSBackend {
         if (route.group) delete route.loose; else { delete route.group; if (value.group === '') route.loose = true; }
         // A new role belongs to the card it was made in (分区), and goes in that card's group unless it was given one
         // (no group at all, when that was picked); one made with no card open is everyone's.
-        if (index < 0 && this.cardKey() && !route.cards?.length) {
+        if (index < 0 && this.cardKey() && !route.cards?.length && !route.global && !route.unowned) {
             route.cards = [this.cardKey(), ...(this.saveKey() ? [this.saveKey()] : [])];
             if (value.group === undefined) this.#joinCard(next, route, this.cardKey(), this.space.name);
         }
@@ -3222,6 +3232,7 @@ export class TTSBackend {
             this.save(state);
         }
         // The card's own characters belong to it (so they do not show up in other cards as roles no story has met).
+        this.#untangleCards();
         if (next.key && next.members.length) this.tagRoles(next.members, next.key);
         if (next.key && next.name) this.noteCard(next.key, next.name);
         this.emit('space', { space: clone(next) });
@@ -3258,14 +3269,32 @@ export class TTSBackend {
         const want = new Set(names.map(String)), next = this.getState();
         let changed = false;
         for (const route of rolesSeen(next.routes, this.space.key)) {
-            if (!want.has(route.name)) continue;
+            if (!want.has(route.name) || route.global || route.unowned) continue;
             const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
+            // A role of other cards only is theirs: this card's person of the same name is another person (each card's 姐姐 is her own,
+            // and a common word like 姐姐 or 阿姨 turns up in any story), so she is not tagged with this card.
+            if (cards.length && !cards.some(k => k.split('#')[0] === key.split('#')[0])) continue;
             if (add.length) { route.cards = [...cards, ...add].slice(-100); changed = true; }
             // Met in a story for the first time: it goes in that card's group.
             if (!cards.length && !route.group) this.#joinCard(next, route, keys[0], keys[0] === this.space.key ? this.space.name : '');
         }
         if (changed) this.save(next);
         return changed;
+    }
+    /**
+     * A role in the group of one card that is also tagged with other cards (it was claimed by a story that only named her) goes back to
+     * the card of her group: her group is where she was first met. Cards she has no group for are left alone.
+     */
+    #untangleCards() {
+        const next = this.getState(), base = k => String(k).split('#')[0];
+        let changed = false;
+        for (const route of next.routes) {
+            const card = route.group ? next.roleGroups?.find(g => g.id === route.group)?.card : '';
+            if (route.global || route.unowned || !card || !Array.isArray(route.cards) || !route.cards.length) continue;
+            const mine = route.cards.filter(k => base(k) === base(card));
+            if (mine.length && mine.length < route.cards.length) { route.cards = mine; changed = true; }
+        }
+        if (changed) this.save(next);
     }
     /** Contacts of the card open now (all of them when 分区 is off). */
     contacts() { return chatContacts(this.seen, this.here()); }
