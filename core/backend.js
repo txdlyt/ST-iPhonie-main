@@ -23,7 +23,6 @@ import { normalizeMemoryBooks, normalizeAssistantThreads } from './data-transfer
 import { normalizeSync, runSync, removeSync, joinGone, SYNC_PARTS } from './sync.js';
 import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS, normalizeSfx, SFX_MODELS, SFX_FORMATS, SFX_LIMITS } from './sounds.js';
-import { gatherCardRoles } from './role-groups.js';
 import { normalizeHost, uploadImage, testHost, hostReady, hostLinks } from './image-host.js';
 import { normalizeTagger, reachableFromHttps } from './tagger.js';
 import { decodeMono, encodeWav } from './audio-join.js';
@@ -65,6 +64,7 @@ import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js
 import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
+import { setChatMoments } from './chat.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, validChatSave, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked, normalizeQuickReactions } from './chat.js';
 import { normalizePets } from './pets.js';
 import { ChatStore, money, currentDm, searchThreads } from './chats.js';
@@ -156,7 +156,7 @@ export class TTSBackend {
     constructor({ settings, persist = () => {}, notify = () => {}, change = () => {}, unknown = () => {},
         providers = new Providers(), cache, library, keyStore, sink, novelai, chats, indexedDB = globalThis.indexedDB, syncStorage = () => globalThis.localStorage,
         imageFetch = (...args) => globalThis.fetch(...args), songFetch = (...args) => globalThis.fetch(...args), soundPack = '', speech = null, comfyPictures = () => ({}), tavernHeaders = () => globalThis.SillyTavern?.getContext?.()?.getRequestHeaders?.() || {} } = {}) {
-        this.settings = normalizeSettings(settings);
+        this.settings = normalizeSettings(settings); setChatMoments(this.settings.moments?.auto);
         validateSettings(this.settings);
         this.persist = persist;
         this.notify = notify;
@@ -542,7 +542,7 @@ export class TTSBackend {
         const imageChanged = Object.keys(copy.draw.connections).filter(id => JSON.stringify(copy.draw.connections[id]) !== JSON.stringify(this.settings.draw.connections?.[id])).length > 0 || copy.draw.engine !== this.settings.draw.engine; // the engine in use decides which keys are active
         // The host callback completes before the service acknowledges a new settings revision.
         this.persist(clone(copy));
-        this.settings = copy;
+        this.settings = copy; setChatMoments(copy.moments?.auto);
         if (imageChanged) this.activateImageKeys();
         this.revision++;
         this.emit('settings', { state: this.getState() });
@@ -601,23 +601,9 @@ export class TTSBackend {
         if (typeof route.negative === 'string') { route.negative = route.negative.slice(0, 1000); if (!route.negative.trim()) delete route.negative; } else delete route.negative;
         // 不分组, picked: it stays out of the group of its card too.
         if (route.group) delete route.loose; else { delete route.group; if (value.group === '') route.loose = true; }
-        // 属于: the card a role is of, picked in its editor ('' = 所有卡). Picking a card puts it in that card's group; 所有卡 keeps it
-        // out of every card's claim (global), so a story that names it does not make it some card's.
-        if (typeof value.ownCard === 'string') {
-            const pick = value.ownCard, prev = index >= 0 ? next.routes[index].cards || [] : [];
-            if (pick) {
-                route.cards = [pick, ...prev.filter(k => k.startsWith(pick + '#'))];
-                delete route.global;
-                if (!route.loose) this.#forceGroup(next, route, pick);
-            } else {
-                route.cards = []; route.global = true;
-                if (next.roleGroups?.find(g => g.id === route.group)?.card) delete route.group;
-            }
-        } else if (value.global === true) route.global = true;
-        delete route.ownCard;
         // A new role belongs to the card it was made in (分区), and goes in that card's group unless it was given one
         // (no group at all, when that was picked); one made with no card open is everyone's.
-        if (index < 0 && this.cardKey() && !route.cards?.length && value.global !== true && typeof value.ownCard !== 'string') {
+        if (index < 0 && this.cardKey() && !route.cards?.length) {
             route.cards = [this.cardKey(), ...(this.saveKey() ? [this.saveKey()] : [])];
             if (value.group === undefined) this.#joinCard(next, route, this.cardKey(), this.space.name);
         }
@@ -672,32 +658,12 @@ export class TTSBackend {
         next.roleGroups.push(group);
         for (const r of [...mates, route]) r.group = group.id;
     }
-    /** The card's group, made when there is none (even with no other role in it), and the role put in it. */
-    #forceGroup(next, route, key) {
-        next.roleGroups ??= [];
-        let group = next.roleGroups.find(g => g.card === key);
-        if (!group) {
-            const name = key === this.space.key ? this.space.name : this.settings.cardNames?.[key];
-            group = { id: crypto.randomUUID(), name: String(name || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '') || '角色').slice(0, 40), open: true, card: key };
-            next.roleGroups.push(group);
-        }
-        route.group = group.id;
-    }
     /** The role list in a new order with its groups, in the shape of arrangeStyles (a role's id under `style`). */
     arrangeRoles(tree) {
         if (!Array.isArray(tree)) throw Error('角色顺序无效');
         const next = this.getState(), had = new Set(next.routes.filter(r => r.group).map(r => r.id));
-        const before = new Map(next.routes.map(r => [r.id, r.group || '']));
-        const cardGroups = (next.roleGroups || []).filter(g => g.card);
         [next.routes, next.roleGroups] = arrangeRows(next.routes, tree);
-        // A card's group stays, empty too (arrangeRows keeps only groups with roles in them).
-        for (const g of cardGroups) if (!next.roleGroups.some(x => x.id === g.id || x.card === g.card)) next.roleGroups.push(g);
-        for (const r of next.routes) {
-            if (r.group) delete r.loose; else if (had.has(r.id)) r.loose = true;
-            // Moved into a card's group = now that card's role (replaces the old card; its saves of that card stay).
-            const card = r.group && before.get(r.id) !== r.group ? next.roleGroups.find(g => g.id === r.group)?.card : '';
-            if (card) { r.cards = [card, ...(r.cards || []).filter(k => k.startsWith(card + '#'))]; delete r.global; }
-        }
+        for (const r of next.routes) { if (r.group) delete r.loose; else if (had.has(r.id)) r.loose = true; }
         return clone(this.save(next).routes);
     }
     /**
@@ -1523,12 +1489,21 @@ export class TTSBackend {
         if (!row) throw Error('这个 Vibe 已经不在了');
         try { return JSON.parse(await row.blob.text()); } catch { throw Error('这个 Vibe 的数据坏了，请删掉重新导入'); }
     }
-    async changeVibe(id, change) {
+    async changeVibe(id, change, {allowNew = false} = {}) {
         this.vibeChanges ||= new Map();
         const prior = this.vibeChanges.get(id) || Promise.resolve();
-        const task = prior.catch(() => {}).then(async () => this.storeVibe(await change(await this.vibeDoc(id))));
+        const task = prior.catch(() => {}).then(async () => this.storeVibe(await change(allowNew && !this.vibes.has(id) ? null : await this.vibeDoc(id))));
         this.vibeChanges.set(id, task);
         try { return await task; } finally { if (this.vibeChanges.get(id) === task) this.vibeChanges.delete(id); }
+    }
+    /** Import and editing share one queue per Vibe, including its first creation. */
+    async mergeImportedVibe(doc) {
+        let added = false;
+        await this.changeVibe(doc.id, latest => {
+            added = !latest;
+            return latest ? mergeVibe(latest, doc) : doc;
+        }, {allowNew: true});
+        return added;
     }
     /** Swappable in tests (no canvas there). */
     shrinkVibeImage(base64) { return smallVibeImage(base64); }
@@ -1559,10 +1534,7 @@ export class TTSBackend {
                 const carried = picture ? await embeddedVibeFile(await file.arrayBuffer()).catch(() => null) : null;
                 const found = picture && !carried ? { vibes: [await imageVibe(name, await this.base64(file), '', this.settings.draw.params.model)], groups: [] } : await readVibeFile(name, carried || await file.text());
                 for (const doc of found.vibes) {
-                    if (this.vibes.has(doc.id)) {
-                        await this.storeVibe(mergeVibe(await this.vibeDoc(doc.id), doc)); result.updated++;
-                    }
-                    else { await this.storeVibe(doc); result.added++; }
+                    if (await this.mergeImportedVibe(doc)) result.added++; else result.updated++;
                 }
                 groups.push(...found.groups);
             } catch (error) { result.errors.push({ name, message: error.message }); }
@@ -1617,7 +1589,7 @@ export class TTSBackend {
         if (!vibeKey(model)) model = 'nai-diffusion-4-5-full';
         for (const [i, v] of (list || []).entries()) {
             const doc = await encodingVibe(`${name} ${i + 1}`, v.encoding, model, v.ie, v.strength);
-            await this.storeVibe(this.vibes.has(doc.id) ? mergeVibe(await this.vibeDoc(doc.id), doc) : doc);
+            await this.mergeImportedVibe(doc);
             items.push({ vibe: doc.id, strength: vibeStrength(v.strength) });
         }
         if (!items.length) return null;
@@ -3250,9 +3222,8 @@ export class TTSBackend {
             this.save(state);
         }
         // The card's own characters belong to it (so they do not show up in other cards as roles no story has met).
-        if (next.key && next.members.length) { this.tagRoles(next.members, next.key); this.#ensureMembers(next); }
+        if (next.key && next.members.length) this.tagRoles(next.members, next.key);
         if (next.key && next.name) this.noteCard(next.key, next.name);
-        this.gatherCard();
         this.emit('space', { space: clone(next) });
         if (!this.here()) return;
         this.emit('chat', { threadId: '' }); this.emit('moments', {}); this.emit('forum', {}); this.emit('peek', {});
@@ -3287,41 +3258,14 @@ export class TTSBackend {
         const want = new Set(names.map(String)), next = this.getState();
         let changed = false;
         for (const route of rolesSeen(next.routes, this.space.key)) {
-            if (!want.has(route.name) || route.global) continue;
+            if (!want.has(route.name)) continue;
             const cards = Array.isArray(route.cards) ? route.cards : [], add = keys.filter(k => !cards.includes(k));
-            // A role that belongs to other cards only is theirs: this card's person of the same name is another person (each card's 姐姐
-            // is her own), so it is not tagged with this card. A role of no card, or of this card already, is.
-            if (cards.length && !cards.some(k => k.split('#')[0] === key.split('#')[0])) continue;
             if (add.length) { route.cards = [...cards, ...add].slice(-100); changed = true; }
             // Met in a story for the first time: it goes in that card's group.
             if (!cards.length && !route.group) this.#joinCard(next, route, keys[0], keys[0] === this.space.key ? this.space.name : '');
         }
         if (changed) this.save(next);
         return changed;
-    }
-    /** The card's own characters have a role each (待配音 until given a voice), in the card's group. */
-    #ensureMembers(space) {
-        const next = this.getState(), key = space.key, mine = rolesSeen(next.routes, key);
-        let changed = false;
-        for (const name of space.members) {
-            if (isPlaceholderRole(name) || mine.some(r => r.name === name || (r.aliases || []).includes(name))) continue;
-            if (next.routes.some(r => r.name === name && r.global)) continue;
-            const route = normalizeRoute({ engine: 'fish', voice: '', model: '', language: '', id: crypto.randomUUID(), name, cards: [key, ...(space.save ? [`${key}#${space.save}`] : [])] });
-            this.#forceGroup(next, route, key);
-            next.routes.push(route); changed = true;
-        }
-        if (changed) this.save(next);
-    }
-    /** The roles of the card being played go in its group (core/role-groups.js); whether anything moved. */
-    gatherCard() {
-        const key = this.cardKey();
-        if (!key) return false;
-        const next = this.getState(), done = gatherCardRoles(next.routes, next.roleGroups, key, this.space.name);
-        if (!done.changed) return false;
-        next.routes = done.routes;
-        next.roleGroups = done.groups;
-        this.save(next);
-        return true;
     }
     /** Contacts of the card open now (all of them when 分区 is off). */
     contacts() { return chatContacts(this.seen, this.here()); }
@@ -3358,6 +3302,8 @@ export class TTSBackend {
     async blockedNames() { return (await this.threads()).filter(t => t.type === 'dm' && t.blocked).map(t => t.members[0]); }
     /** Phone chats of the card open now. A late read never supplies another visit's list. */
     async threads() { const here = this.here(), valid = this.spaceGuard(); const list = await this.chats.list(); return valid() ? list.filter(t => inSpace(t, here)) : []; }
+    /** Full chats linked to one story reply, with the same partition/visit guard as the list. */
+    async storyThreads(story) { const here = this.here(), valid = this.spaceGuard(); const list = await this.chats.forStory(story); return valid() ? list.filter(t => inSpace(t, here)) : []; }
     /** Direct ids (an open chat or a notification) obey the same filter as the list. */
     async getChatThread(id) {
         const here = this.here(), valid = this.spaceGuard(), thread = await this.chats.get(id);

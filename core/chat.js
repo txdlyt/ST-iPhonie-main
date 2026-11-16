@@ -385,6 +385,10 @@ export const PHONE_TAG = /<phone\b([^>]*)>([\s\S]*?)<\/phone\s*>/gi;
  */
 export const phoneParts = text => [...String(text ?? '').matchAll(PHONE_TAG)].map(m => ({group: (m[1].match(/group\s*=\s*["'“”「『]?([^"'“”」』>]+)/)?.[1] || '').trim(), text: m[2].trim()})).filter(p => p.text);
 /** The inside of each <phone>…</phone>. */
+/** 朋友圈 posts made in the story / in chats follow 动态设置 › 角色自己发动态: off, the model is not told it can post, and a post it writes anyway is dropped. */
+let momentsOn = true;
+export const setChatMoments = on => { momentsOn = on === true; };
+export const chatMomentsOn = () => momentsOn;
 export const phoneBlocks = text => phoneParts(text).map(p => p.text);
 /**
  * How things that happen on the user's phone are written: messages, photos (in words; with drawing tags when pictures
@@ -394,8 +398,8 @@ export const phoneBlocks = text => phoneParts(text).map(p => p.text);
 export function phoneFormat({user = '我', names = [], groups = [], images = false, after = false, status = false, make = false} = {}) {
   const list = names.join('、');
   return [after ? '【手机上的事】' : '【发到手机上的事】',
-    after ? `读这段正文：里面写到有人用手机联系${user}（发消息、发照片、转账、发红包、送礼物、分享歌曲、打电话），或者有人发了朋友圈，就把这些事在${user}的手机上真的发出来，内容和正文写的对得上；剧情里有人这时自然会给${user}发消息的，也可以发。`
-      : `剧情里有人这时会用手机联系${user}（发消息、发照片、转账、打电话……），或者正文里写到了这样的事，就在正文写完的地方另起一行写 <phone></phone>（预设要求写在正文后面的状态栏、选项这些照常写在它后面，不要省略），把这些事在${user}的手机上真的发出来，内容和正文写的对得上。`,
+    after ? `读这段正文：里面写到有人用手机联系${user}（发消息、发照片、转账、发红包、送礼物、分享歌曲、打电话）${momentsOn ? '，或者有人发了朋友圈' : ''}，就把这些事在${user}的手机上真的发出来，内容和正文写的对得上；剧情里有人这时自然会给${user}发消息的，也可以发。面对面的人不发：正文里这些人此刻正和${user}在同一个场景当面互动（说话、动作都在眼前），就不要凭空让他们用手机给${user}发消息、打电话，除非正文明写了拿出手机。`
+      : `剧情里有人这时会用手机联系${user}（发消息、发照片、转账、打电话……），或者正文里写到了这样的事，就在正文写完的地方另起一行写 <phone></phone>（预设要求写在正文后面的状态栏、选项这些照常写在它后面，不要省略），把这些事在${user}的手机上真的发出来，内容和正文写的对得上。注意：正文里这些人此刻正和${user}在同一个场景面对面互动（说话、动作都在眼前），就不要凭空让他们用手机给${user}发消息、打电话，除非正文明写了有人拿出手机；这时不写 <phone></phone>。`,
     `${after ? '' : '<phone></phone> 里'}一件事一行：`,
     '- 消息：「名字：消息」，可以连着发几条',
     `- 照片：「名字：[图片] 一句话描述照片里拍到的画面${images ? '｜画这张照片用的英文 danbooru tag（只写照片里真有的：拍的是猫就写 cat，画面里没有人就写 no humans、不写 1girl 1boy；只有拍到自己时才写 1girl 或 1boy 和 selfie；再写构图、光线）' : ''}」`,
@@ -404,7 +408,7 @@ export function phoneFormat({user = '我', names = [], groups = [], images = fal
     '- 礼物：「名字：[礼物 物品名] 附言」',
     '- 分享歌曲：「名字：[分享歌曲] 歌名 - 歌手｜想说的话」',
     `- 打电话：「名字：[打电话] 为什么打」（${user}的手机会响，每次最多一个）`,
-    `- 发朋友圈：「名字：[朋友圈] 动态内容${images ? '｜配图用的英文 danbooru tag（有画面感才配，不配图就不写｜和后面的 tag）' : ''}」（发给所有朋友看的，不是发给${user}的）`,
+    !momentsOn ? '' : `- 发朋友圈：「名字：[朋友圈] 动态内容${images ? '｜配图用的英文 danbooru tag（有画面感才配，不配图就不写｜和后面的 tag）' : ''}」（发给所有朋友看的，不是发给${user}的）`,
     // 0.9.35: what someone is doing shows on the phone; a few of them may start a group (the user in it only when named).
     status ? '- 改在线状态或个性签名：「名字：[状态] 忙碌｜在做什么」「名字：[签名] 新签名」（在做的事、心情变了才改）' : '',
     make ? `- 拉群：「名字：[建群] 群名｜成员1、成员2」（拉${user}就把${user}写进成员；不写就是只有他们几个的群）` : '',
@@ -734,8 +738,8 @@ export function buildChatRequest({prompts = {}, preset, thread, members, story =
     '语音格式': voiceFormat,
     '可发语音': speakers.length ? speakers.map(m => `${m.name}（${languageName(m.language || 'zh')}）`).join('、') : promptText(prompts, 'chat', 'noVoice')
   };
-  const used = preset.entries.filter(e => e.enabled && e.text.trim() && e.use.includes(group ? 'group' : 'dm')).filter(e => speakers.length || e.id !== 'voice');
-  const rules = used.map(e => fill(e.text, values)), posting = used.some(e => e.id === 'post' || /朋友圈/.test(e.text)), dialing = !group && used.some(e => e.id === 'c-dial');
+  const used = preset.entries.filter(e => e.enabled && e.text.trim() && e.use.includes(group ? 'group' : 'dm')).filter(e => speakers.length || e.id !== 'voice').filter(e => momentsOn || (e.id !== 'post' && !/朋友圈/.test(e.text)));
+  const rules = used.map(e => fill(e.text, values)), posting = momentsOn && used.some(e => e.id === 'post' || /朋友圈/.test(e.text)), dialing = !group && used.some(e => e.id === 'c-dial');
   const system = promptText(prompts, 'chat', 'system', {
     '预设规则': rules.join('\n\n'), '用户': user, '聊天对象': partner, '谁': group ? '群里每个人' : partner,
     '聊天对象资料': members.map(m => `- ${m.name}：${(m.persona || m.card || '').trim() || '（没有资料，按剧情里的表现来）'}`).join('\n'),

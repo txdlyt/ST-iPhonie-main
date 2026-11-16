@@ -253,7 +253,7 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
       // Answers to a 好友申请 (handled where it was asked), and a 好友申请 between friends: not messages.
       if (item.kind === 'befriend' || item.kind === 'refuse' || item.kind === 'request') continue;
       // 「[朋友圈] …」: posted to 朋友圈 while chatting, not a chat message.
-      if (item.kind === 'moment') { posts.push({author: item.from, text: item.text, ...(item.imageTags ? {imageTags: item.imageTags} : {}), source: 'chat', ...(receipt ? {phoneReceipt: receipt} : {}), space: thread?.space || backend.cardKey(), ...(thread?.save || backend.saveKey() ? {save: thread?.save || backend.saveKey()} : {})}); continue; }
+      if (item.kind === 'moment') { if (!settings().moments?.auto) continue; posts.push({author: item.from, text: item.text, ...(item.imageTags ? {imageTags: item.imageTags} : {}), source: 'chat', ...(receipt ? {phoneReceipt: receipt} : {}), space: thread?.space || backend.cardKey(), ...(thread?.save || backend.saveKey() ? {save: thread?.save || backend.saveKey()} : {})}); continue; }
       // 「[私聊] …」 in a group: said to the user alone — it goes to that one's private chat (in a private chat it is just
       // a message).
       if (item.kind === 'dm') { if (thread.type === 'group') whispers.push(item); else out.push({from: item.from, kind: 'text', text: item.text}); continue; }
@@ -759,6 +759,9 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
       catch (error) { if (error?.name === 'AbortError' || !valid()) throw error; failed = true; phoneLog('接收暂时失败，稍后补收：' + error.message); }
       if (failed && valid()) { await new Promise(resolve => setTimeout(resolve, 150)); if (valid()) result = await deliverOne(index, valid); }
       return result;
+    }).catch(error => {
+      if (error?.name === 'AbortError' || !valid()) { phoneLog('回复、分支或聊天已变化，未继续投递旧消息'); return 0; }
+      throw error;
     });
     deliveryQueue = task.catch(error => phoneLog('接收失败，可重试：' + error.message));
     return task;
@@ -837,9 +840,9 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
    */
   async function withdraw(story, ver, valid = chatGuard()) {
     let gone = 0;
-    for (const t of await backend.threads()) {
+    for (const t of await backend.storyThreads(story)) {
       requireChat(valid);
-      const list = (await backend.chats.get(t.id))?.messages || [], old = list.filter(m => m.story === story && m.storyVer !== ver);
+      const list = t.messages || [], old = list.filter(m => m.story === story && m.storyVer !== ver);
       requireChat(valid);
       if (!old.length) continue;
       const after = list.slice(list.indexOf(old.at(-1)) + 1);

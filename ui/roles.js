@@ -47,8 +47,6 @@ export function rolesApp(ctx) {
     return state.roleGroups?.find(g => g.card === key)?.name || (key === space().key && space().name) || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '');
   };
   /** What the 筛选 chips ask for. */
-  const ownCard = r => r.ownCard !== undefined ? r.ownCard : (r.cards || []).find(k => !k.includes('#')) || '';
-  const cardChoices = r => { const list = (api.cardList?.() || []).map(c => [c.key, c.name || c.key]), have = ownCard(r); return have && !list.some(x => x[0] === have) ? [...list, [have, have]] : list; };
   const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim()]};
   const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
   const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
@@ -217,7 +215,6 @@ export function rolesApp(ctx) {
         </div>
         <div class="group pad">${field('角色名称', input('name', r.name, 'text', 'placeholder="与台词里的说话者一致"'))}
           ${field('别名', input('aliases', Array.isArray(r.aliases) ? r.aliases.join('、') : r.aliases || '', 'text', 'placeholder="正文里的其他叫法，用逗号隔开"'), '正文里有时写全名、有时只写名或姓，比如「夏尔」和「夏尔·凡多姆海恩」：把其他叫法填在这里，都用这个角色的音色，不会再多出一个角色。全名里带「·」的会自动认出来。')}
-          ${(api.cardList?.() || []).length ? field('属于角色卡', select('ownCard', ownCard(r), [['', '所有卡（全局角色）'], ...cardChoices(r)]), '选了某张卡，它只在那张卡里出现，也会进那张卡的分组；选「所有卡」就不会被任何卡认领。') : ''}
           ${api.getState().roleGroups.length ? field('分组', select('group', r.group || '', [['', '不分组'], ...api.getState().roleGroups.map(g => [g.id, g.name])])) : ''}</div>
         ${groupTitle('引擎', help('每个角色在各家引擎里各自记住一套音色和模型，切过去再切回来不会丢。'))}
         <div class="engine-tabs">${Object.entries(engines).map(([k, label]) => {
