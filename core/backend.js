@@ -593,16 +593,11 @@ export class TTSBackend {
         if (!value || typeof value.name !== 'string' || !value.name.trim() || isPlaceholderRole(value.name)) throw Error('请填写实际角色名');
         const id = value.id || crypto.randomUUID(), index = next.routes.findIndex(route => route.id === id);
         const route = normalizeRoute({ ...(index >= 0 ? next.routes[index] : { engine: 'fish', voice: '', model: '', language: '' }), ...clone(value), id, name: value.name.trim() });
-        // 归属 (the role editor): 全局 = no card owns it and every card lists it; 按角色卡 = the cards picked; 无归属 = no card's and nobody
-        // may claim it (not listed under any card). A story naming a 全局 or 无归属 role does not make it some card's.
-        const mode = value.ownMode, chosen = Array.isArray(value.ownCards) ? value.ownCards.map(String) : null;
-        if (mode === 'global') { route.global = true; delete route.unowned; route.cards = []; }
-        else if (mode === 'none') { route.unowned = true; delete route.global; route.cards = []; }
-        else if (mode === 'cards') {
-            delete route.global; delete route.unowned;
-            if (chosen) { const had = index >= 0 && Array.isArray(next.routes[index].cards) ? next.routes[index].cards : []; route.cards = [...new Set(chosen.flatMap(k => [k, ...had.filter(h => h.startsWith(k + '#'))]))].slice(0, 100); }
-        }
-        delete route.ownMode; delete route.ownCards;
+        // 全局: the user's own and anyone who is no card's. No card claims it (a story naming it does not make it that card's), it has no
+        // card, and every card lists it. Any other pick in 分组 makes it a card's again.
+        if (route.group === '#global') { route.group = ''; route.global = true; route.cards = []; } else delete route.global;
+        // 无归属: no card's and nobody's to claim (not listed under any card either); 全局 is the one every card lists.
+        if (route.group === '#none') { route.group = ''; route.unowned = true; route.cards = []; } else delete route.unowned;
         // 参考图 changes only by setRoleRef / clearRoleRef: a page saving a role it read earlier keeps the one there is now.
         if (index >= 0 && next.routes[index].ref) route.ref = clone(next.routes[index].ref); else delete route.ref;
         // 角色资料: who they are, for the phone's apps when the tavern has no card for them.

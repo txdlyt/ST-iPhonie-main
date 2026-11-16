@@ -1767,7 +1767,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <div class="acts">
 <button class="mini act" id="checkin" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8M8 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4-5a2.5 2.5 0 0 1 0 5"/></svg>签到</button>
 <button class="mini act" id="retry" type="button"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>重试</button>
-<button class="mini stop" id="stop" type="button"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>停止</button>
+<button class="mini stop" id="stop" type="button"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="stopText">停止</span></button>
 </div>
 <button class="mini swc" id="fold" type="button" aria-expanded="false"><span id="foldText">切换账号</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
 </div>
@@ -1854,6 +1854,18 @@ function addLine(text, kind) {
   if (near) l.scrollTop = l.scrollHeight;
 }
 const say = (text, kind) => addLine(text, kind === 'bad' ? 'warn' : kind);
+// 一行带按钮的提示（失败后给「重新登录」「重试」这类选项）
+function sayAction(text, buttons) {
+  addLine(text, 'warn');
+  const line = $('log').lastElementChild;
+  if (!line) return;
+  buttons.forEach(function (b) {
+    const el = document.createElement('button');
+    el.type = 'button'; el.className = 'mini act'; el.style.marginLeft = '8px'; el.textContent = b[0];
+    el.onclick = function () { if (busy) return; line.querySelectorAll('button').forEach(function (x) { x.remove(); }); b[1](); };
+    line.appendChild(el);
+  });
+}
 
 // 进度行：转圈 + 文字向上滚动替换 + 进度条；结束后定格成绿/红
 let liveKey = '';
@@ -2024,12 +2036,12 @@ async function poll() {
   } catch (e) {}
 }
 const setActs = off => document.querySelectorAll('.act').forEach(b => { b.disabled = off; });
-async function runJob(url, body, startText, firstLine) {
+async function runJob(url, body, startText, firstLine, onFail) {
   if (busy) return false;
   busy = true; setActs(true);
   lastStage = ''; lastPct = 3; setLive(startText, 3); addLine(firstLine);
   const timer = setInterval(poll, 600);
-  let ok = false;
+  let ok = false, failed = '';
   try {
     const r = await call(url, { method: 'POST', body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
@@ -2037,9 +2049,10 @@ async function runJob(url, body, startText, firstLine) {
       ok = true; const m = j.message || '完成';
       setLive(m, 100, 'ok');
       if (j.warn) say(m); else say('✓ ' + m, 'ok');
-    } else { const m = (j.message || '失败') + '（' + r.status + '）'; setLive('✕ ' + m, lastPct, 'err'); say(m, 'bad'); }
-  } catch (e) { setLive('✕ 失败：' + e.message, lastPct, 'err'); say('失败：' + e.message, 'bad'); }
-  finally { clearInterval(timer); busy = false; setActs(false); }
+    } else { const m = (j.message || '失败') + '（' + r.status + '）'; setLive('✕ ' + m, lastPct, 'err'); say(m, 'bad'); failed = m; }
+  } catch (e) { setLive('✕ 失败：' + e.message, lastPct, 'err'); say('失败：' + e.message, 'bad'); failed = e.message; }
+  finally { clearInterval(timer); busy = false; setActs(false); stopping = false; $('stopText').textContent = '停止'; }
+  if (failed && onFail) onFail(failed);
   await refresh(true);
   return ok;
 }
@@ -2050,7 +2063,9 @@ async function doLogin(keep) {
   openLogin(false); if (narrow()) showTab('run');
   const btn = keep ? $('loginOnly') : $('goText'), old = btn.textContent;
   btn.textContent = '登录中…';
-  const ok = await runJob('/admin/login', { email: email, password: $('password').value, keep: keep }, keep ? '正在登录（仅添加）…' : '正在登录…', (keep ? '仅登录 ' : '开始登录 ') + email);
+  const ok = await runJob('/admin/login', { email: email, password: $('password').value, keep: keep }, keep ? '正在登录（仅添加）…' : '正在登录…', (keep ? '仅登录 ' : '开始登录 ') + email, function () {
+    sayAction('登录没成功：可以直接重来，或先点「重试」重新打开生图页再登录', [['重新登录', function () { doLogin(keep); }], ['重试（重开生图页）', function () { $('retry').click(); }]]);
+  });
   if (ok) $('password').value = '';
   btn.textContent = old;
 }
@@ -2067,11 +2082,16 @@ $('saveCur').onclick = async () => {
   setActs(false); refresh(true);
 };
 $('checkin').onclick = () => runJob('/admin/checkin', {}, '正在签到…', '签到：只处理当前页面上的每日领取弹窗');
+var stopping = false;
 $('stop').onclick = async () => {
   try {
     const r = await call('/admin/stop', { method: 'POST', body: '{}' });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) say(j.message || '已发出停止'); else say((j.message || '停止失败') + '（' + r.status + '）', 'bad');
+    if (r.ok) {
+      say(j.message || '已发出停止');
+      stopping = !!j.pending; $('stopText').textContent = stopping ? '强行停止' : '停止';
+      if (!j.pending && busy) { busy = false; setActs(false); setLive('已强行停止', null, 'err'); }
+    } else say((j.message || '停止失败') + '（' + r.status + '）', 'bad');
   } catch (e) { say('停止失败：' + e.message, 'bad'); }
   refresh(true);
 };
@@ -2081,7 +2101,9 @@ function pick(a, isCur, needPwd) {
   if (isCur) return say('已经是 ' + (a.label || a.email));
   if (needPwd && String(a.email).indexOf('id:') === 0) { openLogin(true); return say('这个账号要先在远程浏览器（6080）里重新登录，再点「保存当前网页登录」'); }
   if (needPwd) { $('email').value = a.email; openLogin(true); return say((a.expired ? '登录状态过期了' : '这个账号还没存档') + '，填密码登录一次'); }
-  { if (narrow()) showTab('run'); runJob('/admin/switch', { email: a.email }, '正在切换…', '切换到 ' + (a.label || a.email)); }
+  { if (narrow()) showTab('run'); runJob('/admin/switch', { email: a.email }, '正在切换…', '切换到 ' + (a.label || a.email), function () {
+    sayAction('切换没成功：', [['重试切换', function () { pick(a, false, false); }], ['重新登录这个账号', function () { if (String(a.email).indexOf('id:') === 0) return say('这个账号要先在远程浏览器（6080）里重新登录，再点「保存当前网页登录」', 'bad'); $('email').value = a.email; openLogin(true); }]]);
+  }); }
 }
 async function forget(a) {
   if (busy) return;
@@ -2384,11 +2406,13 @@ async function switchAccount(email, password) {
 }
 
 // 统计正在跑的管理任务（登录 / 切换 / 签到 / 重试），给「停止」用
+const adminActive = new Set(); // 正在跑的管理任务：{ res, end }，「强行停止」要把它们的请求直接了结
 app.use(['/admin/login', '/admin/switch', '/admin/checkin', '/admin/retry'], (_req, res, next) => {
   adminJobs++; stopRequested = false;
   let done = false;
-  const end = () => { if (!done) { done = true; adminJobs--; } };
-  res.on('finish', end); res.on('close', end);
+  const entry = { res, end: () => { if (!done) { done = true; adminJobs--; adminActive.delete(entry); } } };
+  adminActive.add(entry);
+  res.on('finish', entry.end); res.on('close', entry.end);
   next();
 });
 
@@ -2589,6 +2613,8 @@ app.post('/admin/checkin', async (_req, res) => {
     const page = ctx.pages().find(p => p.url().includes('/generator/image'));
     if (!page) throw new Error('没有打开的生图页，先点「重试」打开页面');
     stage('检查有没有每日领取弹窗', 10);
+    // 弹窗常在页面打开后几秒才弹出来：先等最多 8 秒看它出不出现
+    for (let w = 0; w < 16 && !(await page.getByText(/^\s*每日(領取|领取)\s*$/).first().isVisible().catch(() => false)); w++) await sleep(500);
     // 每次都重新定位弹窗和按钮（不拿旧节点）；弹窗没了就算签完；失败了清掉挡路的提示弹窗，隔一会儿再来
     const titleNow = () => page.getByText(/^\s*每日(領取|领取)\s*$/).first();
     let seen = false, before = null, still = true, claimed = false;
@@ -2629,12 +2655,40 @@ app.post('/admin/checkin', async (_req, res) => {
   }
 });
 
+// 自动签到：每隔一会儿看一眼生图页，有「每日領取」弹窗就签（没有什么也不做）。出图、管理任务、设置排队时不碰；
+// 验证没通过的话隔 10 分钟再试，不一直点
+let dailyWatchPause = 0;
+setInterval(async () => {
+  try {
+    if (Date.now() < dailyWatchPause || isGenerating() || adminJobs > 0 || !browser?.isConnected?.()) return;
+    const page = (await connectBrowser()).contexts()[0]?.pages().find(p => p.url().includes('/generator/image'));
+    if (!page || !(await page.getByText(/^\s*每日(領取|领取)\s*$/).first().isVisible().catch(() => false))) return;
+    console.log('自动签到：生图页上有每日领取弹窗，开始处理');
+    const job = settingLock.then(async () => { await dismissDailyReward(page); return dailyClaimed; });
+    settingLock = holdLock(job);
+    const claimed = await job.catch(() => false);
+    if (!claimed) dailyWatchPause = Date.now() + 10 * 60 * 1000;
+    else { const status = await readPageStatus(page).catch(() => null); if (status) noteBalance(status.balance); console.log('自动签到：已领取'); }
+  } catch (error) { console.warn('自动签到出错：', error.message); }
+}, 20000);
+
 // 停止：正在跑的管理任务在下一步停下；卡住的出图任务直接放弃（不关页面、不重新打开）
 app.post('/admin/stop', (_req, res) => {
   const running = adminJobs > 0, gen = generating;
   if (!running && !gen) return res.json({ ok: true, message: '现在没有在运行的任务' });
   const parts = [];
-  if (running) { stopRequested = true; parts.push('已发出停止，当前这一步做完就会停下（最长几十秒）'); }
+  let pending = false;
+  // 点一次：等当前这一步做完再停；任务还在跑时再点一次：强行停止（直接放手，不再等）
+  if (running && !stopRequested) {
+    stopRequested = true; pending = true;
+    parts.push('已发出停止，等当前这一步做完就停（最长几十秒）。还没停下的话再点一次「强行停止」');
+  } else if (running) {
+    stopRequested = true; // 后台那一步下次汇报进度时会因此抛「已手动停止」而退出
+    for (const entry of [...adminActive]) { if (!entry.res.headersSent) entry.res.status(409).json({ ok: false, message: '已强行停止' }); entry.end(); }
+    adminJobs = 0;
+    settingLock = Promise.resolve();
+    parts.push('已强行停止：后台那一步如果还在动，会自己停在下一个检查点；网页若卡在中间状态，点「重试」重新打开生图页');
+  }
   if (gen) {
     genEpoch++; generating = false; genStart = 0;
     settingLock = Promise.resolve();
@@ -2642,7 +2696,7 @@ app.post('/admin/stop', (_req, res) => {
     parts.push('已放弃出图任务（页面里那张可能还在画）');
   }
   console.log('收到停止：' + parts.join('；'));
-  res.json({ ok: true, message: parts.join('；') });
+  res.json({ ok: true, pending, message: parts.join('；') });
 });
 
 // 调试（只读，不点任何按钮）：导出模型 / LoRA / Recipe 相关元素的 HTML，用来校准选择器。
