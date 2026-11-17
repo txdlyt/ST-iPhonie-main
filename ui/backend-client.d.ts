@@ -817,6 +817,8 @@ export interface BackendFacade {
     /** PixAI 反代: switch the PixAI page's ratio ('9:16'), size tier ('M'), portrait/landscape (swap) and/or pictures per task; answers like pixaiStatus. */
     pixaiSetPage(patch: { model?: string; ratio?: string; size?: string; swap?: boolean; count?: 1 | 4 }): ReturnType<BackendFacade['pixaiStatus']>;
     /** ComfyUI through the tavern: connection check and what it offers. url: an address not saved yet. */
+    setPixaiRef(ref: { image: string; preview?: string } | null): void;
+    getPixaiRef(): { preview: string } | null;
     comfyCatalog(url?: string): Promise<{ models: Array<{ value: string; text: string; loader: 'checkpoint' | 'unet' | 'gguf' }>; samplers: string[]; schedulers: string[]; vaes: string[] }>;
     /** CLIPLoader's files and types (for a model loaded on its own), read like the LoRA list. */
     comfyClips(options?: {transport?: 'tavern' | 'direct'; signal?: AbortSignal}): Promise<{ clips: string[]; types: string[] }>;

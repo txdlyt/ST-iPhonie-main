@@ -129,7 +129,7 @@ async function safeGoto(page, url, tries = 3) {
 }
 
 // 找不到生图页就自己打开：优先复用空白页 / PixAI 其他页，否则新开标签。登录状态来自浏览器持久化数据，不用重新登录。
-async function openGeneratorPage() {
+async function openGeneratorPage({ claim = false } = {}) {
   const ctx = (await connectBrowser()).contexts()[0];
   const pages = ctx.pages();
   const page = pages.find(p => /^(about:blank|chrome:\/\/newtab)/.test(p.url()))
@@ -151,7 +151,8 @@ async function openGeneratorPage() {
   }
   if (!ready) console.log('生图页已打开，但提示词输入框暂未出现');
 
-  await dismissDailyReward(page);
+  // 切换账号时才等弹窗并签到；平时（启动、重试）只处理已经弹出来的
+  if (claim) await claimDailyIfShown(page); else await dismissDailyReward(page);
   // 只打开生图页：不再自动选模型、比例（模型、LoRA、比例由你在网页上定，或由插件出图时指定）
   watchApiHeaders(page);
   return page;
@@ -580,6 +581,24 @@ async function dismissDailyReward(page) {
     console.warn('处理签到弹窗失败：', error.message);
     return false;
   }
+}
+
+/**
+ * 登录 / 切换账号后打开生图页：「每日領取」弹窗会自己弹出来（有时晚几秒）。等最多 wait 毫秒，弹了就签到，没弹就算了。
+ * 只在这几个时刻检测，不会在平时一直盯着页面。
+ */
+async function claimDailyIfShown(page, wait = 8000) {
+  const title = page.getByText(/^\s*每日(領取|领取)\s*$/).first();
+  const until = Date.now() + wait;
+  while (Date.now() < until && !(await title.isVisible().catch(() => false))) await sleep(500);
+  if (!(await title.isVisible().catch(() => false))) return false;
+  for (let i = 1; i <= RETRY.tries; i++) {
+    await dismissDailyReward(page);
+    if (dailyClaimed || !(await title.isVisible().catch(() => false))) break;
+    if (i < RETRY.tries) await sleep(RETRY.gap);
+  }
+  if (dailyClaimed) { console.log('已自动签到'); const st = await readPageStatus(page).catch(() => null); if (st) noteBalance(st.balance); }
+  return dailyClaimed;
 }
 
 /** 把网页的画面比例切到 ratio（如 9:16）：选中的比例按钮带 ring-neutral-700（和 /ai/status 同一套判断）。已经是它就不点。 */
@@ -1187,6 +1206,73 @@ async function chooseModelPreset(page, id, onPage = false) { // onPage：插件�
   return true;
 }
 
+// ── 直控模式的参考图（MiaoMiao）：把插件发来的图传到网页的「底圖」上传框，并把 Strength 滑块调到指定值 ──
+// 元素来自真实页面：上传框是 div[role=presentation] 里的 input[type=file]，缩略图上有 button[aria-label="Remove image"]，
+// Strength 是 MUI 滑块（input[type=range]，0~1，步长 0.01）。
+let bridgeRef = false; // 网页上现在这张图是不是反代传的（不是的话不去动用户自己放的）
+const REF_REMOVE = 'button[aria-label="Remove image"]';
+async function removeRefImages(page) {
+  for (let i = 0; i < 6; i++) {
+    const buttons = page.locator(REF_REMOVE);
+    if (!(await buttons.count())) return;
+    await buttons.first().click({ timeout: 5000 }).catch(() => {});
+    await sleep(400);
+  }
+}
+async function syncReference(page, ref) {
+  if (!ref) {
+    if (bridgeRef) { await removeRefImages(page); bridgeRef = false; console.log('这次没带参考图，已移除网页上之前传的那张'); }
+    return;
+  }
+  const info = await readModelInfo(page).catch(() => null);
+  if (info?.name && !/miaomiao/i.test(info.name)) { console.log(`网页当前模型是「${info.name}」，不是 MiaoMiao，忽略参考图`); return; }
+  try {
+    await removeRefImages(page);
+    const tagged = await page.evaluate(() => {
+      document.querySelectorAll('[data-bridge-ref]').forEach(el => el.removeAttribute('data-bridge-ref'));
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+      const pick = inputs.find(el => el.closest('div[role="presentation"]') && !el.closest('.hidden')) || inputs.find(el => !el.closest('.hidden')) || inputs[0];
+      if (!pick) return false;
+      pick.setAttribute('data-bridge-ref', '1');
+      return true;
+    });
+    if (!tagged) throw new Error('网页上找不到上传框');
+    await page.locator('[data-bridge-ref="1"]').setInputFiles({ name: 'reference.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(ref.image, 'base64') });
+    await page.locator(REF_REMOVE).first().waitFor({ state: 'visible', timeout: 30000 });
+    bridgeRef = true;
+    const found = await page.evaluate(() => {
+      document.querySelectorAll('[data-bridge-strength]').forEach(el => el.removeAttribute('data-bridge-strength'));
+      const label = Array.from(document.querySelectorAll('*')).find(el => el.children.length === 0 && /^\s*Strength\s*$/i.test(el.textContent || ''));
+      let box = label;
+      for (let i = 0; i < 6 && box; i++, box = box.parentElement) { const input = box.querySelector('input[type="range"]'); if (input) { input.setAttribute('data-bridge-strength', '1'); return true; } }
+      return false;
+    });
+    if (!found) throw new Error('上传后网页上没出现 Strength 滑块');
+    const slider = page.locator('[data-bridge-strength="1"]');
+    const want = Math.round(Math.min(1, Math.max(0, ref.strength)) * 100) / 100;
+    const read = () => slider.evaluate(el => Number(el.value));
+    await slider.evaluate((el, v) => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      set.call(el, String(v));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, want);
+    await sleep(300);
+    if (Math.abs((await read()) - want) > 0.005) {
+      // 兜底：用键盘（Home 回到 0，再按右方向键每次 0.01）
+      await slider.focus();
+      await page.keyboard.press('Home');
+      for (let i = 0; i < Math.round(want * 100); i++) await page.keyboard.press('ArrowRight');
+      await sleep(300);
+    }
+    const now = await read();
+    if (Math.abs(now - want) > 0.011) throw new Error(`Strength 设不到 ${want}（网页上是 ${now}）`);
+    console.log(`参考图已传到网页，Strength = ${now}`);
+  } catch (error) {
+    throw new Error('参考图设置失败：' + error.message + '（可以先在插件里移除参考图，照常出图）');
+  }
+}
+
 async function generateBatch(prompt, count, spec = null) {
   await settingLock;
   const epoch = ++genEpoch;
@@ -1221,6 +1307,7 @@ async function generateBatch(prompt, count, spec = null) {
     const switched = await setQuantity(page, count);
     const needed = switched ? count : CONFIG.pageCount;
     if (!pagePicked) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
+    if (spec?.mode === 'direct') await syncReference(page, spec.ref || null);
 
     const editor = page.locator('div[contenteditable="true"].tiptap.ProseMirror');
     await editor.waitFor({ state: 'visible', timeout: 30000 });
@@ -1596,19 +1683,19 @@ h1 b{background:linear-gradient(90deg,#7c5cdb,#e8629a,#ffb86b,#7c5cdb);backgroun
 .ib.spin svg{animation:spin .7s linear infinite}
 /* 工作区 */
 .work{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
-.pane{display:none;flex:1;min-height:0;flex-direction:column;gap:12px;overflow:auto;padding:14px;border-radius:24px;background:var(--card);border:1px solid var(--line);box-shadow:0 18px 44px var(--sh);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.pane{display:none;flex:1;min-height:0;flex-direction:column;gap:10px;overflow:auto;padding:12px;border-radius:24px;background:var(--card);border:1px solid var(--line);box-shadow:0 18px 44px var(--sh);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 .pane.show{display:flex;animation:paneIn .45s cubic-bezier(.2,.8,.2,1) both}
 .pane::before{content:"";position:sticky;top:-14px;flex:none;height:3px;margin:-14px -14px 0;background:linear-gradient(90deg,var(--g1),var(--g2),#ffb86b,var(--g1));background-size:200% 100%;animation:flow 6s linear infinite;border-radius:24px 24px 0 0}
 .chip{flex:none;align-self:flex-start;display:inline-flex;align-items:center;gap:8px;padding:5px 14px 5px 6px;border-radius:999px;background:linear-gradient(100deg,rgba(167,139,250,.2),rgba(255,158,199,.22));font-size:14.5px;font-weight:800;color:var(--ink2)}
 .chip span{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--field);box-shadow:0 3px 8px var(--sh);color:var(--gd)}
 .chip svg{width:16px;height:16px}
-.blk{flex:none;display:flex;flex-direction:column;gap:10px;animation:rise .55s cubic-bezier(.2,.8,.2,1) both}
+.blk{flex:none;display:flex;flex-direction:column;gap:8px;animation:rise .55s cubic-bezier(.2,.8,.2,1) both}
 .pane.show .blk:nth-child(2){animation-delay:.04s}.pane.show .blk:nth-child(3){animation-delay:.1s}.pane.show .blk:nth-child(4){animation-delay:.16s}.pane.show .blk:nth-child(5){animation-delay:.22s}
 .pane>.blk:first-child{position:relative;z-index:30}
-.blk.grow{flex:1;min-height:150px}
+.blk.grow{flex:1;min-height:90px}
 /* 当前账号 */
 .curwrap{position:relative;z-index:20}
-.cur{padding:12px 14px;border-radius:20px;background:var(--field);border:1.5px solid var(--g1);box-shadow:0 0 0 3px rgba(167,139,250,.14),0 10px 24px var(--sh);display:flex;flex-direction:column;gap:10px;transition:transform .25s,box-shadow .25s}
+.cur{padding:10px 12px;border-radius:20px;background:var(--field);border:1.5px solid var(--g1);box-shadow:0 0 0 3px rgba(167,139,250,.14),0 10px 24px var(--sh);display:flex;flex-direction:column;gap:8px;transition:transform .25s,box-shadow .25s}
 .cur .top{display:flex;align-items:center;gap:10px}
 .cur .who{flex:1;min-width:0}
 .cur .who small{display:block;font-size:11px;font-weight:800;color:var(--ok)}
@@ -1623,15 +1710,20 @@ h1 b{background:linear-gradient(90deg,#7c5cdb,#e8629a,#ffb86b,#7c5cdb);backgroun
 .mini.stop{color:var(--bad);border-color:rgba(212,80,106,.35);background:rgba(212,80,106,.08)}
 .mini:disabled{opacity:.5}
 .mini.on{background:linear-gradient(135deg,#a78bfa,#e7a6d2);color:#fff;border-color:transparent;animation:selPop .4s ease}
-.mini.swc{flex:none;min-height:32px;padding:5px 12px;font-size:12.5px;align-self:flex-start;background:var(--glass)}
+.mini.swc{flex:none;min-height:30px;padding:4px 12px;font-size:12.5px;background:var(--glass)}
 .mini.swc svg{transition:transform .25s}.mini.swc.open svg{transform:rotate(180deg)}
 .mini:focus-visible,.ib:focus-visible,.go:focus-visible,.tabs button:focus-visible{outline:2px solid var(--g1);outline-offset:2px}
-.mdl{display:flex;flex-direction:column;gap:8px}
+.mdl{display:flex;flex-direction:column;gap:6px}
 .mdl[hidden]{display:none}
-.mdlcur{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}
-.mdlcur small{font-size:12px;color:var(--muted)}
-.mdlcur b{font-size:14.5px}
-.mdlcur em{font-style:normal;font-size:12px;color:var(--muted)}
+.rowh{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+.mdlname{display:flex;flex-direction:column;align-items:flex-end;min-width:0;text-align:right}
+.mdlname b{font-size:15px;font-weight:900;line-height:1.2;background:linear-gradient(90deg,#7c5cdb,#e8629a);-webkit-background-clip:text;background-clip:text;color:transparent;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.mdlname em{font-style:normal;font-size:11px;color:var(--muted);line-height:1.2}
+.mdlname em:empty{display:none}
+.setchips{display:flex;flex-wrap:nowrap;gap:5px;overflow:hidden}
+.setchips span{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;white-space:nowrap;border-radius:999px;background:linear-gradient(135deg,rgba(167,139,250,.16),rgba(231,166,210,.16));border:1px solid var(--line);font-size:12.5px;font-weight:700;color:var(--ink)}
+.setchips span small{font-size:11px;font-weight:600;color:var(--muted)}
+.setchips:empty{display:none}
 .mdl .acts{flex-wrap:wrap;gap:6px}.mdl .mini{flex:1 1 auto;min-height:36px;font-size:12.5px;white-space:nowrap}
 /* 切换账号浮层 */
 .accs{position:absolute;left:0;right:0;top:calc(100% + 8px);z-index:40;display:flex;flex-direction:column;gap:6px;max-height:min(46vh,340px);overflow:auto;padding:8px;border-radius:18px;background:var(--bg2);border:1.5px solid var(--line);box-shadow:0 18px 44px rgba(60,40,120,.3);scrollbar-width:thin;scrollbar-color:var(--line) transparent;animation:pop .18s ease both}
@@ -1658,7 +1750,7 @@ h1 b{background:linear-gradient(90deg,#7c5cdb,#e8629a,#ffb86b,#7c5cdb);backgroun
 .add svg{width:28px;height:28px;stroke:url(#gr);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .add b{font-size:14.5px}.add small{font-size:12px;color:var(--muted)}
 /* 进度与日志 */
-.logbox{flex:1;min-height:150px;display:flex;flex-direction:column;overflow:hidden;border-radius:18px;background:var(--glass);border:1.5px solid var(--line)}
+.logbox{flex:1;min-height:70px;display:flex;flex-direction:column;overflow:hidden;border-radius:18px;background:var(--glass);border:1.5px solid var(--line)}
 .live{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:9px 12px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(167,139,250,.2),rgba(231,166,210,.26));font-size:13px;font-weight:650;animation:slide .25s ease both}
 .live.hidden{display:none}
 .spin{width:14px;height:14px;flex:none;border-radius:50%;border:2px solid var(--line);border-top-color:var(--g2);animation:spin .8s linear infinite}
@@ -1710,7 +1802,6 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 .shotmask{background:rgba(20,10,40,.7)}
 .shotmask{align-items:center;justify-content:center}.shotmask img{margin:auto;max-width:94vw;max-height:88dvh;border-radius:14px;border:1.5px solid var(--line);background:var(--field);transform:scale(.94);transition:transform .45s cubic-bezier(.34,1.4,.5,1)}
 .shotmask.show img{transform:none}
-#setLine{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @keyframes rise{from{opacity:0;transform:translateY(16px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes paneIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
 @keyframes itemIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
@@ -1749,7 +1840,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <nav class="tabs" id="tabs"><span class="ind" id="ind"></span><button type="button" class="on" data-tab="run">出图</button><button type="button" data-tab="acc">账号<em id="accCount">0</em></button></nav>
 <header class="hero">
 <div class="logo">Px</div>
-<div class="ttl-area"><h1><b>PixAI 反代</b></h1><div class="sub"><span class="pill" id="state"><span class="dot"></span><span id="stateText">空闲</span></span><span id="setLine"></span></div></div>
+<div class="ttl-area"><h1><b>PixAI 反代</b></h1><div class="sub"><span class="pill" id="state"><span class="dot"></span><span id="stateText">空闲</span></span></div></div>
 <div class="tools">
 <button class="ib" id="refresh" title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
 <button class="ib" id="shot" title="页面截图" aria-label="页面截图"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.5"/></svg></button>
@@ -1758,7 +1849,8 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 </header>
 <main class="work">
 <section class="pane show" id="paneRun">
-<div class="blk"><div class="chip"><span><svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/></svg></span>当前账号</div>
+<div class="blk"><div class="rowh"><div class="chip"><span><svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/></svg></span>当前账号</div>
+<button class="mini swc" id="fold" type="button" aria-expanded="false"><span id="foldText">切换账号</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></div>
 <div class="curwrap"><div class="cur">
 <div class="top">
 <div class="who"><small>● 正在使用</small><div class="em" id="curEm">—</div></div>
@@ -1769,12 +1861,11 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <button class="mini act" id="retry" type="button"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>重试</button>
 <button class="mini stop" id="stop" type="button"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="stopText">停止</span></button>
 </div>
-<button class="mini swc" id="fold" type="button" aria-expanded="false"><span id="foldText">切换账号</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
 </div>
 <div class="accs" id="accs" hidden></div></div></div>
 <div class="blk mdl" id="mdlBox" hidden>
-<div class="chip"><span><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>模型</div>
-<div class="mdlcur"><small>当前</small><b id="mdlCur">—</b><em id="mdlSub"></em></div>
+<div class="rowh"><div class="chip"><span><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>模型</div><div class="mdlname"><b id="mdlCur">—</b><em id="mdlSub"></em></div></div>
+<div class="setchips" id="setChips"></div>
 <div class="acts" id="mdlBtns"></div>
 </div>
 <div class="blk grow"><div class="chip"><span><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10l3 2-3 2M13 15h4"/></svg></span>进度与日志</div>
@@ -1985,7 +2076,12 @@ function show(j) {
   if (j && j.size) parts.push(j.size);
   if (j && j.count) parts.push('一次 ' + j.count + ' 张');
   setting = parts.join(' · ');
-  $('setLine').textContent = setting;
+  const chips = $('setChips'); chips.textContent = '';
+  [['比例', j && j.ratio], ['尺寸', j && j.size], ['一次', j && j.count ? j.count + ' 张' : '']].forEach(function (x) {
+    if (!x[1]) return;
+    const c = document.createElement('span'), k = document.createElement('small');
+    k.textContent = x[0]; c.appendChild(k); c.appendChild(document.createTextNode(String(x[1]))); chips.appendChild(c);
+  });
   renderModels(j);
   if (j && j.accounts) renderAccs(j.accounts);
   const gen = !!(j && j.generating), stuck = !!(j && j.stuck);
@@ -2007,7 +2103,7 @@ async function refresh(quiet, deep) {
     if (!quiet) say('已刷新' + (j.message ? ' · ' + j.message : '') + (setting ? ' · 网页当前：' + setting : ''), 'ok');
   } catch (e) { if (!quiet) say('读取失败：' + e.message, 'bad'); }
 }
-$('refresh').onclick = async () => { const b = $('refresh'); b.classList.add('spin'); await refresh(false, true); setTimeout(() => b.classList.remove('spin'), 300); };
+$('refresh').onclick = async () => { await refresh(false, true); };
 $('keyBtn').onclick = () => openKey(true);
 $('save').onclick = () => { openKey(false); refresh(false); };
 $('token').onkeydown = e => { if (e.key === 'Enter') $('save').onclick(); };
@@ -2401,7 +2497,7 @@ async function switchAccount(email, password) {
 
   // 登录后回到生图页，重新选好模型、比例
   stage('回到生图页，选择模型和比例', 88);
-  await (opening ??= openGeneratorPage().finally(() => { opening = null; }));
+  await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   batcher.runs.clear(); // 旧账号时缓存的批次作废
 }
 
@@ -2531,7 +2627,7 @@ async function switchToSaved(email) {
 
   stage('打开生图页，选择模型和比例', 70);
   try {
-    await (opening ??= openGeneratorPage().finally(() => { opening = null; }));
+    await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   } catch (error) {
     if (error.login) {
       const a = findAcc(email);
@@ -2613,8 +2709,6 @@ app.post('/admin/checkin', async (_req, res) => {
     const page = ctx.pages().find(p => p.url().includes('/generator/image'));
     if (!page) throw new Error('没有打开的生图页，先点「重试」打开页面');
     stage('检查有没有每日领取弹窗', 10);
-    // 弹窗常在页面打开后几秒才弹出来：先等最多 8 秒看它出不出现
-    for (let w = 0; w < 16 && !(await page.getByText(/^\s*每日(領取|领取)\s*$/).first().isVisible().catch(() => false)); w++) await sleep(500);
     // 每次都重新定位弹窗和按钮（不拿旧节点）；弹窗没了就算签完；失败了清掉挡路的提示弹窗，隔一会儿再来
     const titleNow = () => page.getByText(/^\s*每日(領取|领取)\s*$/).first();
     let seen = false, before = null, still = true, claimed = false;
@@ -2654,23 +2748,6 @@ app.post('/admin/checkin', async (_req, res) => {
     res.status(502).json({ ok: false, message: error.message });
   }
 });
-
-// 自动签到：每隔一会儿看一眼生图页，有「每日領取」弹窗就签（没有什么也不做）。出图、管理任务、设置排队时不碰；
-// 验证没通过的话隔 10 分钟再试，不一直点
-let dailyWatchPause = 0;
-setInterval(async () => {
-  try {
-    if (Date.now() < dailyWatchPause || isGenerating() || adminJobs > 0 || !browser?.isConnected?.()) return;
-    const page = (await connectBrowser()).contexts()[0]?.pages().find(p => p.url().includes('/generator/image'));
-    if (!page || !(await page.getByText(/^\s*每日(領取|领取)\s*$/).first().isVisible().catch(() => false))) return;
-    console.log('自动签到：生图页上有每日领取弹窗，开始处理');
-    const job = settingLock.then(async () => { await dismissDailyReward(page); return dailyClaimed; });
-    settingLock = holdLock(job);
-    const claimed = await job.catch(() => false);
-    if (!claimed) dailyWatchPause = Date.now() + 10 * 60 * 1000;
-    else { const status = await readPageStatus(page).catch(() => null); if (status) noteBalance(status.balance); console.log('自动签到：已领取'); }
-  } catch (error) { console.warn('自动签到出错：', error.message); }
-}, 20000);
 
 // 停止：正在跑的管理任务在下一步停下；卡住的出图任务直接放弃（不关页面、不重新打开）
 app.post('/admin/stop', (_req, res) => {
@@ -2733,6 +2810,28 @@ app.get('/debug/model', async (_req, res) => {
     res.type('text/plain; charset=utf-8').send(out);
   } catch (error) {
     res.status(503).json({ message: error.message });
+  }
+});
+
+// 只读：导出「参考图 / Strength」相关元素（file input、含 Strength 的滑块块、上传区），给直控模式的参考图功能对着真实元素写。
+// 先在网页里选 MiaoMiao、上传一张参考图让 Strength 出现，再：curl -s -H "Authorization: Bearer 你的密钥" http://127.0.0.1:3188/debug/ref
+app.get('/debug/ref', async (_req, res) => {
+  try {
+    const page = await getPixAIPage();
+    const dom = await page.evaluate(() => {
+      const visible = el => !!(el.offsetWidth || el.offsetHeight);
+      const clean = (el, n) => el ? el.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<img[^>]*>/g, '<img/>').replace(/\s+/g, ' ').slice(0, n) : null;
+      const up = (el, n) => { for (let i = 0; i < n && el?.parentElement; i++) el = el.parentElement; return el; };
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]')).map(el => ({ visible: visible(el), accept: el.accept, multiple: el.multiple, html: clean(el, 300), parent: clean(up(el, 2), 900) }));
+      const leaf = Array.from(document.querySelectorAll('*')).filter(el => el.children.length === 0 && /^\s*Strength\s*$/i.test(el.textContent || ''));
+      const strength = leaf.map(el => ({ visible: visible(el), html: clean(up(el, 3), 1600) }));
+      const sliders = Array.from(document.querySelectorAll('[role="slider"], input[type="range"]')).filter(visible).map(el => clean(up(el, 2), 700));
+      const uploads = Array.from(document.querySelectorAll('div, button, label')).filter(el => visible(el) && el.children.length < 6 && /upload|上傳|上传|reference|參考|参考|image to image|img2img/i.test((el.innerText || '').slice(0, 60))).slice(0, 8).map(el => clean(el, 600));
+      return { inputs, strength, sliders, uploads };
+    });
+    res.json(dom);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -2804,7 +2903,10 @@ function readHint(raw) {
 /** 插件在 parameters.bridge_mode 里说的出图方式：{mode: 'api', model, loraWeight} 或 {mode: 'direct'}；宽高取请求本身的 width / height。 */
 function readSpec(raw, params) {
   if (!raw || typeof raw !== 'object' || !['api', 'direct'].includes(raw.mode)) return null;
-  if (raw.mode === 'direct') return { mode: 'direct' };
+  if (raw.mode === 'direct') {
+    const r = raw.ref, ok = r && typeof r.image === 'string' && r.image.length > 100 && r.image.length < 14e6 && /^[A-Za-z0-9+/=\s]+$/.test(r.image.slice(0, 4000));
+    return { mode: 'direct', ...(ok ? { ref: { image: r.image, strength: Number.isFinite(Number(r.strength)) ? Number(r.strength) : 0.55 } } : {}) };
+  }
   const dim = v => (Number.isInteger(v) && v >= 64 && v <= 8192 ? v : null);
   return { mode: 'api', source: raw.source === 'page' ? 'page' : 'preset', useLora: raw.useLora !== false, useRecipe: raw.useRecipe !== false, template: typeof raw.template === 'string' ? raw.template.slice(0, 40) : '', loraTweaks: Object.fromEntries(Object.entries(raw.loraTweaks && typeof raw.loraTweaks === 'object' ? raw.loraTweaks : {}).slice(0, 20).filter(([k, v]) => /^\d{1,30}$/.test(k) && v && typeof v === 'object').map(([k, v]) => [k, { on: v.on !== false, weight: Number.isFinite(v.weight) ? Math.min(1, Math.max(0, v.weight)) : null }])), model: typeof raw.model === 'string' ? raw.model.slice(0, 40) : '', loraWeight: Number.isFinite(raw.loraWeight) ? raw.loraWeight : null, width: dim(params.width), height: dim(params.height) };
 }

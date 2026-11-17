@@ -178,6 +178,7 @@ export class TTSBackend {
         // PixAI 反代: a NovelAI-format client of its own (address from the settings, the bridge's token optional).
         this.pixai = new PixaiClient();
         this.pixaiKey = '';
+        this.pixaiRef = null; // direct mode, MiaoMiao: the picture picked as 参考图 (base64 JPEG + preview); kept in memory only
         this.githubKey = '';
         this.hostQueue = Promise.resolve();
         this.hostLast = null;
@@ -1880,6 +1881,8 @@ export class TTSBackend {
     }
     async gptModels() { this.assertOpen(); return gptModels({ fetch: this.imageFetch, settings: this.settings.draw.gpt, key: this.gptKey }); }
     /** ComfyUI: connection check and what it offers (models, samplers, schedulers). url: an address not saved yet. */
+    setPixaiRef(ref) { this.pixaiRef = ref && typeof ref.image === 'string' && ref.image ? { image: ref.image, preview: typeof ref.preview === 'string' ? ref.preview : '' } : null; }
+    getPixaiRef() { return this.pixaiRef ? { preview: this.pixaiRef.preview } : null; }
     async comfyCatalog(url) { this.assertOpen(); return comfyCatalog({ fetch: this.imageFetch, headers: this.tavernHeaders(), url: comfyUrl(url ?? this.settings.draw.comfy.url) }); }
     async comfyClips({transport, signal} = {}) { this.assertOpen(); const c = this.settings.draw.comfy; return comfyClips({fetch: this.imageFetch, url: c.url, transport: transport ?? c.loraTransport, signal}); }
     async comfyLoras({transport, signal} = {}) { this.assertOpen(); const c = this.settings.draw.comfy; return comfyLoras({fetch: this.imageFetch, url: c.url, transport: transport ?? c.loraTransport, signal}); }
@@ -1890,7 +1893,7 @@ export class TTSBackend {
         const draw = this.settings.draw, p = quote.params;
         if (engine === 'pixai') {
             this.pixai.relay = draw.pixai.url; this.pixai.setKey(this.pixaiKey);
-            const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [], pixai: draw.pixai });
+            const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [], pixai: draw.pixai, ref: draw.pixai.mode === 'direct' ? this.pixaiRef : null });
             const blob = await this.pixai.generate(request.body, signal);
             return { blob, seed: request.seed, params: request.params, prompt: request.body.input };
         }
@@ -4173,7 +4176,7 @@ export class TTSBackend {
             setRoleRef: (id, blob) => this.setRoleRef(String(id), blob), clearRoleRef: id => this.clearRoleRef(String(id)),
             arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
             imageConnectionList: engine => this.imageConnectionList(engine), saveImageConnection: (engine, patch) => this.saveImageConnection(engine, patch), selectImageConnection: (engine, id) => this.selectImageConnection(engine, id), deleteImageConnection: (engine, id) => this.deleteImageConnection(engine, id),
-            drawReady: () => this.drawReady(), drawMissing: () => this.drawMissing(), paidPrompt: () => this.paidPrompt(), comfyCatalog: url => this.comfyCatalog(url), comfyClips: options => this.comfyClips(options), comfyWorkflows: () => this.comfyWorkflows(), comfyWorkflow: name => this.comfyWorkflow(name),
+            drawReady: () => this.drawReady(), drawMissing: () => this.drawMissing(), paidPrompt: () => this.paidPrompt(), setPixaiRef: ref => this.setPixaiRef(clone(ref)), getPixaiRef: () => this.getPixaiRef(), comfyCatalog: url => this.comfyCatalog(url), comfyClips: options => this.comfyClips(options), comfyWorkflows: () => this.comfyWorkflows(), comfyWorkflow: name => this.comfyWorkflow(name),
             saveComfyWorkflow: patch => this.saveComfyWorkflow(patch), selectComfyWorkflow: id => this.selectComfyWorkflow(id), deleteComfyWorkflow: id => this.deleteComfyWorkflow(id),
             comfyLoraInfo: () => this.comfyLoraInfo(), editComfyLoras: change => this.editComfyLoras(clone(change || {})), restoreComfyWorkflow: () => this.restoreComfyWorkflow(),
             comfyLoras: options => this.comfyLoras(options),

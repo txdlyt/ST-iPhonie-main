@@ -3518,3 +3518,5 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .code.readonly{white-space:pre-wrap;word-break:break-word;padding:10px 12px;border-radius:14px;background:var(--card);font:12.5px/1.5 "JetBrains Mono",ui-monospace,monospace}
 /* Also covers browsers without native inert; ui/inert.js guards focus and events. */
 .screen [inert]{pointer-events:none;user-select:none;-webkit-user-select:none}
+
+.px-ref{display:flex;gap:12px;align-items:flex-start}.px-ref img{width:72px;height:72px;object-fit:cover;border-radius:12px;flex:none}.px-ref-r{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}.px-ref-r input[type=range]{width:100%}

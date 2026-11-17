@@ -12,7 +12,7 @@ import {refPanel} from './draw-refs.js';
 import {swipeRow, mountSwipeList} from './swipe-list.js';
 import {layerSort} from './layer-sort.js';
 import {openImageViewer} from '../image-viewer.js';
-import {pickPicture, pictureData, readNovelAI, fitBase, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
+import {pickPicture, pictureData, readNovelAI, fitBase, fitGptReference, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
 import {DIRECTOR_TOOLS, DIRECTOR_WORDS, EMOTIONS, upscaleBy, UPSCALE_MAX, naiFeatures, samplersFor, schedulesFor, qualityPresets, ucPresets, finalWords, NAI_SAMPLER_NAMES, maxEnhanceSize, usageImages, usageRefillPerDay} from '../core/novelai.js';
 import {LOCKS, unlockedParams, POSITION_GRIDS} from '../core/draw.js';
 import {embeddedVibeFile} from '../core/vibes.js';
@@ -363,10 +363,12 @@ export function drawApp(ctx) {
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
     const models = Array.isArray(i.models) ? i.models : [], curModel = i.model?.id || '';
     const modelRow = models.length ? `<div class="px-cell px-wide"><small>模型${help('点一下会去切 PixAI 网页：换模型，并按这个模型的设定带上或去掉 LoRA / Recipe。要等十几秒到半分钟，期间按钮灰着。')}</small><b>${esc(i.model?.name || '读不到网页上的模型')}</b><em>${esc([...(i.model?.recipes || []).map(x => 'Recipe ' + x), ...(i.model?.loras || []).map(x => 'LoRA ' + x)].join(' · '))}</em><div class="size-chips px-pick">${models.map(m => `<button type="button" data-action="pixai-model" data-value="${esc(m.id)}" aria-pressed="${m.id === curModel}"${pick ? ' disabled' : ''}>${esc(m.name)}</button>`).join('')}</div></div>` : '';
+    const miao = /miaomiao/i.test(i.model?.name || ''), pref = api.getPixaiRef(), strength = state().pixai.refStrength;
+    const refRow = miao ? `<div class="px-cell px-wide"><small>参考图${help('MiaoMiao 专有：选一张图当底图，PixAI 网页会上传它并按 Strength 参考（越大越像原图）。图只在这次打开期间记着，刷新后要重新选。')}</small>${pref ? `<div class="px-ref"><img src="${esc(pref.preview)}" alt="参考图" draggable="false"><div class="px-ref-r"><label class="tpl-lora-head"><span>Strength</span><output>${Number(strength).toFixed(2)}</output></label><input type="range" min="0" max="1" step="0.01" value="${strength}" data-pxref-strength><div class="actions">${btn('pixai-ref-pick', '换一张', 'chip-button')}${btn('pixai-ref-clear', '移除', 'chip-button')}</div></div></div>` : `<div class="actions">${btn('pixai-ref-pick', icon('import') + '选一张参考图', 'secondary')}</div>`}</div>` : '';
     const perTask = Number.isInteger(i.count) ? i.count : null;
     const lines = [];
     lines.push(`<p class="hint" style="padding:0">比例、尺寸和横竖点上面的按钮就会去切网页；张数点下面的 1 / 4；模型在上面点就会去切网页（LoRA / Recipe 跟着模型走）；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
-    return `<div class="group pad px-sync">${foot}<div class="px-grid">${modelRow}${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${lines.join('')}</div>`;
+    return `<div class="group pad px-sync">${foot}<div class="px-grid">${modelRow}${refRow}${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${lines.join('')}</div>`;
   }
   function naiParams(d, size) {
     const p = d.params, f = naiFeatures(p.model), medium = p.effort === 'medium', guard = d.guard, schedules = schedulesFor(p.model, p.sampler);
@@ -677,6 +679,8 @@ export function drawApp(ctx) {
   v.on('change', '[data-pxtpl-w]', el => tplTweak(el.dataset.pxtplW, {weight: Number(el.value)}));
   v.on('change', '[data-pxtpl-on]', el => { tplTweak(el.dataset.pxtplOn, {on: el.checked}); render(); });
   v.on('change', '[data-pxapi-on]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapiOn]: el.checked}}}); render(); });
+  v.on('input', '[data-pxref-strength]', el => { el.closest('.px-ref-r').querySelector('output').textContent = Number(el.value).toFixed(2); });
+  v.on('change', '[data-pxref-strength]', el => { api.saveDraw({pixai: {refStrength: Number(el.value)}}); });
   v.on('change', '[data-pxapi]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapi]: Number(el.value)}}}); });
   v.on('input', '[data-queue]', el => { el.previousElementSibling.querySelector('output').textContent = el.value + (el.dataset.queue === 'gap' ? ' 秒' : ' 次'); });
   v.on('change', '[data-queue]', el => { api.saveDraw({queue: {[el.dataset.queue]: Number(el.value)}}); });
@@ -760,6 +764,8 @@ export function drawApp(ctx) {
       case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
       case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
       case 'pixai-swap': await setPixaiPage({swap: true}); break;
+      case 'pixai-ref-pick': { const blob = await pickPicture(ctx, api, '选一张参考图'); if (!blob) break; try { const fit = await fitGptReference(ctx.win, blob, 1280); api.setPixaiRef({image: fit.image, preview: fit.preview}); } catch (error) { ctx.notify('读取图片失败：' + error.message, {error: true}); } render(); break; }
+      case 'pixai-ref-clear': api.setPixaiRef(null); render(); break;
       case 'pixai-refresh': pixaiInfo = pixaiInfo ? {...pixaiInfo, syncing: true} : undefined; render(); await refreshPixai(); break;
       case 'gpt-quality': api.saveDraw({gpt: {quality: el.dataset.value}}); render(); break;
       case 'gpt-orientation': api.saveDraw({gpt: {orientation: el.dataset.value}}); render(); break;
