@@ -13,9 +13,10 @@ export const PIXAI_NAME = 'PixAI 反代';
  * Two ways to draw, each with its own settings (changing one never touches the other):
  *   api    — the bridge sends PixAI's own request: the model, the size, the pictures per task and the LoRA weight all travel with
  *            the request (`api` below), the PixAI page is not touched.
+ *   still  — the bridge touches nothing on the page but the prompt (model, ratio, size, count, reference… are set by hand on the page; read back only).
  *   direct — the bridge clicks the PixAI page; the model, ratio, size and count are the page's own buttons (read back, not kept here).
  */
-export const PIXAI_MODES = ['api', 'direct'];
+export const PIXAI_MODES = ['api', 'direct', 'still'];
 // source: 'preset' — the model, LoRA and Recipe are the bridge's preset (each of LoRA / Recipe can be switched off);
 //         'page'   — the model, LoRA, Recipe, steps … are what was set on the PixAI page and recorded by the bridge: this side only decides the prompt and the size.
 // tplId: which recorded page setting is in use; tplKnown: the records seen so far (null = none yet), so a newly recorded one is noticed; tplLoras: per record, per LoRA {on, weight}.
@@ -104,6 +105,6 @@ export function pixaiRequest({prompt, negative = '', characters = [], params, ba
     // A picture that is alone in its request still says so: the bridge then draws one, not four.
     bridge_batch: normalizeBatch(batch) || {run: crypto.randomUUID(), index: 0, size: 1},
     // Which way to draw, so the bridge does what this plugin's settings say (an older bridge ignores it).
-    ...(pixai ? {bridge_mode: pixai.mode === 'direct' ? {mode: 'direct', ...(ref?.image ? {ref: {image: ref.image, strength: pixai.refStrength ?? 0.55}} : {})} : {mode: 'api', source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false, template: pixai.api?.tplId || '', loraTweaks: pixai.api?.tplLoras?.[pixai.api?.tplId] || {}}} : {})};
+    ...(pixai ? {bridge_mode: pixai.mode === 'still' ? {mode: 'still'} : pixai.mode === 'direct' ? {mode: 'direct', ...(ref?.image ? {ref: {image: ref.image, strength: pixai.refStrength ?? 0.55}} : {})} : {mode: 'api', source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false, template: pixai.api?.tplId || '', loraTweaks: pixai.api?.tplLoras?.[pixai.api?.tplId] || {}}} : {})};
   return {body: {input, model: p.model, action: 'generate', parameters}, seed, params: {width, height}};
 }

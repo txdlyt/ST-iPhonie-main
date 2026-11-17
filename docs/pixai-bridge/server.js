@@ -1287,7 +1287,7 @@ async function generateBatch(prompt, count, spec = null) {
       try { return await apiGenerate(page, prompt, count, spec); }
       catch (error) { error.fallback = false; throw error; }
     }
-    if (API.on && spec?.mode !== 'direct') {
+    if (API.on && spec?.mode !== 'direct' && spec?.mode !== 'still') {
       try { return await apiGenerate(page, prompt, count); }
       catch (error) {
         if (!error.fallback) throw error;
@@ -1304,9 +1304,18 @@ async function generateBatch(prompt, count, spec = null) {
       CARD
     );
 
-    const switched = await setQuantity(page, count);
-    const needed = switched ? count : CONFIG.pageCount;
-    if (!pagePicked) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
+    // 静止模式：什么设置都不碰（张数、比例、模型、参考图都是用户在网页上手动设的），只读网页现在一次出几张
+    const still = spec?.mode === 'still';
+    let switched = false, needed;
+    if (still) {
+      await openSettingsTab(page).catch(() => false);
+      needed = (await readPageCount(page).catch(() => null)) || CONFIG.pageCount;
+      console.log(`静止模式：不改网页设置，按网页现在的一次出 ${needed} 张`);
+    } else {
+      switched = await setQuantity(page, count);
+      needed = switched ? count : CONFIG.pageCount;
+    }
+    if (!pagePicked && !still) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
     if (spec?.mode === 'direct') await syncReference(page, spec.ref || null);
 
     const editor = page.locator('div[contenteditable="true"].tiptap.ProseMirror');
@@ -2902,7 +2911,8 @@ function readHint(raw) {
 
 /** 插件在 parameters.bridge_mode 里说的出图方式：{mode: 'api', model, loraWeight} 或 {mode: 'direct'}；宽高取请求本身的 width / height。 */
 function readSpec(raw, params) {
-  if (!raw || typeof raw !== 'object' || !['api', 'direct'].includes(raw.mode)) return null;
+  if (!raw || typeof raw !== 'object' || !['api', 'direct', 'still'].includes(raw.mode)) return null;
+  if (raw.mode === 'still') return { mode: 'still' };
   if (raw.mode === 'direct') {
     const r = raw.ref, ok = r && typeof r.image === 'string' && r.image.length > 100 && r.image.length < 14e6 && /^[A-Za-z0-9+/=\s]+$/.test(r.image.slice(0, 4000));
     return { mode: 'direct', ...(ok ? { ref: { image: r.image, strength: Number.isFinite(Number(r.strength)) ? Number(r.strength) : 0.55 } } : {}) };
