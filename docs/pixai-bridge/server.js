@@ -1206,11 +1206,15 @@ async function chooseModelPreset(page, id, onPage = false) { // onPage：插件�
   return true;
 }
 
-// ── 直控模式的参考图（MiaoMiao）：把插件发来的图传到网页的「底圖」上传框，并把 Strength 滑块调到指定值 ──
+// ── 参考图：把插件发来的图传到网页的「底圖」上传框，并把 Strength 滑块调到指定值 ──
 // 元素来自真实页面：上传框是 div[role=presentation] 里的 input[type=file]，缩略图上有 button[aria-label="Remove image"]，
 // Strength 是 MUI 滑块（input[type=range]，0~1，步长 0.01）。
-let bridgeRef = false; // 网页上现在这张图是不是反代传的（不是的话不去动用户自己放的）
+// 网页自己会处理「模型支不支持参考图」：在不支持的模型上传图 → 网页自动切到支持的模型（提示「已切換至 …」）；
+// 带着图切到不支持的模型 → 网页移除图片（提示「所選模型不支援參考圖片，已移除該圖片」）。这里不抓 toast，只比对前后的模型和有没有图。
+let bridgeRef = false, bridgeRefKey = ''; // 网页上现在这张图是不是反代传的、传的是哪张（不是的话不去动用户自己放的）
 const REF_REMOVE = 'button[aria-label="Remove image"]';
+const refHash = image => createHash('md5').update(image).digest('hex');
+const hasRefImage = async page => (await page.locator(REF_REMOVE).count()) > 0;
 async function removeRefImages(page) {
   for (let i = 0; i < 6; i++) {
     const buttons = page.locator(REF_REMOVE);
@@ -1219,58 +1223,101 @@ async function removeRefImages(page) {
     await sleep(400);
   }
 }
+async function findStrength(page) {
+  return page.evaluate(() => {
+    document.querySelectorAll('[data-bridge-strength]').forEach(el => el.removeAttribute('data-bridge-strength'));
+    const label = Array.from(document.querySelectorAll('*')).find(el => el.children.length === 0 && /^\s*Strength\s*$/i.test(el.textContent || ''));
+    let box = label;
+    for (let i = 0; i < 6 && box; i++, box = box.parentElement) { const input = box.querySelector('input[type="range"]'); if (input) { input.setAttribute('data-bridge-strength', '1'); return true; } }
+    return false;
+  });
+}
+// 网页上现在的 Strength；没有参考图（或读不到）是 null
+async function readRefStrength(page) {
+  if (!(await hasRefImage(page))) return null;
+  if (!(await findStrength(page))) return null;
+  const value = await page.locator('[data-bridge-strength="1"]').evaluate(el => Number(el.value)).catch(() => null);
+  return Number.isFinite(value) ? value : null;
+}
+async function setStrength(page, strength) {
+  if (!(await findStrength(page))) throw new Error('网页上没出现 Strength 滑块');
+  const slider = page.locator('[data-bridge-strength="1"]');
+  const want = Math.round(Math.min(1, Math.max(0, strength)) * 100) / 100;
+  const read = () => slider.evaluate(el => Number(el.value));
+  await slider.evaluate((el, v) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(el, String(v));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, want);
+  await sleep(300);
+  if (Math.abs((await read()) - want) > 0.005) {
+    // 兜底：用键盘（Home 回到 0，再按右方向键每次 0.01）
+    await slider.focus();
+    await page.keyboard.press('Home');
+    for (let i = 0; i < Math.round(want * 100); i++) await page.keyboard.press('ArrowRight');
+    await sleep(300);
+  }
+  const now = await read();
+  if (Math.abs(now - want) > 0.011) throw new Error(`Strength 设不到 ${want}（网页上是 ${now}）`);
+  return now;
+}
+async function uploadRef(page, ref) {
+  await removeRefImages(page);
+  const tagged = await page.evaluate(() => {
+    document.querySelectorAll('[data-bridge-ref]').forEach(el => el.removeAttribute('data-bridge-ref'));
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    const pick = inputs.find(el => el.closest('div[role="presentation"]') && !el.closest('.hidden')) || inputs.find(el => !el.closest('.hidden')) || inputs[0];
+    if (!pick) return false;
+    pick.setAttribute('data-bridge-ref', '1');
+    return true;
+  });
+  if (!tagged) throw new Error('网页上找不到上传框');
+  await page.locator('[data-bridge-ref="1"]').setInputFiles({ name: 'reference.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(ref.image, 'base64') });
+  await page.locator(REF_REMOVE).first().waitFor({ state: 'visible', timeout: 30000 });
+}
+// 出图时（直控模式）：带了图就确保网页上是这张图和这个 Strength；没带而网页上是反代传的，就移除
 async function syncReference(page, ref) {
   if (!ref) {
-    if (bridgeRef) { await removeRefImages(page); bridgeRef = false; console.log('这次没带参考图，已移除网页上之前传的那张'); }
+    if (bridgeRef) { await removeRefImages(page); bridgeRef = false; bridgeRefKey = ''; console.log('这次没带参考图，已移除网页上之前传的那张'); }
     return;
   }
   const info = await readModelInfo(page).catch(() => null);
   if (info?.name && !/miaomiao/i.test(info.name)) { console.log(`网页当前模型是「${info.name}」，不是 MiaoMiao，忽略参考图`); return; }
   try {
-    await removeRefImages(page);
-    const tagged = await page.evaluate(() => {
-      document.querySelectorAll('[data-bridge-ref]').forEach(el => el.removeAttribute('data-bridge-ref'));
-      const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-      const pick = inputs.find(el => el.closest('div[role="presentation"]') && !el.closest('.hidden')) || inputs.find(el => !el.closest('.hidden')) || inputs[0];
-      if (!pick) return false;
-      pick.setAttribute('data-bridge-ref', '1');
-      return true;
-    });
-    if (!tagged) throw new Error('网页上找不到上传框');
-    await page.locator('[data-bridge-ref="1"]').setInputFiles({ name: 'reference.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(ref.image, 'base64') });
-    await page.locator(REF_REMOVE).first().waitFor({ state: 'visible', timeout: 30000 });
-    bridgeRef = true;
-    const found = await page.evaluate(() => {
-      document.querySelectorAll('[data-bridge-strength]').forEach(el => el.removeAttribute('data-bridge-strength'));
-      const label = Array.from(document.querySelectorAll('*')).find(el => el.children.length === 0 && /^\s*Strength\s*$/i.test(el.textContent || ''));
-      let box = label;
-      for (let i = 0; i < 6 && box; i++, box = box.parentElement) { const input = box.querySelector('input[type="range"]'); if (input) { input.setAttribute('data-bridge-strength', '1'); return true; } }
-      return false;
-    });
-    if (!found) throw new Error('上传后网页上没出现 Strength 滑块');
-    const slider = page.locator('[data-bridge-strength="1"]');
-    const want = Math.round(Math.min(1, Math.max(0, ref.strength)) * 100) / 100;
-    const read = () => slider.evaluate(el => Number(el.value));
-    await slider.evaluate((el, v) => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      set.call(el, String(v));
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, want);
-    await sleep(300);
-    if (Math.abs((await read()) - want) > 0.005) {
-      // 兜底：用键盘（Home 回到 0，再按右方向键每次 0.01）
-      await slider.focus();
-      await page.keyboard.press('Home');
-      for (let i = 0; i < Math.round(want * 100); i++) await page.keyboard.press('ArrowRight');
-      await sleep(300);
-    }
-    const now = await read();
-    if (Math.abs(now - want) > 0.011) throw new Error(`Strength 设不到 ${want}（网页上是 ${now}）`);
-    console.log(`参考图已传到网页，Strength = ${now}`);
+    const key = refHash(ref.image);
+    if (!(bridgeRef && bridgeRefKey === key && await hasRefImage(page))) { await uploadRef(page, ref); bridgeRef = true; bridgeRefKey = key; }
+    const now = await setStrength(page, ref.strength);
+    console.log(`参考图已在网页上，Strength = ${now}`);
   } catch (error) {
     throw new Error('参考图设置失败：' + error.message + '（可以先在插件里移除参考图，照常出图）');
   }
+}
+// 插件里选图 / 移除 / 调 Strength 时马上去网页做（静止模式）。返回要给用户看的提示。
+async function applyRefLive(page, want) {
+  const notices = [];
+  if (want.clearRef) { await removeRefImages(page); bridgeRef = false; bridgeRefKey = ''; return notices; }
+  if (want.ref) {
+    const modelName = async () => (await readModelInfo(page).catch(() => null))?.name || '';
+    const before = await modelName();
+    try {
+      await uploadRef(page, want.ref);
+      // 不支持参考图的模型：网页会自己切到支持的模型，等它切完（支持的模型不会变，最多等 3 秒）
+      let after = before;
+      for (let i = 0; i < 5 && after === before; i++) { await sleep(600); after = await modelName(); }
+      await sleep(500);
+      if (!(await hasRefImage(page))) { await uploadRef(page, want.ref); await sleep(800); } // 换模型后图没留下就再传一次
+      if (!(await hasRefImage(page))) throw new Error('网页上没出现参考图');
+      if (before && after && before !== after) notices.push(`所选模型不支持参考图，网页已自动切换到「${after}」`);
+      bridgeRef = true; bridgeRefKey = refHash(want.ref.image);
+      await setStrength(page, want.ref.strength);
+    } catch (error) {
+      throw new Error('参考图设置失败：' + error.message);
+    }
+  } else if (want.refStrength !== undefined && await hasRefImage(page)) {
+    await setStrength(page, want.refStrength);
+  }
+  return notices;
 }
 
 async function generateBatch(prompt, count, spec = null) {
@@ -1304,18 +1351,9 @@ async function generateBatch(prompt, count, spec = null) {
       CARD
     );
 
-    // 静止模式：什么设置都不碰（张数、比例、模型、参考图都是用户在网页上手动设的），只读网页现在一次出几张
-    const still = spec?.mode === 'still';
-    let switched = false, needed;
-    if (still) {
-      await openSettingsTab(page).catch(() => false);
-      needed = (await readPageCount(page).catch(() => null)) || CONFIG.pageCount;
-      console.log(`静止模式：不改网页设置，按网页现在的一次出 ${needed} 张`);
-    } else {
-      switched = await setQuantity(page, count);
-      needed = switched ? count : CONFIG.pageCount;
-    }
-    if (!pagePicked && !still) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
+    const switched = await setQuantity(page, count);
+    const needed = switched ? count : CONFIG.pageCount;
+    if (!pagePicked) await setRatio(page, CONFIG.ratio).catch(error => console.warn('切换画面比例失败：', error.message));
     if (spec?.mode === 'direct') await syncReference(page, spec.ref || null);
 
     const editor = page.locator('div[contenteditable="true"].tiptap.ProseMirror');
@@ -1567,6 +1605,8 @@ async function readPageStatus(page, debug = false) {
   // API 模式用：能用 API 的模型（带 LoRA 默认权重）和读好的分辨率表
   out.apiModels = MODEL_PRESETS.filter(item => apiModelOf(item.id)).map(item => ({ id: item.id, name: item.name, loras: (apiModelOf(item.id).loras || []).map(l => ({ weight: l.weight })), recipes: (apiModelOf(item.id).recipeIds || []).length }));
   out.template = templateState();
+  out.hasRef = await hasRefImage(page).catch(() => null); // 网页上有没有参考图（以网页为准）
+  out.refStrength = out.hasRef ? await readRefStrength(page).catch(() => null) : null;
   out.lastCost = lastCost;
   out.resolutions = resTable ? { at: resTable.at, ratios: resTable.ratios } : null;
   if (API.on && apiModelId) {
@@ -1612,35 +1652,46 @@ app.post('/ai/settings', async (req, res) => {
     if (!/^[A-Z]{1,3}$/.test(want.size)) return res.status(400).json({ ok: false, message: '尺寸要写档位字母，如 M、L' });
   }
   if (body.swap === true) want.swap = true;
+  if (body.ref !== undefined) {
+    const r = body.ref;
+    if (!r || typeof r.image !== 'string' || r.image.length < 100 || r.image.length > 14e6 || !/^[A-Za-z0-9+/=\s]+$/.test(r.image.slice(0, 4000))) return res.status(400).json({ ok: false, message: '参考图数据不对' });
+    want.ref = { image: r.image, strength: Number.isFinite(Number(r.strength)) ? Number(r.strength) : 0.55 };
+  }
+  if (body.clearRef === true) want.clearRef = true;
+  if (body.refStrength !== undefined) { if (!Number.isFinite(Number(body.refStrength))) return res.status(400).json({ ok: false, message: 'Strength 要是 0 到 1 的数' }); want.refStrength = Number(body.refStrength); }
   if (!Object.keys(want).length) return res.status(400).json({ ok: false, message: '没有要切的内容（model / count / ratio / size / swap）' });
   if (isGenerating()) {
     return res.status(409).json({ ok: false, generating: true, message: '反代正在出图，画完再切' });
   }
   const run = async () => {
     const page = await getPixAIPage();
-    const failed = [], reasons = [];
+    const failed = [], reasons = [], notices = [];
+    const hadRef = await hasRefImage(page).catch(() => false);
     const attempt = async (label, task, opts) => {
       try { await withRetry(page, label, task, opts); }
       catch (error) { failed.push(label); reasons.push(`${label}：${error.message}`); console.warn(`切换${label}失败：`, error.message); }
     };
     if (want.model !== undefined) await attempt('模型', () => chooseModelPreset(page, want.model, body.direct === true), { tries: 1 });
+    // 带着图换到不支持参考图的模型：网页会把图移除
+    if (want.model !== undefined && hadRef && !want.ref && !want.clearRef && !(await hasRefImage(page).catch(() => true))) { notices.push('所选模型不支持参考图，网页已移除该图片'); bridgeRef = false; bridgeRefKey = ''; }
+    if (want.ref || want.clearRef || want.refStrength !== undefined) await attempt('参考图', async () => { notices.push(...await applyRefLive(page, want)); }, { tries: 1 });
     if (want.count !== undefined) await attempt('张数', () => setQuantity(page, want.count));
     if (want.ratio !== undefined) { pagePicked = true; await attempt('比例', () => setRatio(page, want.ratio)); }
     if (want.size !== undefined) { pagePicked = true; await attempt('尺寸', () => setSize(page, want.size)); }
     // 横竖是互换：网页慢一点才变的话再点一次会换回去，所以不自动重试（tries: 1）
     if (want.swap) { pagePicked = true; await attempt('横竖', () => swapOrientation(page), { tries: 1 }); }
-    await sleep(400);
+    await sleep(want.ref || want.clearRef || want.refStrength !== undefined ? 1200 : 400); // 参考图会让网页重算积分
     const status = await readPageStatus(page);
-    return { failed, reasons, status };
+    return { failed, reasons, status, notices };
   };
   const job = settingLock.then(run);
   settingLock = holdLock(job);
   try {
-    const { failed, reasons, status } = await job;
+    const { failed, reasons, status, notices } = await job;
     if (failed.length) {
-      return res.status(502).json({ ok: false, generating, ...status, failed, message: `没能在 PixAI 网页上切换：${failed.join('、')}${reasons.length ? '（' + reasons.join('；') + '）' : ''}` });
+      return res.status(502).json({ ok: false, generating, ...status, notices, failed, message: `没能在 PixAI 网页上切换：${failed.join('、')}${reasons.length ? '（' + reasons.join('；') + '）' : ''}` });
     }
-    res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
+    res.json({ ok: true, generating, ...status, notices, updatedAt: new Date().toISOString() });
   } catch (error) {
     res.status(503).json({ ok: false, message: error.message });
   }

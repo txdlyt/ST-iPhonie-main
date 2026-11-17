@@ -815,7 +815,7 @@ export interface BackendFacade {
     /** PixAI 反代 (API mode): the bridge reads the page's ratio → size table once and keeps it; answers {ok, resolutions, at}. */
     pixaiReadResolutions(): Promise<{ ok?: boolean; resolutions?: Record<string, Array<{ size: string; width: number; height: number; locked?: boolean }>>; at?: string }>;
     /** PixAI 反代: switch the PixAI page's ratio ('9:16'), size tier ('M'), portrait/landscape (swap) and/or pictures per task; answers like pixaiStatus. */
-    pixaiSetPage(patch: { model?: string; ratio?: string; size?: string; swap?: boolean; count?: 1 | 4 }): ReturnType<BackendFacade['pixaiStatus']>;
+    pixaiSetPage(patch: { model?: string; ratio?: string; size?: string; swap?: boolean; count?: 1 | 4; ref?: { image: string; strength?: number }; clearRef?: boolean; refStrength?: number }): ReturnType<BackendFacade['pixaiStatus']>;
     /** ComfyUI through the tavern: connection check and what it offers. url: an address not saved yet. */
     setPixaiRef(ref: { image: string; preview?: string } | null): void;
     getPixaiRef(): { preview: string } | null;
