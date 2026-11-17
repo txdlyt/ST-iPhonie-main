@@ -228,11 +228,18 @@ export function drawApp(ctx) {
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
     const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
-    const sizeRow = `<div class="field"><div class="meter-label"><span>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</span><output>${a.width && a.height ? esc(a.width + '×' + a.height) : '未选'}</output></div>${ratios.length ? `<div class="size-chips">${ratios.map(ratioChip).join('')}</div>${sizes.length ? `<div class="size-chips">${sizes.map(sizeChip).join('')}</div>` : ''}<div>${read}</div>` : `<p class="hint" style="padding:0">还没有分辨率表，让反代去网页读一次：</p><div>${read}</div>`}</div>`;
+    const flip = a.ratio && /^\d+:\d+$/.test(a.ratio) ? a.ratio.split(':').reverse().join(':') : '';
+    const k = a.width && a.height ? 30 / Math.max(a.width, a.height) : 0;
+    const shape = k ? `<i style="width:${Math.max(6, Math.round(a.width * k))}px;height:${Math.max(6, Math.round(a.height * k))}px"></i>` : '';
+    const resolution = a.width && a.height ? shape + esc(a.width + '×' + a.height) : '未选';
+    const swapBtn = `<button type="button" class="chip-button px-swap" data-action="pixai-api-swap"${!flip || flip === a.ratio || i.generating ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>`;
+    const sizeRow = `<div class="px-cell px-wide"><small>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</small><b>${resolution}</b><em>${a.ratio ? `画幅 ${esc(a.ratio)}` : ''}</em>${ratios.length ? `<div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${swapBtn}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}` : `<p class="hint" style="padding:0">还没有分辨率表，点上面的「读取分辨率表」让反代去网页读一次。</p>`}</div>`;
     const sel = recordNow(), covers = a.tplCovers || {}, offs = sel ? sel.loras.filter(l => (a.tplLoras[sel.id]?.[l.id] || {}).on === false).length : 0;
     const facts = sel ? [`${sel.loras.length - offs}${offs ? '/' + sel.loras.length : ''} LoRA`, ...(sel.recipes ? [`${sel.recipes} Recipe`] : []), ...(sel.steps ? [`${sel.steps} 步`] : []), ...(sel.width ? [`${sel.width}×${sel.height}`] : [])] : [];
     const pageRow = `<button type="button" class="px-record${sel ? '' : ' empty'}" data-action="pixai-records"><span class="style-cover">${icon('image')}${sel && covers[sel.id] ? `<img src="${esc(covers[sel.id].thumb)}" alt="" draggable="false">` : ''}</span><span class="px-record-main">${sel ? `<strong>${esc(recName(sel))}</strong><span class="px-facts">${facts.map(x => `<i>${esc(x)}</i>`).join('')}</span>` : '<strong>还没有记录</strong><small>先在反代网页里调好设置，再来记录一条</small>'}</span>${icon('chevron')}</button>`;
-    return `<div class="group pad px-sync px-api">${pixaiModeBar()}${pageRow}${sizeRow}</div>`;
+    const status = pixaiReading ? '读取分辨率中……' : table ? '分辨率表已读取' + (at ? ' · ' + at : '') : '还没读取分辨率表';
+    const foot = `<div class="px-foot"><span class="chip${table ? '' : ' warn'}">${esc(status)}</span>${read}</div>`;
+    return `<div class="group pad px-sync px-api">${foot}<div class="px-grid"><div class="px-cell px-wide"><small>模型 / 记录${help('API 模式用的模型、LoRA、Recipe 来自你在反代网页上调好并记录下来的设置；点下面换一条。')}</small>${pageRow}</div>${sizeRow}<div class="px-cell"><small>一次出几张</small><b>${esc(a.count + ' 张')}</b></div></div></div>`;
   }
   // 记录: the page settings the bridge has recorded, kept in one sheet (PixAI has no 画风; this takes its place).
   const recordList = () => { const t = pixaiInfo?.template || {}, all = Array.isArray(t.list) ? t.list : [], order = state().pixai.api.tplOrder || []; return [...order.map(id => all.find(x => x.id === id)).filter(Boolean), ...all.filter(x => !order.includes(x.id))]; };
@@ -339,7 +346,7 @@ export function drawApp(ctx) {
     refreshPixai().then(() => { if (d.live !== false) paint(); }).catch(() => {});
   }
   function pixaiParams(size) {
-    return state().pixai.mode === 'api' ? pixaiApiParams() : `<div class="group pad" style="margin-bottom:8px">${pixaiModeBar()}</div>` + pixaiDirectParams(size);
+    return `<div class="group pad" style="margin-bottom:8px">${pixaiModeBar()}</div>` + (state().pixai.mode === 'api' ? pixaiApiParams() : pixaiDirectParams(size));
   }
   function pixaiDirectParams(size) {
     const i = pixaiInfo, r = i?.resolution || {}, plan = pixaiPlan(), bad = !i || i.stale;
@@ -754,6 +761,15 @@ export function drawApp(ctx) {
       }
       case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
       case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: bindRes({ratio, size, width: hit.width, height: hit.height})}}); render(); } break; }
+      case 'pixai-api-swap': {
+        const a = state().pixai.api, flip = /^\d+:\d+$/.test(a.ratio || '') ? a.ratio.split(':').reverse().join(':') : '';
+        if (!flip || flip === a.ratio) break;
+        const list = pixaiInfo?.resolutions?.ratios?.[flip] || [], hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked);
+        if (hit) api.saveDraw({pixai: {api: bindRes({ratio: flip, size: hit.size, width: hit.width, height: hit.height})}});
+        else if (a.width && a.height) api.saveDraw({pixai: {api: bindRes({ratio: flip, size: a.size, width: a.height, height: a.width})}});
+        else break;
+        render(); break;
+      }
       case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: bindRes({ratio, size: hit.size, width: hit.width, height: hit.height})}}); render(); } break; }
       case 'pixai-res': {
         if (pixaiReading) break;
