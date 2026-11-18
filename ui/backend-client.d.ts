@@ -67,6 +67,9 @@ export interface NarrationSettings {
     body: string[];
 }
 export interface Route {
+    customModel?: string;
+    customModelSet?: string;
+    voiceChoice?: {key: string; name: string};
     id?: string;
     name: string;
     engine: Engine;
@@ -401,7 +404,7 @@ export interface ForumReply { id: string; from: string; to?: string; text: strin
 export interface ForumPost { id: string; kind: 'forum'; author: string; title: string; text: string; at: number; source: 'auto' | 'me'; autoBatch?: string; likes: number; liked: boolean; heat: number; replies: ForumReply[]; }
 /** 查手机: a character's phone as the model made it up. */
 export interface PeekSnapshot { id: string; kind: 'peek'; name: string; at: number; chats: Array<{ with: string; lines: Array<{ from: string; text: string }> }>; searches: string[]; notes: Array<{ title: string; text: string }>; photos: PeekPicture[]; cart: Array<{ name: string; price: number; note: string }>; calls?: Array<{ with: string; dir: 'in' | 'out' | 'missed'; long: string }>; events?: Array<{ when: string; what: string }>; songs?: Array<{ title: string; artist: string }>; wallpaper?: PeekPicture; }
-export interface PeekPicture { text: string; tags: string; photoId?: string; state?: 'waiting' | 'done' | 'failed'; note?: string; }
+export interface PeekPicture { text: string; tags: string; photoId?: string; imageVersions?: string[]; state?: 'waiting' | 'done' | 'failed'; note?: string; }
 export interface MomentComment { id: string; from: string; to?: string; text: string; at: number; }
 /** author and comment names are 'me' for the user. */
 export interface MomentPost { id: string; author: string; text: string; at: number; source: 'manual' | 'auto' | 'me'; photoId?: string; imageTags?: string; imageVersions?: string[]; imageState?: 'waiting' | 'done' | 'failed'; imageNote?: string; likes: string[]; comments: MomentComment[]; }
@@ -467,7 +470,7 @@ export interface MusicPlaylist { id: string; kind: 'playlist'; at: number; name:
 export interface MusicStatus { phase: 'idle' | 'loading' | 'playing' | 'paused' | 'error'; message: string; track: { title: string; artist: string; from: string; origin: string; id: string; source: string; songId: string } | null; position: number; duration: number; volume: number; queue: number; index: number; mode: 'order' | 'shuffle' | 'one'; from: string; lyric: string; lyricIndex: number; lyrics: { at: number; text: string }[]; }
 export type MusicTrack = Partial<MusicSong> & { title: string; artist?: string; from?: string };
 export interface WardrobeItem { id: string; kind: 'wardrobe-item'; owner: string; name: string; category: string; description: string; photoId?: string; recognized: boolean; at: number; updatedAt: number; }
-export interface WardrobeSet { id: string; kind: 'wardrobe-set'; owner: string; name: string; description: string; items: string[]; at: number; updatedAt: number; }
+export interface WardrobeSet { id: string; kind: 'wardrobe-set'; photoId?: string; owner: string; name: string; description: string; items: string[]; at: number; updatedAt: number; }
 export interface WardrobeWear { id: string; kind: 'wardrobe-wear'; owner: string; text: string; from: 'phone' | 'story'; pending: boolean; at: number; }
 /** 小剧场 (core/generator.js): a script's line (旁白 lines are narration) or a card's HTML. */
 export interface TheaterLine { role: string; text: string; translation: string; emotion: string; narration?: boolean; }
@@ -569,9 +572,10 @@ export interface EngineSchema {
 export type VoiceBalance =
     | { engine: 'eleven'; kind: 'characters'; used: number; limit: number; left: number; resetAt: number | null; tier: string; status: string }
     | { engine: 'fish'; kind: 'credit'; credit: number; free: boolean };
-export interface VoiceQuery { search?: string; page?: number; token?: string; }
+export interface VoiceQuery { kind?: 'voice' | 'model'; search?: string; page?: number; token?: string; }
 export interface VoiceList {
-    voices: Array<{ id: string; name: string }>;
+    error?: string;
+    voices: Array<{ id: string; name: string; info?: string }>;
     more: boolean;
     token: string;
     note: string;
@@ -1361,6 +1365,8 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     readLook?(name: string): Promise<{appearance: string; outfit: string}>;
     outfitDelete?(name: string): OutfitRow[];
     outfitsClear?(): OutfitRow[];
+    /** Restore missing plain text with a delivery receipt from the latest tagged reply in this chat. */
+    restoreLatestPhoneText?(): Promise<number>;
     /** Deletes every picture of the open chat from the tavern; their tags show "点击生成" again. */
     clearChatPictures(): Promise<{ count: number; failed: number }>;
     /** A picture the chat asked to open in the drawing app, if any. */
@@ -1401,7 +1407,7 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     wardrobeRecognize(itemId: string): Promise<WardrobeItem>;
     wardrobeSuggest(options: { owner: string; mode?: 'closet' | 'free'; wish?: string; itemIds?: string[] }): Promise<string>;
     /** 存成一套: designed freely, split into pieces that go into the 衣柜 first; the same words kept again come back with again. */
-    wardrobeSaveOutfit(options: { owner: string; text: string; mode?: 'closet' | 'free'; itemIds?: string[] }): Promise<{ set: WardrobeSet; added: number; again: boolean }>;
+    wardrobeSaveOutfit(options: { photoId?: string; owner: string; text: string; mode?: 'closet' | 'free'; itemIds?: string[] }): Promise<{ set: WardrobeSet; added: number; again: boolean }>;
     wardrobeTryOn(options: { owner: string; text: string; allowPaid?: boolean }): Promise<string>;
     wardrobeDrawItem(options: { id: string; allowPaid?: boolean }): Promise<WardrobeItem>;
     /** Who is in the story just now, as 衣柜 owners ('me', 'role:<name>'): they stay in the row of faces when there are many. */
@@ -1470,7 +1476,7 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     peekBusy(): boolean;
     /** Draws one album photo of a character's phone with NovelAI; allowPaid when it would cost Anlas. */
     /** index 'wallpaper' draws the wallpaper. */
-    peekDraw(name: string, index: number | 'wallpaper', allowPaid?: boolean): Promise<string>;
+    peekDraw(name: string, index: number | 'wallpaper', allowPaid?: boolean, options?: { prompt?: string; version?: string; expected?: { id: string; at: number; text: string; tags: string } }): Promise<string>;
     /** The World Info books turned on now (global, character, chat, persona) with their entries that are on, for picking
      *  what the phone leaves out. Entry ids are "book#uid". */
     /** extra: books the phone alone reads (listed with from 只给手机 when the tavern has them off). */

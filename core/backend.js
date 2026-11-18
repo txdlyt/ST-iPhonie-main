@@ -43,7 +43,7 @@ import {keepOneOutput, switchNodesOff} from './comfy-graph.js';
 import { normalizeSettings, validateSettings, modelRules, freshState } from './state.js';
 import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, cleanAliases, rolesSeen, ownKeyFor, roleStore } from './routes.js';
 import { cleanAddress, reachService, explainReach, detectService, scanTargets, findVoiceList, voiceIsName, API_PROBES } from './custom-detect.js';
-import { CUSTOM_DEFAULT, CUSTOM_SETS_MAX } from './custom-voice.js';
+import { CUSTOM_DEFAULT, CUSTOM_SETS_MAX, officialSpeechService } from './custom-voice.js';
 import { arrangeRows } from './layers.js';
 import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
 import { normalizeMarks, withMarks } from './voice-fx.js';
@@ -1949,7 +1949,7 @@ export class TTSBackend {
     }
     /** Generates one image and keeps it in the album. Requests wait in the NovelAI queue (see draw-queue.js).
      *  key identifies the job in the queue (the same key joins the job already waiting); label is shown in the line. */
-    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [], roleRefs = [], preview = false, batch = null } = {}) {
+    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [], roleRefs = [], preview = false, batch = null } = {}, preparePhoto) {
         this.assertOpen();
         if (!String(prompt || '').trim()) return Promise.reject(Error('请先写提示词'));
         const engine = this.settings.draw.engine;
@@ -1999,6 +1999,8 @@ export class TTSBackend {
                 }
                 if (engine === 'pixai') this.#pixaiDrop(key);
                 this.assertOpen();
+                if (preparePhoto) made.blob = await preparePhoto(made.blob);
+                this.assertOpen();
                 const ext = made.blob.type === 'image/jpeg' ? 'jpg' : made.blob.type === 'image/webp' ? 'webp' : 'png';
                 const info = this.pictureInfo(engine, made, picture);
                 if (made.dropped) info.push(['参考图', '没带：中转不支持改图接口（/images/edits）']);
@@ -2036,6 +2038,8 @@ export class TTSBackend {
                 delete p.straight_alpha; delete p.tag_hint_transparent_background;
                 blob = await send();
             }
+            this.assertOpen();
+            if (preparePhoto) blob = await preparePhoto(blob);
             this.assertOpen();
             const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, { negative, characters });
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
@@ -3361,7 +3365,7 @@ export class TTSBackend {
         const here = this.here();
         if (here?.pending) return 0;
         if (!here) return clearAll();
-        const mine = (await list()).filter(x => here.card ? x.save === here.key || x.space === here.key || (here.first && !x.save && x.space === here.card) : x.space === here.key);
+        const mine = (await list()).filter(x => here.card ? inSpace(x, here) : x.space === here.key);
         for (const x of mine) await remove(x.id);
         return mine.length;
     }
@@ -3418,11 +3422,16 @@ export class TTSBackend {
         return job;
     }
     /** Confirmed candidate ids only; recheck favourites and user albums before each batch. */
+    async appPhotoIds() {
+        const [wardrobe, books] = await Promise.all([this.apps.listFrom('wardrobe:'),this.bookshelf.list()]);
+        return new Set([...wardrobe.map(row => row.photoId),...books.flatMap(book => (book.illustrations || []).flatMap(pic => [pic.photoId, ...(pic.versions || []).map(version => version.photoId)]))].filter(Boolean));
+    }
     async unkeptPhotos() {
         this.assertOpen();
         const [photos,albums,phone]=await Promise.all([this.library.listPhotos(),this.listAlbums(),this.getPhone()]);
         const chat=this.settings.chat||{},shown=a=>a?.kind==='photo'?a.photoId:null;
         const keep=new Set([...albums.flatMap(a=>a.photos||[]),shown(phone.wallpaper),...Object.values(phone.icons||{}).map(shown),...Object.values(chat.avatars||{}).map(shown),chat.profile?.backgroundPhoto].filter(Boolean));
+        for (const id of await this.appPhotoIds()) keep.add(id);
         const rows=photos.filter(p=>!keep.has(p.id));
         return {photos:rows.map(({id,name,size})=>({id,name,size})),count:rows.length,bytes:rows.reduce((n,p)=>n+(p.size||0),0),kept:photos.length-rows.length};
     }
@@ -3793,9 +3802,10 @@ export class TTSBackend {
      * {count, bytes, ids, sources: {draw|chat|peek|moments: {label, count, bytes, ids}}}. Imported photos are not here.
      */
     async generatedPhotos() {
+        const kept = await this.appPhotoIds();
         const rows = await this.library.listPhotos(), sources = {}, all = [];
         for (const [key, label, pattern] of DRAWN_SOURCES) {
-            const mine = rows.filter(row => pattern.test(row.name || ''));
+            const mine = rows.filter(row => !kept.has(row.id) && pattern.test(row.name || ''));
             sources[key] = { label, count: mine.length, bytes: mine.reduce((n, row) => n + (row.size || 0), 0), ids: mine.map(row => row.id) };
             all.push(...mine);
         }
@@ -3901,8 +3911,16 @@ export class TTSBackend {
         // Account-wide reference maintenance, not a user edit in the current chat.
         // Only threads referencing deleted photos are changed, including reply versions.
         for (const threadId of await this.chats.forgetPhotos([...gone])) this.emit('chat', {threadId});
-        const snaps = (await this.apps.list('peek')).filter(doc => [...(doc.photos || []), doc.wallpaper].some(p => p && gone.has(p.photoId)));
-        const strip = p => { if (!p || !gone.has(p.photoId)) return p; const { photoId, state, note, ...rest } = p; return rest; };
+        const versionsOf = picture => [...new Set([...(picture?.imageVersions || []), picture?.photoId].filter(Boolean))];
+        const referencesGone = picture => versionsOf(picture).some(id => gone.has(id));
+        const snaps = (await this.apps.list('peek')).filter(doc => [...(doc.photos || []), doc.wallpaper].some(referencesGone));
+        const strip = picture => {
+            if (!referencesGone(picture)) return picture;
+            const {photoId, imageVersions, state, note, ...rest} = picture;
+            const kept = versionsOf(picture).filter(id => !gone.has(id));
+            const current = gone.has(photoId) ? kept.at(-1) : photoId;
+            return {...rest, ...(kept.length ? {imageVersions: kept} : {}), ...(current ? {photoId: current, state: 'done'} : {})};
+        };
         if (snaps.length) await this.appsMutate('peek', () => this.apps.put(snaps.map(doc => ({ ...doc, photos: (doc.photos || []).map(strip), ...(doc.wallpaper ? { wallpaper: strip(doc.wallpaper) } : {}) }))));
         const next = this.getState(), avatars = { ...next.chat.avatars };
         let changed = false;
@@ -4049,6 +4067,8 @@ export class TTSBackend {
     }
     /** 自动识别: which service answers there, and the settings for it (nothing is saved here). */
     async customDetect(address) {
+        const service = officialSpeechService(cleanAddress(address).base);
+        if (service) return {ok:true, base:service.origin, notes:[], found:{id:service.id,name:service.name,needsKey:true,params:service.fill(service.origin)}};
         const reach = await this.customReach(address);
         if (!reach.ok) return reach;
         const found = await detectService(reach.base, this.customAsk(reach));

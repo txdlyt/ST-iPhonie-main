@@ -43,7 +43,7 @@ import { createBookHost } from './host-book.js';
 import { createBedtimeHost } from './host-bedtime.js';
 let bedtimeHost = null, stopChatClock = null;
 import { createSongHost } from './host-song.js';
-const RUNTIME_VERSION='0.9.95';
+const RUNTIME_VERSION='1.0.0';
 const base=new URL('.',import.meta.url),marker=globalThis.crypto?.randomUUID?.()||'unavailable';
 let stopDiagnostics=null,storyWork=null;
 let active=false,hooked=false,settings,player,panel,frame,observer,renderTimer,floating,lineRaf,lineMedia,playbackMessage,selectedMessage,backend,enabling;
@@ -90,7 +90,7 @@ function tagSpeakers(messages){if(!active||backend?.here()?.pending)return;const
 /** A chat was opened: close the old scope at once. Some hosts publish CHAT_CHANGED before metadata is ready. */
 let spaceRetry=0,spaceTurn=0;
 function refreshSpace(){if(!active||!backend)return;clearTimeout(spaceRetry);const turn=++spaceTurn;
- const follow=(attempt=0)=>{if(!active||!backend||turn!==spaceTurn)return;try{backend.setSpace(openSpace());if(!backend.here()?.pending){memoryHost?.refreshStory();tagSpeakers((context()?.chat||[]).slice(-200));return;}}catch{backend.setSpace({key:'',name:'',members:[]});}
+ const follow=(attempt=0)=>{if(!active||!backend||turn!==spaceTurn)return;try{backend.setSpace(openSpace());if(!backend.here()?.pending){for(const id of [...awaitingStoryReplies.keys()]) processReceivedStoryReply(id);memoryHost?.refreshStory();tagSpeakers((context()?.chat||[]).slice(-200));return;}}catch{backend.setSpace({key:'',name:'',members:[]});}
   // Bounded retries only; later host render/receive events can also finish loading the identity. Never invent a fallback key.
   if(attempt<20)spaceRetry=setTimeout(()=>follow(attempt+1),100);};follow();}
 function spaceChanged(){chatIdentity?.change();chatIdentityHost?.change();refreshSpace();}
@@ -172,7 +172,7 @@ function openVoiceWindow(id){if(!voiceOn())throw Error('请先打开正文语音
 
 function messageLines(snap){return withMarks(snap.raw,parsed(snap.raw).lines,settings.presets.find(p=>p.id===settings.activePreset)?.marks);}
 // Social refresh reads the completed reply, including separately inserted voice and picture tags.
-const receivedReplies = new WeakSet();
+const receivedReplies = new WeakMap();
 const awaitingStoryReplies = new Map();
 const storyGeneration = {running:false,stopped:false};
 function startStoryGeneration(type, options, dryRun) { if(!dryRun&&type!=='quiet'&&type!=='impersonate'){storyGeneration.running=true;storyGeneration.stopped=false;} }
@@ -180,7 +180,7 @@ function finishStoryGeneration(stopped=false) {
  storyGeneration.running=false;
  if(stopped)storyGeneration.stopped=true;
  if(storyGeneration.stopped){awaitingStoryReplies.clear();return;}
- for(const id of [...awaitingStoryReplies.keys()]){const message=context()?.chat?.[id];if(message&&takeStoryReply(id,message))afterStoryReply(id);}
+ for(const id of [...awaitingStoryReplies.keys()]) processReceivedStoryReply(id);
 }
 function markStoryReply(id) {
  const ctx=context(), message=ctx?.chat?.[id];if(!message||!storyReply(message))return;
@@ -197,14 +197,43 @@ function trackPrepare(id,job){prepJobs.set(id,job);job.catch(()=>{}).finally(()=
 function autoReply(id){const m=context()?.chat?.[id];if(m&&noPlay.has(m))return;Promise.resolve(prepJobs.get(id)).then(()=>setTimeout(()=>autoPlayReply(id),300));}
 function autoPlayReply(id){try{if(!active||settings.general.autoplay!==true||!voiceOn()||vnHost?.showing)return;if(id!==(context()?.chat||[]).length-1)return;if(['playing','generating','paused','waiting'].includes(player.phase))return;const snap=currentMessage(id);if(!snap||!messageLines(snap).length)return;Promise.resolve(playMessage(id)).catch(e=>notice('自动播放没成功：'+e.message+'。点一下声波或「整条播放」就行'));}catch(e){notice('自动播放没成功：'+e.message);}}
 const noPlay=new WeakSet(); /* the greeting a new chat starts with is not a new reply: it is not played by itself */
+// A render can come from reopening, scrolling, editing, or a brand-new reply.
+function processReceivedStoryReply(id) {
+ const message=context()?.chat?.[id];
+ if(storyGeneration.running || storyGeneration.stopped || backend?.here?.()?.pending || !message || !takeStoryReply(id,message)) return;
+ return afterStoryReply(id);
+}
+function receiveStoryReply(id) {
+ if (storyGeneration.stopped) return;
+ markStoryReply(id);
+ return processReceivedStoryReply(id);
+}
 async function afterStoryReply(id) {
- const owner=backend, host=pictures, ctx=context(), message=ctx?.chat?.[id], chat=ctx?.getCurrentChatId?.()??ctx?.chatId;
- if(!message||!storyReply(message)||receivedReplies.has(message))return;
- receivedReplies.add(message);
- const same=()=>active&&backend===owner&&pictures===host&&(context().chat[id]===message||!!message.send_date&&context().chat[id]?.send_date===message.send_date&&context().chat[id]?.name===message.name)&&(context().getCurrentChatId?.()??context().chatId)===chat;
- try { if (!await settledReply(context,id,settings.narration)) {receivedReplies.delete(message);if(context()?.chat?.[id]===message)markStoryReply(id);return;} if(!same())return; await host?.prepareReply(id); } catch(error) { if(error?.name!=='AbortError')notice(error.message); }
- if(!active||backend!==owner||pictures!==host||(context().chat[id]!==message&&!(message.send_date&&context().chat[id]?.send_date===message.send_date&&context().chat[id]?.name===message.name))||(context().getCurrentChatId?.()??context().chatId)!==chat)return;
+ const owner=backend, host=pictures, ctx=context(), message=ctx?.chat?.[id];
+ if(!message || !storyReply(message) || message.is_system) return;
+ const chat=ctx.getCurrentChatId?.()??ctx.chatId, swipe=message.swipe_id, date=message.send_date, name=message.name;
+ const last=receivedReplies.get(message);
+ if(last && last.chat===chat && last.swipe===swipe) return;
+ const entry={chat,swipe};
+ receivedReplies.set(message,entry);
+ const same=()=>{
+   const now=context(), current=now?.chat?.[id];
+   return active && backend===owner && pictures===host && current && current.swipe_id===swipe &&
+     (now.getCurrentChatId?.()??now.chatId)===chat && (current===message || !!date && current.send_date===date && current.name===name);
+ };
+ try {
+   if(!await settledReply(context,id,settings.narration)) {
+     if(receivedReplies.get(message)===entry) receivedReplies.delete(message);
+     if(same()) markStoryReply(id);
+     return;
+   }
+   if(!same()) return;
+   await host?.prepareReply(id);
+ } catch(error) { if(error?.name!=='AbortError') notice(error.message); }
+ if(!same()) return;
+ receivedReplies.set(context().chat[id],entry);
  await chats?.storyReplied(id).catch(error=>owner.reportDiagnostic?.('正文手机接收',error,'warn'));
+ if(!same()) return;
  Promise.resolve(host?.autoPictures(id)).catch(e=>{if(e?.name!=='AbortError')notice(e.message);}).then(()=>autoReply(id));momentsHost?.storyReplied();appsHost?.storyReplied(id).catch(()=>{});
 }
 function latestMessage(){const chat=context().chat;for(let id=chat.length-1;id>=0;id--){const snap=currentMessage(id);if(snap&&parsed(snap.raw).lines.length)return snap;}return null;}
@@ -525,6 +554,7 @@ function connect(source){
   soundListen:id=>{check();return soundHost.listen(String(id||''));},soundTakeListen:(key,blob)=>{check();return soundHost.listenTake(String(key||''),blob);},soundPrompt:input=>{check();return soundHost.prompt({text:String(input?.text||''),mode:input?.mode==='apply'?'apply':'english',hint:String(input?.hint||'')});},
   soundStopAmbience:()=>{check();soundHost.stopAmbience();},
   chatPictureStats:()=>{check();return pictures.pictureStats();},
+  restoreLatestPhoneText:()=>{check();return chats.restoreLatestPhoneText();},
   planLatestPictures:()=>{check();return pictures.planLatest();},planLatestVoice:()=>{check();return pictures.voiceLatest();},outfitsList:()=>{check();return pictures.outfitsList();},readLook:name=>{check();return pictures.readLook(String(name||''));},outfitSave:(name,outfit)=>{check();return pictures.outfitSave(String(name||''),String(outfit||''));},outfitDelete:name=>{check();return pictures.outfitDelete(String(name||''));},outfitsClear:()=>{check();return pictures.outfitsClear();},
   clearChatPictures:()=>{check();return pictures.clearPictures();},
   takeDraw:()=>{check();const value=pendingDraw;pendingDraw=null;return value;},
@@ -551,7 +581,7 @@ function connect(source){
   storyExactInfo:async preset=>{check();const r=await readStoryExact(context,{...preset,lore:false});return {available:r.available,reason:r.reason,presetName:r.presetName,entries:r.entries.map(e=>({id:e.id,title:e.title,text:e.text.slice(0,160)}))};},
   storySources:()=>{check();return memoryHost.storySources();},
   peekBusy:()=>{check();return appsHost.busy('peek');},
-  peekDraw:(name,index,allowPaid)=>{check();return appsHost.peekDraw(name,index,{allowPaid});},
+  peekDraw:(name,index,allowPaid,options={})=>{check();return appsHost.peekDraw(name,index,{...options,allowPaid:allowPaid===true});},
   callStatus:()=>{check();return callHost.status();},
   callDial:name=>{check();return callHost.dial(name);},
   callAnswer:()=>{check();return callHost.answer();},
@@ -617,20 +647,20 @@ async function enableInternal(){if(active)return;const ctx=context();// generate
  hooked=true;}
  const subscribe=(name,fn)=>{if(!name)return;ctx.eventSource.on(name,fn);listeners.push([ctx.eventSource,name,fn]);};subscribe(ctx.eventTypes.GENERATION_STARTED,startStoryGeneration);subscribe(ctx.eventTypes.GENERATION_ENDED,()=>finishStoryGeneration());subscribe(ctx.eventTypes.GENERATION_STOPPED,()=>finishStoryGeneration(true));for(const event of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED'])subscribe(ctx.eventTypes[event],pendingSpace);subscribe(ctx.eventTypes.GENERATION_AFTER_COMMANDS,async(type,options,dryRun)=>{try{await memoryHost?.storyReady();}catch{}inject(type,options,dryRun);});
  // Each new story reply counts toward automatic 朋友圈 posts (off unless the user turns it on).
- subscribe(ctx.eventTypes.MESSAGE_RECEIVED,(id,type)=>{const at=Number(id??(context()?.chat||[]).length-1),first=context()?.chat?.[at];if(first&&(type==='first_message'||(at===0&&(context()?.chat||[]).length===1)))noPlay.add(first);if(!vnHost?.showing)soundHost?.received(id??(context()?.chat||[]).length-1);tagSpeakers((context()?.chat||[]).slice(-1));trackPrepare(at,prepareReply(at,voiceAhead((context()?.chat||[]).slice(-1))));markStoryReply(at);callHost?.storyReplied();wardrobeHost?.storyReplied(id??(context()?.chat||[]).length-1).catch(()=>{});});subscribe(ctx.eventTypes.CHAT_CHANGED,spaceChanged);spaceChanged();subscribe(ctx.eventTypes.CHAT_CHANGED,()=>soundHost?.chatChanged());soundHost.chatChanged();for(const event of ['MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_DELETED'])subscribe(ctx.eventTypes[event],id=>soundHost?.messageChanged(event==='MESSAGE_DELETED'?undefined:id));
+ subscribe(ctx.eventTypes.MESSAGE_RECEIVED,(id,type)=>{const at=Number(id??(context()?.chat||[]).length-1),first=context()?.chat?.[at];if(first&&(type==='first_message'||(at===0&&(context()?.chat||[]).length===1)))noPlay.add(first);if(!vnHost?.showing)soundHost?.received(id??(context()?.chat||[]).length-1);tagSpeakers((context()?.chat||[]).slice(-1));trackPrepare(at,prepareReply(at,voiceAhead((context()?.chat||[]).slice(-1))));receiveStoryReply(at);callHost?.storyReplied();wardrobeHost?.storyReplied(id??(context()?.chat||[]).length-1).catch(()=>{});});subscribe(ctx.eventTypes.CHAT_CHANGED,spaceChanged);spaceChanged();subscribe(ctx.eventTypes.CHAT_CHANGED,()=>soundHost?.chatChanged());soundHost.chatChanged();for(const event of ['MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_DELETED'])subscribe(ctx.eventTypes[event],id=>soundHost?.messageChanged(event==='MESSAGE_DELETED'?undefined:id));
  // A message changed: what plays from a reply whose lines changed stops (the player's own check would at the next line);
  // an edit that left them (another plugin writing into the reply) and what plays from elsewhere (a call, a favourite) go on.
- for(const event of ['CHAT_CHANGED','MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_DELETED'])subscribe(ctx.eventTypes[event],()=>{storyTools?.close();if(event==='CHAT_CHANGED'||player.phase!=='idle'&&!player.valid?.())player.stop('消息已变化');if(preparing&&(event==='CHAT_CHANGED'||(preparing.snap?!unchanged(preparing.snap):event!=='MESSAGE_EDITED')))preparing.abort();scheduleRender();});for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_RECEIVED'])subscribe(ctx.eventTypes[event],scheduleRender);subscribe(ctx.eventTypes.CHAT_CHANGED,()=>vnHost?.close());for(const event of ['GENERATION_STOPPED','GENERATION_ENDED'])subscribe(ctx.eventTypes[event],()=>vnHost?.ended());subscribe(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED,id=>{const staged=!!vnHost?.showing;vnHost?.rendered(id);if(!staged){soundHost?.rendered(id);musicHost?.rendered(id);}const m=context()?.chat?.[Number(id)];if(!storyGeneration.running&&m&&takeStoryReply(Number(id),m)){afterStoryReply(Number(id));}else if(!storyGeneration.running&&!storyGeneration.stopped&&m&&!receivedReplies.has(m))settledReply(context,Number(id),settings.narration).then(ready=>{if(ready)pictures?.autoPictures(Number(id)).catch(e=>notice(e.message));}).catch(e=>notice(e.message));});
+ for(const event of ['CHAT_CHANGED','MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_DELETED'])subscribe(ctx.eventTypes[event],()=>{storyTools?.close();if(event==='CHAT_CHANGED'||player.phase!=='idle'&&!player.valid?.())player.stop('消息已变化');if(preparing&&(event==='CHAT_CHANGED'||(preparing.snap?!unchanged(preparing.snap):event!=='MESSAGE_EDITED')))preparing.abort();scheduleRender();});for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_RECEIVED'])subscribe(ctx.eventTypes[event],scheduleRender);subscribe(ctx.eventTypes.CHAT_CHANGED,()=>vnHost?.close());for(const event of ['GENERATION_STOPPED','GENERATION_ENDED'])subscribe(ctx.eventTypes[event],()=>vnHost?.ended());subscribe(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED,id=>{const staged=!!vnHost?.showing;vnHost?.rendered(id);if(!staged){soundHost?.rendered(id);musicHost?.rendered(id);}processReceivedStoryReply(Number(id));});
  // Which line of the reply a wave plays (-1: not one of this page's waves).
  const waveIndex=button=>{const owner=button.closest('[data-sttts-token]');return owner?.dataset.stttsToken===marker?Number(owner.dataset.stttsLine):-1;};
- storyTools=createStoryTools({hidden:()=>settings.general.hideStoryWaves===true,entry:()=>settings.general.storyTools!==false,message:currentMessage,valid:unchanged,notice,
+ storyTools=createStoryTools({hidden:()=>settings.general.hideStoryWaves===true,entry:()=>settings.general.storyTools!==false,message:currentMessage,valid:unchanged,notice,narration:()=>settings.narration,
  wave:(button,snap)=>{const index=waveIndex(button);return index>=0?messageLines(snap)[index]:null;},
  actions:{download:async line=>{const file=await backend.audioFile({line});await saveFile(document,file.blob,file.name);},favorite:async line=>{const key=await player.lineKey(line);if(!key)throw Error('这句还没有生成语音，先播放一次');await backend.favoriteAudio(key);notice('已收藏');},
  // 重新配音: the line's kept audio let go, and the line played: made anew.
  retake:async(line,snap,button)=>{await player.retake(line);playLine(snap.id,waveIndex(button));},
  // 给这层楼配音: any reply voiced again by the request 回复后单独配音 makes (not only the newest).
  canVoice:()=>voiceOn(),voice:async id=>{if(!voiceOn())throw Error('请先打开正文语音');const n=await pictures.voiceMessage(id);notice(n?`配好了 ${n} 句台词`:'这层楼里没有找到台词');},
- dialogue:openVoiceWindow,draw:id=>pictures.drawMessage(id),vn:id=>vnHost.open(id),playing:id=>playbackMessage?.id===id&&['playing','generating','paused','waiting'].includes(player.phase),stop:()=>player.stop(),play:id=>{if(!voiceOn())throw Error('请先打开正文语音');if(!messageLines(currentMessage(id)).length)throw Error('这层楼还没有配音台词');return playMessage(id);}}});
+ dialogue:openVoiceWindow,draw:id=>pictures.drawMessage(id),drawSelection:selected=>pictures.drawSelection(selected),vn:id=>vnHost.open(id),playing:id=>playbackMessage?.id===id&&['playing','generating','paused','waiting'].includes(player.phase),stop:()=>player.stop(),play:id=>{if(!voiceOn())throw Error('请先打开正文语音');if(!messageLines(currentMessage(id)).length)throw Error('这层楼还没有配音台词');return playMessage(id);}}});
  document.addEventListener('click',click,true);document.addEventListener('keydown',keyUnlock,true);mountEntry();mountWand();syncFloating();observer=new MutationObserver(chatChanged);const chat=document.querySelector('#chat');if(chat)observer.observe(chat,{childList:true,subtree:true});inject();rerender();}
 export function enable(){if(enabling)return enabling;enabling=enableInternal().finally(()=>{enabling=null;});return enabling;}
 export async function disable(){if(enabling)await enabling;stopDiagnostics?.();stopDiagnostics=null;if(!active)return;active=false;chatIdentity?.close();chatIdentity=null;chatIdentityHost?.close();chatIdentityHost=null;storyGeneration.running=false;storyGeneration.stopped=false;awaitingStoryReplies.clear();storyWork?.dispose();storyWork=null;clearTimeout(spaceRetry);spaceTurn++;bedtimeHost?.close();bedtimeHost=null;bookHost?.close();bookHost=null;stopChatClock?.();stopChatClock=null;msgIsland?.dispose();msgIsland=null;callIsland?.dispose();callIsland=null;closeGame();renderEpoch++;cancelAnimationFrame(lineRaf);lineMedia?.removeEventListener('change',animateLines);document.removeEventListener('visibilitychange',animateLines);voiceWindowMessage=voiceWindowTail=null;playbackMessage=selectedMessage=dialogueMessage=null;dialogueRevision++;dialogueChoices.clear();healed.clear();player.stop();clearPrompts();for(const [source,event,fn] of listeners)source.removeListener(event,fn);listeners.length=0;observer?.disconnect();clearTimeout(renderTimer);renderTimer=0;document.removeEventListener('click',click,true);document.removeEventListener('keydown',keyUnlock,true);document.removeEventListener('visibilitychange',flushSync);watchPanelLayout(false);document.querySelector('#sttts-extension-entry')?.remove();document.querySelector('#sttts-wand-entry')?.remove();floating?.destroy();floating=null;document.querySelectorAll('[data-sttts-owned="toolbar"]').forEach(el=>el.remove());panel?.remove();panel=frame=null;delete globalThis.__stIphoniePanelBridge;storyTools?.dispose();storyTools=null;vnHost?.dispose();vnHost=null;pictures=null;closePublicApi(globalThis.stIphonie);delete globalThis.stIphonie;chats=null;momentsHost=null;wardrobeHost=null;generatorHost=null;appsHost=null;assistantHost?.close();assistantHost=null;songHost=null;musicHost?.close();musicHost=null;musicIsland?.dispose();musicIsland=null;voiceIsland?.dispose();voiceIsland=null;momentsWatch?.dispose();momentsWatch=null;noteIsland?.dispose();noteIsland=null;callHost?.dispose();callHost=null;memoryHost?.close();memoryHost=null;voiceHost=null;soundHost?.close();soundHost=null;pendingDraw=null;await backend.close();rerender();}

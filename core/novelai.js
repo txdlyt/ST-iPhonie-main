@@ -553,9 +553,14 @@ export class NovelAIClient {
     if (!reader) return unzipFirstImage(await response.arrayBuffer());
     const steps = body.parameters.steps;
     let held = new Uint8Array(0), final = null, failed = '', checked = false;
+    let seen = false, cut = '';
     for (;;) {
-      const {done, value} = await reader.read();
+      let piece;
+      // iPhone cuts a stream when the page goes to the background or the network changes: "Load failed" / "network connection was lost".
+      try { piece = await reader.read(); } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw error; cut = error?.message || '连接断了'; break; }
+      const {done, value} = piece;
       if (done) break;
+      seen = true;
       const next = new Uint8Array(held.length + value.length);
       next.set(held); next.set(value, held.length); held = next;
       // A relay may answer the stream's address with the usual ZIP.
@@ -572,6 +577,9 @@ export class NovelAIClient {
       }
     }
     if (final) return final;
+    // Not one byte had come when it was cut: nothing was drawn (or paid for), so the plain request is made instead.
+    if (!seen && !failed) return this.generate(body, signal);
+    if (cut && !failed) throw Object.assign(Error(`NovelAI 的流式连接中途断了（${cut}），没收到最后的图。多半是页面被切到后台或网络切换了；图不一定画好，先看看相册和 Anlas 余额，再决定要不要重画`), {status: 0});
     throw Object.assign(Error(failed ? 'NovelAI 没画成：' + failed : 'NovelAI 的流式回应中断了，没有收到最后的图'), {status: 0});
   }
   /** Tags that begin with what is being typed: [{tag, count}]. NovelAI asks no Anlas for this. */
