@@ -86,7 +86,17 @@ export function galleryApp(ctx) {
   }
   async function render() {
     const ticket = ++epoch;
-    await read();
+    // A store the browser hangs on (iPhone WebKit) used to leave this page blank with nothing said: now it says so, and 重新读取 asks again.
+    try {
+      let timer;
+      try { await Promise.race([read(), new Promise((_, no) => { timer = setTimeout(() => no(Error('相册读取超时（浏览器的本地存储没有回应）')), 20000); })]); }
+      finally { clearTimeout(timer); }
+    } catch (error) {
+      if (v.disposed || ticket !== epoch) return;
+      drawn = '';
+      v.draw(heading('相册', '', 'Album') + empty('相册读不出来', `${error.message || '读取失败'}。照片还在，多半是浏览器的本地存储暂时卡住了：点下面重试，不行就刷新页面。`, 'image') + `<div class="actions">${btn('reload-album', '重新读取', 'primary')}</div>`);
+      return;
+    }
     if (v.disposed || ticket !== epoch) return;
     if (place && !albumNow() && !sourceNow()) place = null;
     if (!here().length) selecting = null;
@@ -439,6 +449,7 @@ export function galleryApp(ctx) {
       case 'photo':
         if (selecting) { const id = el.dataset.id; if (selecting.has(id)) selecting.delete(id); else selecting.add(id); syncSelection(); break; }
         openPhoto(el.dataset.id, (el.querySelector('img') || el).getBoundingClientRect()); break;
+      case 'reload-album': await render(); break;
       case 'album-tab': if (tab !== el.dataset.tab) { tab = el.dataset.tab; selecting = null; await render(); v.root.scrollTop = 0; } break;
       case 'open-album': place = {kind: 'album', id: el.dataset.albumId}; selecting = null; await render(); v.root.scrollTop = 0; break;
       case 'open-source': place = {kind: 'source', key: el.dataset.key}; selecting = null; await render(); v.root.scrollTop = 0; break;

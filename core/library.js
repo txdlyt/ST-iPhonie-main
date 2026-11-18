@@ -159,10 +159,29 @@ export class LocalLibrary {
   return this.#opening;
  }
  // A dropped connection (iPhone Safari after the page sat in the background) is reopened once; nothing was written.
- async #run(work,again=true){
-  const db=await this.#open();
-  try{return await work(db);}
-  catch(error){if(error?.code!=='STORAGE_LOST'||this.#closed)throw error;if(this.#db===db){try{db.close();}catch{}this.#db=null;}if(again){await breath();return this.#run(work,false);}throw error;}
+ // A connection that neither answers nor fails (the same WebKit trouble, the request just hangs) used to leave the 相册 and 设置
+ // pages blank for good: now a read that gets no answer in 8 s is asked again on a fresh connection; a write that gets none in
+ // 60 s fails with a message (it is not asked again: it may still go through, and a second copy would be a second photo).
+ async #run(work,again=true,write=false){
+  const ms=write?60000:8000;
+  // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
+  let db;
+  try{db=await this.#guard(this.#open(),ms);}
+  catch(error){if(error?.code!=='STORAGE_TIMEOUT'||this.#closed)throw error;this.#opening=null;db=await this.#guard(this.#open(),ms).catch(e=>{if(e?.code==='STORAGE_TIMEOUT')this.#opening=null;throw e;});}
+  try{return await this.#guard(work(db),ms);}
+  catch(error){
+   const timeout=error?.code==='STORAGE_TIMEOUT';
+   if((error?.code!=='STORAGE_LOST'&&!(timeout&&!write))||this.#closed)throw error;
+   if(this.#db===db){try{db.close();}catch{}this.#db=null;}
+   if(timeout)this.#opening=null;
+   if(again){await breath();return this.#run(work,false,write);}
+   throw error;
+  }
+ }
+ /** The promise, or an error when it has not settled in `ms`: a hung request must not hold a page (or every later request) for good. */
+ #guard(promise,ms){
+  let timer;
+  return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(fail('本地资料没有回应（浏览器的存储卡住了），请刷新页面后再试','STORAGE_TIMEOUT')),ms);})]).finally(()=>clearTimeout(timer));
  }
  async #read(name,id){
   return this.#run(db=>new Promise((resolve,reject)=>{
@@ -219,7 +238,7 @@ export class LocalLibrary {
     for(const id of ids){pending++;const req=tx.objectStore(name).get(this.#key(id));req.onsuccess=()=>{if(req.result)found(name,req.result);done();};}
    }
    done();
-  }));
+  }),true,true);
  }
  async #list(name,metadata=false){
   const rows=metadata&&MEDIA.includes(name)?await this.#metaRows(name):(await this.#read(name)).map(row=>publicRow(row,metadata));
@@ -426,7 +445,7 @@ export class LocalLibrary {
   this.#appearance(wallpaper,'wallpaper');iconFields(icons);for(const icon of Object.values(icons))this.#appearance(icon,'icon');
   return {wallpaper,icons,iconStyle:['color','glass','mono'].includes(iconStyle)?iconStyle:'color',skin:PHONE_SKINS.includes(skin)?skin:'sky',lockOnOpen:lockOnOpen===true,volume:Number.isFinite(volume)?Math.min(1,Math.max(0,volume)):1,...(monoHue!==undefined&&validHue(monoHue)?{monoHue}:{}),...(cleanTheme(customTheme)?{customTheme:cleanTheme(customTheme)}:{}),...(look&&validLook(look)?{look}:{}),...(Array.isArray(widgets)?{widgets:normalizeWidgets(widgets)}:{}),...dates};
  }
- async #room(){try{const n=await this.#limit();return Number.isFinite(n)&&n>0?n:LIBRARY_LIMITS.total;}catch{return LIBRARY_LIMITS.total;}}
+ async #room(){try{const n=await this.#guard(this.#limit(),3000);return Number.isFinite(n)&&n>0?n:LIBRARY_LIMITS.total;}catch{return LIBRARY_LIMITS.total;}}
  async stats(){
   const limit=await this.#room();
   return this.#run(db=>new Promise((resolve,reject)=>{

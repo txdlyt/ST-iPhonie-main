@@ -397,7 +397,19 @@ export function settingsApp(ctx) {
     if (backup) { await renderBackup(ticket); return; }
     if (restore) { renderRestore(); return; }
     if (storage) { await renderStorage(ticket); return; }
-    const [phone, cache, library, storyThreads] = await Promise.all([api.getPhone(), api.cacheStats(), api.libraryStats().catch(() => null), api.listThreads()]);
+    // Each read has its own way out: a store the browser hangs on (iPhone WebKit) used to leave this whole page blank. Now the page
+    // draws with what could be read (the rest as if empty) and says which part did not answer.
+    const bad = [], soft = (name, work, fallback, ms = 8000) => {
+      let timer;
+      return Promise.race([Promise.resolve().then(work), new Promise((_, no) => { timer = setTimeout(() => no(Error('没有回应')), ms); })])
+        .catch(() => { bad.push(name); return fallback; }).finally(() => clearTimeout(timer));
+    };
+    const [phone, cache, library, storyThreads] = await Promise.all([
+      soft('外观', () => api.getPhone(), {wallpaper: {kind: 'builtin', key: 'sky'}, icons: {}, iconStyle: 'color', skin: 'sky', theme: 'system', lockOnOpen: false, volume: 1}),
+      soft('语音缓存', () => api.cacheStats(), {available: false, bytes: 0}),
+      soft('资料库', () => api.libraryStats(), null),
+      soft('聊天记录', () => api.listThreads(), [])]);
+    if (bad.length && !v.disposed) ctx.notify(`设置里有部分没读出来：${bad.join('、')}（浏览器的本地存储没有回应，刷新页面通常能恢复）`, {error: true});
     if (v.disposed || ticket !== epoch) return;
     const s = api.getState(), space = api.phoneSpace?.() || {};
     const wallName = phone.wallpaper.kind === 'builtin' ? (phone.wallpaper.key === 'custom' ? '主题色' : wallpapers[phone.wallpaper.key]?.name) : phone.wallpaper.kind === 'look' ? '主题的壁纸' : '自己的照片';

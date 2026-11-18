@@ -6,7 +6,7 @@
 //   · bridge_batch: which picture of one request this is, so the bridge can draw 4 at once and hand them out one by one.
 // A script that stands in for the bridge (another site's reverse proxy, a local ComfyUI wrapper …) only has to read this
 // body: input, parameters.{width,height,seed,negative_prompt}, parameters.bridge_batch, parameters.characters.
-import {NovelAIClient, relayUrl, normalizeDrawParams, expandChunks} from './novelai.js';
+import {NovelAIClient, relayUrl, normalizeDrawParams, expandChunks, unzipFirstImage} from './novelai.js';
 
 export const PIXAI_NAME = 'PixAI 反代';
 /**
@@ -61,16 +61,66 @@ export class PixaiClient extends NovelAIClient {
     if (this.key) headers.Authorization = 'Bearer ' + this.key;
     return headers;
   }
+  /**
+   * One request, with its answer read here (not by NovelAIClient.generate) so that a cut can be told apart: the bridge sends the
+   * response head early and then a space every few seconds while PixAI draws, so the body is read in pieces, and a body that
+   * fails ("Load failed" on iPhone: the connection was cut after the picture was drawn) or goes silent for 90 s is `lost`.
+   */
+  async #once(body, signal) {
+    const response = await this.call('/ai/generate-image', {method: 'POST', headers: this.headers(), body: JSON.stringify(body), signal});
+    const parts = [];
+    try {
+      const reader = response.body?.getReader?.();
+      if (reader) {
+        for (;;) {
+          let timer;
+          const idle = new Promise((_, no) => { timer = setTimeout(() => { reader.cancel().catch(() => {}); no(Error('连接 90 秒没有任何数据')); }, 90000); });
+          const piece = await Promise.race([reader.read(), idle]).finally(() => clearTimeout(timer));
+          if (piece.done) break;
+          parts.push(piece.value);
+        }
+      } else parts.push(new Uint8Array(await response.arrayBuffer()));
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      throw Object.assign(error, {lost: true});
+    }
+    const bytes = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+    let at = 0;
+    for (const x of parts) { bytes.set(x, at); at += x.length; }
+    // The bridge failed after it had sent the head (status 201 already out): the reason comes as plain text in the body.
+    if (bytes.length < 4000 && !(bytes[0] === 0x50 && bytes[1] === 0x4b) && bytes[0] !== 0x89) {
+      const said = new TextDecoder().decode(bytes).trim();
+      if (said) throw Object.assign(Error(said), {bridgeSaid: true});
+    }
+    return unzipFirstImage(bytes.buffer);
+  }
   async generate(body, signal) {
     if (!this.relay) throw Error('还没有填写 PixAI 反代地址');
-    try { return await super.generate(body, signal); }
-    catch (error) {
-      // 410: asked to only fetch a picture (bridge_batch.recover) the bridge no longer has: it was not drawn again.
-      if (error?.status === 410) throw Object.assign(Error('PixAI 反代里已经没有这张图了（超过 10 分钟，或反代重启过）。点「重试」会重新画一张，会再扣一次积分'), {status: 410, code: 'PIXAI_EXPIRED'});
-      if (PIXAI_CUT.has(error?.status)) throw Object.assign(Error(`连接在 PixAI 出图途中被切断了（${error.status}，多半是反代前面的 nginx / Cloudflare / 酒馆转发等得太久）。图可能已经画好了：点「重新获取」取回，不会重画`), {status: error.status, cut: true});
-      // The client is NovelAI's: what it says about "NovelAI" is about this engine here.
-      if (error && typeof error.message === 'string') error.message = error.message.replace(/NovelAI/g, PIXAI_NAME);
-      throw error;
+    let sent = body;
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.#once(sent, signal); }
+      catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
+        // The request got there but its answer did not come back (the connection was cut, or a proxy gave up): the bridge keeps what
+        // it draws for 10 minutes, so the same picture is asked for again (bridge_batch.recover), which never draws or pays again.
+        // Asked after a pause, up to 6 times; a bridge that no longer has it says 410 and the plugin draws anew, as it always did.
+        const cut = error?.lost || PIXAI_CUT.has(error?.status);
+        if (cut && attempt < 6) {
+          if (attempt === 0) sent = {...body, parameters: {...body.parameters, bridge_batch: {...(body.parameters?.bridge_batch || {}), recover: true}}};
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, Math.min(15000, 3000 * (attempt + 1)));
+            signal?.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(Error('已取消'), {cancelled: true, name: 'AbortError'})); }, {once: true});
+          });
+          continue;
+        }
+        // 410: asked to only fetch a picture (bridge_batch.recover) the bridge no longer has: it was not drawn again.
+        if (error?.status === 410) throw Object.assign(Error('PixAI 反代里已经没有这张图了（超过 10 分钟，或反代重启过）。点「重试」会重新画一张，会再扣一次积分'), {status: 410, code: 'PIXAI_EXPIRED'});
+        if (PIXAI_CUT.has(error?.status)) throw Object.assign(Error(`连接在 PixAI 出图途中被切断了（${error.status}，多半是反代前面的 nginx / Cloudflare / 酒馆转发等得太久），自动取回了几次也没取到。图可能已经画好了：点「重新获取」取回，不会重画`), {status: error.status, cut: true});
+        if (error?.lost) throw Object.assign(Error(`和 PixAI 反代的连接断了（${error.message}），自动取回了几次也没成功。图可能已经画好了：点「重新获取」取回，不会重画`), {cut: true});
+        // The client is NovelAI's: what it says about "NovelAI" is about this engine here.
+        if (error && typeof error.message === 'string') error.message = error.message.replace(/NovelAI/g, PIXAI_NAME);
+        throw error;
+      }
     }
   }
 }

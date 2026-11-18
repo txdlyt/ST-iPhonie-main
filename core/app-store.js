@@ -33,20 +33,36 @@ export class AppStore {
     return this.#opening;
   }
   // A dropped connection (iPhone Safari after the page sat in the background) is reopened once; nothing was written.
+  /** The promise, or an error when it has not settled in `ms`: a hung request must not hold a page (or every later request) for good. */
+  #guard(promise, ms) {
+    let timer;
+    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(fail('本地数据没有回应（浏览器的存储卡住了），请刷新页面后再试', 'STORAGE_TIMEOUT')), ms); })]).finally(() => clearTimeout(timer));
+  }
+  // A read that gets no answer in 8 s is asked again on a fresh connection; a write (60 s) is not: it may still go through.
   async #tx(mode, work, again = true) {
-    const db = await this.#open();
+    const write = mode !== 'readonly', ms = write ? 60000 : 8000;
+    // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
+    let db;
+    try { db = await this.#guard(this.#open(), ms); }
+    catch (error) {
+      if (error?.code !== 'STORAGE_TIMEOUT' || this.#closed) throw error;
+      this.#opening = null;
+      db = await this.#guard(this.#open(), ms).catch(e => { if (e?.code === 'STORAGE_TIMEOUT') this.#opening = null; throw e; });
+    }
     try {
-      return await new Promise((resolve, reject) => {
+      return await this.#guard(new Promise((resolve, reject) => {
         let result, own, tx;
         try { tx = db.transaction('docs', mode); } catch (error) { reject(this.#closed ? fail('已关闭', 'CLOSED') : lostError(error)); return; }
         const store = tx.objectStore('docs');
         tx.oncomplete = () => resolve(result);
         tx.onabort = () => reject(own || (connectionLost(tx.error) ? lostError(tx.error) : fail(tx.error?.name === 'QuotaExceededError' ? '设备存储空间不足，没有保存' : '没有保存，请重试', 'STORAGE')));
         work(store, value => { result = value; }, error => { own = error; tx.abort(); });
-      });
+      }), ms);
     } catch (error) {
-      if (error?.code !== 'STORAGE_LOST' || this.#closed) throw error;
+      const timeout = error?.code === 'STORAGE_TIMEOUT';
+      if ((error?.code !== 'STORAGE_LOST' && !(timeout && !write)) || this.#closed) throw error;
       if (this.#db === db) { try { db.close(); } catch {} this.#db = null; }
+      if (timeout) this.#opening = null;
       if (again) { await breath(); return this.#tx(mode, work, false); }
       throw error;
     }
