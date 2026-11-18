@@ -553,14 +553,15 @@ export class NovelAIClient {
     if (!reader) return unzipFirstImage(await response.arrayBuffer());
     const steps = body.parameters.steps;
     let held = new Uint8Array(0), final = null, failed = '', checked = false;
-    let seen = false, cut = '';
+    let seen = false, cut = '', total = 0, last = null;
+    const kinds = new Map();
     for (;;) {
       let piece;
       // iPhone cuts a stream when the page goes to the background or the network changes: "Load failed" / "network connection was lost".
       try { piece = await reader.read(); } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw error; cut = error?.message || '连接断了'; break; }
       const {done, value} = piece;
       if (done) break;
-      seen = true;
+      seen = true; total += value.length;
       const next = new Uint8Array(held.length + value.length);
       next.set(held); next.set(value, held.length); held = next;
       // A relay may answer the stream's address with the usual ZIP.
@@ -571,16 +572,23 @@ export class NovelAIClient {
         const frame = unpack(held.subarray(4, 4 + size));
         held = held.slice(4 + size);
         const image = typeof frame?.image === 'string' ? Uint8Array.from(atob(frame.image), c => c.charCodeAt(0)) : frame?.image;
+        { const kind = String(frame?.event_type ?? (frame && typeof frame === 'object' ? 'keys:' + Object.keys(frame).slice(0, 4).join('/') : typeof frame)); kinds.set(kind, (kinds.get(kind) || 0) + 1); if (image) last = {kind, blob: new Blob([image], {type: pictureType(image)})}; }
         if (frame?.event_type === 'error') failed = String(frame.message || 'NovelAI 没画成');
         else if (frame?.event_type === 'intermediate' && image) onFrame({image: new Blob([image], {type: pictureType(image)}), step: Number(frame.step_ix) || 0, steps});
         else if (frame?.event_type === 'final' && image) final = new Blob([image], {type: pictureType(image)});
       }
     }
     if (final) return final;
+    // A relay may name the last frame differently ("complete", "result"...): the last picture frame that is not a step preview is it.
+    if (last && last.kind !== 'intermediate' && !failed) return last.blob;
     // Not one byte had come when it was cut: nothing was drawn (or paid for), so the plain request is made instead.
     if (!seen && !failed) return this.generate(body, signal);
     if (cut && !failed) throw Object.assign(Error(`NovelAI 的流式连接中途断了（${cut}），没收到最后的图。多半是页面被切到后台或网络切换了；图不一定画好，先看看相册和 Anlas 余额，再决定要不要重画`), {status: 0});
-    throw Object.assign(Error(failed ? 'NovelAI 没画成：' + failed : 'NovelAI 的流式回应中断了，没有收到最后的图'), {status: 0});
+    // What did arrive, so that where it broke can be told: a frame cut in the middle (held bytes left) is a connection or relay that
+    // gave up while the last picture was on its way; a clean end with only previews is a relay that does not send the last frame.
+    const seenKinds = [...kinds].map(([k, n]) => `${k}×${n}`).join(' ') || '无';
+    const facts = `收到 ${total} 字节，帧：${seenKinds}${held.length ? `，最后一帧只到一半（剩 ${held.length} 字节）` : ''}`;
+    throw Object.assign(Error(failed ? 'NovelAI 没画成：' + failed : `NovelAI 的流式回应中断了，没有收到最后的图（${facts}）`), {status: 0});
   }
   /** Tags that begin with what is being typed: [{tag, count}]. NovelAI asks no Anlas for this. */
   async suggestTags({model, prompt, mode = 'anime', signal} = {}) {
