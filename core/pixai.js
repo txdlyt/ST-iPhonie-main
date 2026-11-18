@@ -21,7 +21,7 @@ export const PIXAI_MODES = ['api', 'direct', 'still'];
 //         'page'   — the model, LoRA, Recipe, steps … are what was set on the PixAI page and recorded by the bridge: this side only decides the prompt and the size.
 // tplId: which recorded page setting is in use; tplKnown: the records seen so far (null = none yet), so a newly recorded one is noticed; tplLoras: per record, per LoRA {on, weight}.
 export const defaultPixaiApi = () => ({tplId: '', tplKnown: null, tplLoras: {}, tplCovers: {}, tplNames: {}, tplOrder: [], tplRes: {}, source: 'page', model: '', useLora: true, useRecipe: true, ratio: '', size: '', width: 0, height: 0, count: 4, loraWeight: 0.7});
-export const defaultPixai = () => ({url: '', style: '', mode: 'api', refStrength: 0.55, api: defaultPixaiApi()});
+export const defaultPixai = () => ({url: '', style: '', mode: 'api', refStrength: 0.55, parallel: 3, api: defaultPixaiApi()});
 export function normalizePixaiApi(value) {
   const a = value && typeof value === 'object' ? value : {}, d = defaultPixaiApi();
   const dim = v => (Number.isInteger(v) && v >= 64 && v <= 8192 ? v : 0);
@@ -47,7 +47,7 @@ export function normalizePixai(value) {
   const p = value && typeof value === 'object' ? value : {};
   let url = '';
   try { url = relayUrl(p.url, ''); } catch { url = ''; }
-  return {url, style: typeof p.style === 'string' ? p.style.slice(0, 64) : '', mode: PIXAI_MODES.includes(p.mode) ? p.mode : 'api', refStrength: Number.isFinite(Number(p.refStrength)) ? Math.round(Math.min(1, Math.max(0, Number(p.refStrength))) * 100) / 100 : 0.55, api: normalizePixaiApi(p.api)};
+  return {url, style: typeof p.style === 'string' ? p.style.slice(0, 64) : '', mode: PIXAI_MODES.includes(p.mode) ? p.mode : 'api', parallel: Number.isInteger(Number(p.parallel)) && Number(p.parallel) >= 1 && Number(p.parallel) <= 6 ? Number(p.parallel) : 3, refStrength: Number.isFinite(Number(p.refStrength)) ? Math.round(Math.min(1, Math.max(0, Number(p.refStrength))) * 100) / 100 : 0.55, api: normalizePixaiApi(p.api)};
 }
 
 /** The NovelAI client of this engine: no NovelAI host, and no key is fine (the bridge may not ask for one). */
@@ -105,6 +105,6 @@ export function pixaiRequest({prompt, negative = '', characters = [], params, ba
     // A picture that is alone in its request still says so: the bridge then draws one, not four.
     bridge_batch: normalizeBatch(batch) || {run: crypto.randomUUID(), index: 0, size: 1},
     // Which way to draw, so the bridge does what this plugin's settings say (an older bridge ignores it).
-    ...(pixai ? {bridge_mode: pixai.mode === 'still' ? {mode: 'still'} : pixai.mode === 'direct' ? {mode: 'direct', ...(ref?.image ? {ref: {image: ref.image, strength: pixai.refStrength ?? 0.55}} : {})} : {mode: 'api', source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false, template: pixai.api?.tplId || '', loraTweaks: pixai.api?.tplLoras?.[pixai.api?.tplId] || {}}} : {})};
+    ...(pixai ? {bridge_mode: pixai.mode === 'still' ? {mode: 'still'} : pixai.mode === 'direct' ? {mode: 'direct', ...(ref?.image ? {ref: {image: ref.image, strength: pixai.refStrength ?? 0.55}} : {})} : {mode: 'api', parallel: pixai.parallel || 3, source: pixai.api?.source === 'page' ? 'page' : 'preset', model: pixai.api?.model || '', loraWeight: pixai.api?.loraWeight ?? 0.7, useLora: pixai.api?.useLora !== false, useRecipe: pixai.api?.useRecipe !== false, template: pixai.api?.tplId || '', loraTweaks: pixai.api?.tplLoras?.[pixai.api?.tplId] || {}}} : {})};
   return {body: {input, model: p.model, action: 'generate', parameters}, seed, params: {width, height}};
 }

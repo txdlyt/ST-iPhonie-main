@@ -298,13 +298,13 @@ class Batcher {
       if (hint.recover && run && run.prompt !== prompt) { console.warn(`取回 ${hint.run} 第 ${hint.index + 1} 张：提示词和当时不一样，按批次号取回`); prompt = run.prompt; }
       if (!run || run.prompt !== prompt) {
         if (hint.recover) { console.warn(`取回 ${hint.run} 第 ${hint.index + 1} 张失败：反代里没有这个批次（超过 10 分钟、重启过，或换了账号）`); throw Object.assign(new Error('这张图已不在反代里'), { code: 'EXPIRED' }); }
-        run = { legacy: false, prompt, size: hint.size, groups: new Map(), used: 0, next: 0, spec };
+        run = { legacy: false, prompt, size: hint.size, groups: new Map(), resume: new Map(), used: 0, next: 0, spec };
       }
       run.size = hint.size;
       index = hint.index;
     } else {
       key = 'legacy:' + prompt;
-      run = this.runs.get(key) ?? { legacy: true, prompt, size: this.legacySize, groups: new Map(), used: 0, next: 0, spec };
+      run = this.runs.get(key) ?? { legacy: true, prompt, size: this.legacySize, groups: new Map(), resume: new Map(), used: 0, next: 0, spec };
       index = run.next;
     }
     this.runs.delete(key);
@@ -314,16 +314,18 @@ class Batcher {
     const group = Math.floor(index / per), slot = index % per;
     const want = this.countFor(Math.min(per, Math.max(1, run.size - group * per)));
     let entry = run.groups.get(group);
-    if (hint?.recover && (!entry || (entry.result && slot >= entry.result.files.length))) {
+    // 取回：这一组出过错但任务已经提交了（resume 里有任务号）就接着等那个任务，不算「没有」
+    const resuming = run.resume?.get(group);
+    if (hint?.recover && !resuming && (!entry || (entry.result && slot >= entry.result.files.length))) {
       console.warn(`取回 ${hint.run} 第 ${hint.index + 1} 张失败：这个批次${!entry ? '这一组没有出成功（出图时报过错，或还没出）' : '只出了 ' + entry.result.files.length + ' 张'}`);
       throw Object.assign(new Error('这张图已不在反代里'), { code: 'EXPIRED' });
     }
     if (!entry || (entry.result && slot >= entry.result.files.length)) {
       entry = { result: null, promise: null };
       run.groups.set(group, entry);
-      entry.promise = this.generate(prompt, want, run.spec ?? null).then(
-        result => (entry.result = result),
-        error => { if (run.groups.get(group) === entry) run.groups.delete(group); throw error; }
+      entry.promise = this.generate(prompt, want, run.spec ?? null, run.resume?.get(group) ?? null).then(
+        result => { run.resume?.delete(group); return (entry.result = result); },
+        error => { if (run.groups.get(group) === entry) run.groups.delete(group); if (error?.taskId && run.resume) run.resume.set(group, error.taskId); throw error; }
       );
     }
     const result = await entry.promise;
@@ -990,12 +992,12 @@ function stripPrompts(q) {
   return gone;
 }
 const tplById = id => tpls.find(item => item.id === id) || tpls.find(item => item.id === tplCurrent) || tpls[tpls.length - 1] || null;
-function rememberTemplate(text) {
+function rememberTemplate(text, modelName = '') {
   if (!text || text === lastOwnBody) return false;
   const body = json(text, null);
   if (!body || typeof body !== 'object' || !body.parameters || typeof body.parameters !== 'object' || !body.parameters.modelId) return false;
   const gone = stripPrompts(body.parameters);
-  const rec = { id: 't' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36), at: new Date().toISOString(), body };
+  const rec = { id: 't' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36), at: new Date().toISOString(), body, ...(modelName ? { modelName: String(modelName).slice(0, 80) } : {}) };
   tpls.push(rec); while (tpls.length > TPL_MAX) tpls.shift();
   tplCurrent = rec.id;
   console.log('已记下网页上的出图设置：', templateInfo(rec).summary + (gone.length ? `（已去掉自带的提示词：${gone.join('、')}）` : ''));
@@ -1012,7 +1014,9 @@ function loraNameOf(versionId) {
 }
 function templateInfo(rec) {
   const q = rec.body.parameters, id = Object.keys(API_MODELS).find(key => API_MODELS[key].modelId === q.modelId);
-  const model = id ? MODEL_PRESETS.find(item => item.id === id)?.name || id : `模型 ${String(q.modelId).slice(-6)}`;
+  // 名字优先用记下时网页上读到的；老记录没有，就借同一个模型的别条记录，再不行用预设名
+  const known = rec.modelName || tpls.find(t => t.modelName && t.body?.parameters?.modelId === q.modelId)?.modelName;
+  const model = known || (id ? MODEL_PRESETS.find(item => item.id === id)?.name || id : `模型 ${String(q.modelId).slice(-6)}`);
   const given = Array.isArray(q.loraParameters) ? q.loraParameters : [];
   const loras = Object.keys(q.lora || {}).map(versionId => {
     const hit = given.find(l => String(l.versionId) === versionId);
@@ -1027,7 +1031,7 @@ function templateInfo(rec) {
   const recipeUniq = [...new Set(recipeIds.filter(Boolean))];
   const recipes = recipeUniq.length;
   const recipeList = recipeUniq.map(rid => { let name = ''; for (const [mid, m] of Object.entries(API_MODELS)) { const at = (m.recipeIds || []).indexOf(rid), pre = MODEL_PRESETS.find(item => item.id === mid); if (at >= 0 && pre?.recipes?.[at]) name = pre.recipes[at]; } return { id: rid, name: name || `Recipe …${rid.slice(-5)}` }; });
-  return { id: rec.id, at: rec.at, model, loras, recipes, recipeList, steps: q.samplingSteps ?? null, width: Number.isInteger(q.width) ? q.width : null, height: Number.isInteger(q.height) ? q.height : null, summary: `${model}，LoRA ${loras.length} 个，Recipe ${recipes} 个${q.samplingSteps ? '，' + q.samplingSteps + ' 步' : ''}` };
+  return { id: rec.id, at: rec.at, model, resolutions: rec.resolutions || null, loras, recipes, recipeList, steps: q.samplingSteps ?? null, width: Number.isInteger(q.width) ? q.width : null, height: Number.isInteger(q.height) ? q.height : null, summary: `${model}，LoRA ${loras.length} 个，Recipe ${recipes} 个${q.samplingSteps ? '，' + q.samplingSteps + ' 步' : ''}` };
 }
 const templateState = () => ({ armed: !!armed, current: tplById(tplCurrent)?.id || '', list: tpls.map(templateInfo) });
 let armed = null; // { page, handler, timer }
@@ -1044,7 +1048,9 @@ async function armTemplate(page, seconds = 120) {
     try {
       const request = route.request();
       if (request.method() !== 'POST' || request.postData() === lastOwnBody) return await route.continue();
-      if (!rememberTemplate(request.postData())) return await route.continue();
+      // 记下的是网页上模型的名字（和另外两个模式一样），不是 id；请求被拦下之前页面还没变，现在读
+      const modelName = await ensureModelPanel(page).then(() => readModelInfo(page)).then(info => info?.name || '', () => '');
+      if (!rememberTemplate(request.postData(), modelName)) return await route.continue();
       await route.abort().catch(() => {});
     } catch (error) { console.warn('拦网页「生成」时出错，放行：', error.message); await route.continue().catch(() => {}); }
     await disarmTemplate();
@@ -1115,7 +1121,7 @@ async function apiCall(page, method, path, body) {
   return { status: result.status, text: result.text, json: json(result.text, null) };
 }
 
-async function apiGenerate(page, prompt, count, spec = null) {
+async function apiGenerate(page, prompt, count, spec = null, resume = null) {
   // 刚启动或页面刚打开时还没抄到头：页面自己每几秒会发请求，等一会儿
   for (let i = 0; i < 30 && !apiReady(); i++) await sleep(500);
   // 插件在 API 模式下把模型、宽高、LoRA 权重都带在请求里：不碰网页、不用页面上选着的东西
@@ -1168,6 +1174,11 @@ async function apiGenerate(page, prompt, count, spec = null) {
     ...(useRecipe && model.recipeIds.length ? { recipeIds: model.recipeIds } : {}),
     promptHelper: { withStage: true, userWantToEnable: true, forcePromptHelperDetectionSide: 'server' }
   };
+  let taskId;
+  if (resume) {
+    taskId = String(resume); // 上一次提交过了、没等到图：接着等同一个任务，不再提交（不再扣积分）
+    console.log(`API 接着等任务 ${taskId}（之前已提交，不重画）`);
+  } else {
   const createBody = { ...(fromPage ? { ...rec.body } : {}), parameters };
   lastOwnBody = JSON.stringify(createBody);
   const created = await apiCall(page, 'POST', '/v2/task/create', createBody);
@@ -1178,36 +1189,47 @@ async function apiGenerate(page, prompt, count, spec = null) {
     if (why) throw apiFail(why + `（HTTP ${created.status}）`, false);
     throw apiFail(`API 提交没成功（${created.status}）：${String(created.text).slice(0, 200)}`, true);
   }
-  const taskId = String(created.json.id);
+  taskId = String(created.json.id);
   lastCost = { points: Number.isFinite(Number(created.json.paidQuota)) ? Number(created.json.paidQuota) : null, count, width, height, at: Date.now() };
   console.log(`API 已提交任务 ${taskId}（${fromPage ? '网页设置：' + templateInfo(rec).summary : MODEL_PRESETS.find(item => item.id === id).name + (useLora ? '' : '，不带 LoRA') + (useRecipe ? '' : '，不带 Recipe')}，${width}×${height}，${count} 张，${created.json.paidQuota ?? '?'} 积分）`);
+  }
+  try {
 
   // 提交成功之后再出错就不能退回网页了（会重复扣积分）
-  const deadline = Date.now() + 5 * 60 * 1000;
+  const deadline = Date.now() + 8 * 60 * 1000;
   let task = null;
   while (Date.now() < deadline) {
     await sleep(2000);
-    const listed = await apiCall(page, 'GET', '/v2/user/me/tasks?first=10');
+    const listed = await apiCall(page, 'GET', '/v2/user/me/tasks?first=40'); // 同时画几张、或网页上也在画时，别让自己的任务掉出前 10 条
     if (listed.status === 401 || listed.status === 403) throw apiFail(`查任务状态被拒绝（${listed.status}），任务 ${taskId} 已提交，请稍后在网页上看`, false);
     task = listed.json?.data?.find(item => String(item.id) === taskId) || null;
-    if (task && /^(failed|cancelled|canceled)$/i.test(task.status || '')) throw apiFail(explainPixai(JSON.stringify(task)) || `PixAI 任务 ${taskId} ${task.status}（网页那边没给原因，可能被审核拒绝或积分不足）`, false);
+    if (task && /^(failed|cancelled|canceled)$/i.test(task.status || '')) throw apiFail(explainPixai(JSON.stringify(task)) || `PixAI 任务 ${taskId} ${task.status}（网页那边没给原因，可能被审核拒绝或积分不足）`, false, { dead: true });
     if (task && task.status === 'completed' && task.outputs?.mediaUrls?.length) break;
     task = null;
   }
-  if (!task) throw apiFail(`等了 5 分钟 PixAI 任务 ${taskId} 还没出完`, false);
+  if (!task) throw apiFail(`等了 8 分钟 PixAI 任务 ${taskId} 还没出完（点重试会接着等它，不会重画）`, false);
   const urls = task.outputs.mediaUrls;
   if (urls.length < count) console.warn(`PixAI 任务 ${taskId} 要 ${count} 张，只出了 ${urls.length} 张`);
   const files = [];
   for (let i = 0; i < urls.length; i++) {
-    const response = await page.context().request.get(urls[i], { timeout: 60000 });
-    if (!response.ok()) throw apiFail(`第 ${i + 1} 张图片下载失败（${response.status()}）`, false);
-    const data = await response.body();
-    if (data.length < 100) throw apiFail(`第 ${i + 1} 张图片文件无效`, false);
+    let response, data, why = '';
+    for (let tries = 0; tries < 3; tries++) {
+      if (tries) await sleep(1500 * tries);
+      try {
+        response = await page.context().request.get(urls[i], { timeout: 60000 });
+        if (!response.ok()) { why = `下载失败（${response.status()}）`; continue; }
+        data = await response.body();
+        if (data.length < 100) { why = '文件无效'; continue; }
+        why = ''; break;
+      } catch (error) { why = `下载出错：${error.message}`; }
+    }
+    if (why) throw apiFail(`第 ${i + 1} 张图片${why}（任务 ${taskId} 已画好，点重试会直接取回）`, false);
     const ext = (/\.(png|jpe?g|webp)(\?|$)/i.exec(urls[i]) || [])[1] || ({ 'image/png': 'png', 'image/jpeg': 'jpg' }[response.headers()['content-type']] || 'webp');
     files.push({ name: `image_${i}.${ext}`, data });
   }
   console.log(`API 任务 ${taskId} 完成：要 ${count} 张，出了 ${files.length} 张`);
   return { taskId, files };
+  } catch (error) { if (!error.taskId && !error.dead) error.taskId = taskId; throw error; }
 }
 
 /** 选模型：API 模式下只记下来（出图时直接用它的 ID，瞬间完成）；API 用不了就去网页上一步步切。 */
@@ -1333,18 +1355,32 @@ async function applyRefLive(page, want) {
   return notices;
 }
 
-async function generateBatch(prompt, count, spec = null) {
-  await settingLock;
-  const epoch = ++genEpoch;
+// API 模式可以同时画几个任务（PixAI 本来就能并行）；直控/静止要点网页，仍然一个一个来。
+let activeGen = 0;
+const apiWaiters = [];
+const apiCap = spec => Math.min(6, Math.max(1, Math.floor(Number(spec?.parallel) || Number(env('PIXAI_API_PARALLEL', '3')) || 3)));
+async function takeApiSlot(spec) {
+  while (apiRunning >= apiCap(spec)) await new Promise(resolve => apiWaiters.push(resolve));
+  apiRunning++;
+}
+function freeApiSlot() { apiRunning = Math.max(0, apiRunning - 1); const next = apiWaiters.shift(); if (next) next(); }
+let apiRunning = 0;
+async function generateBatch(prompt, count, spec = null, resume = null) {
+  const parallel = spec?.mode === 'api';
+  if (!parallel) await settingLock;
+  let epoch;
+  if (parallel) { epoch = genEpoch; activeGen++; } else { epoch = ++genEpoch; activeGen = 1; }
   generating = true; genStart = Date.now();
-  await disarmTemplate().catch(() => {});
+  let slot = false;
+  if (parallel) { await takeApiSlot(spec); slot = true; if (epoch !== genEpoch) { freeApiSlot(); throw new Error('这次出图已被放弃（重试或重置了反代）'); } }
+  if (!parallel) await disarmTemplate().catch(() => {});
   try {
     const page = await getPixAIPage();
     watchApiHeaders(page);
     // 酒馆插件明说了模式：API 就只走 API（失败直接报错，不偷偷改走网页）；直控就只点网页。没说（旧插件）才是老办法：先 API，不行退回网页。
     if (spec?.mode === 'api') {
       if (!API.on) throw new Error('反代没开 API 模式（启动参数 PIXAI_API=0），请在插件里切到「直控」');
-      try { return await apiGenerate(page, prompt, count, spec); }
+      try { return await apiGenerate(page, prompt, count, spec, resume); }
       catch (error) { error.fallback = false; throw error; }
     }
     if (API.on && spec?.mode !== 'direct' && spec?.mode !== 'still') {
@@ -1416,12 +1452,15 @@ async function generateBatch(prompt, count, spec = null) {
     console.log(`PixAI 任务 ${taskId} 完成：要 ${count} 张，网页出了 ${actual} 张`);
     return { taskId, files };
   } finally {
-    if (genEpoch === epoch) generating = false; // 被「重试」放弃的旧任务，不能把新任务的状态清掉
+    if (slot) freeApiSlot();
+    if (genEpoch === epoch) { activeGen = Math.max(0, activeGen - 1); generating = activeGen > 0; } // 被「重试」放弃的旧任务，不能把新任务的状态清掉
   }
 }
 
 // 一次出图最多等 9 分钟：网页没反应、下载卡住都会在这里放弃，不让整条队列一直挂着
 const generateWithDeadline = async (...args) => {
+  // API 模式自己有等待上限（提交后出错会带着任务号，重试能接着等）；不要在外面再硬砍掉，否则任务号丢了
+  if (args[2]?.mode === 'api') return generateBatch(...args);
   let timer;
   try {
     return await Promise.race([generateBatch(...args), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('出图超过 9 分钟没有结果，已放弃这次（可以直接重画；反代那边若画好了，网页历史里能看到）')), 9 * 60 * 1000); })]);
@@ -1940,7 +1979,6 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <div class="blk mdl" id="mdlBox" hidden>
 <div class="rowh"><div class="chip"><span><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>模型</div><div class="mdlname"><b id="mdlCur">—</b><em id="mdlSub"></em></div></div>
 <div class="setchips" id="setChips"></div>
-<div class="acts" id="mdlBtns"></div>
 </div>
 <div class="blk grow"><div class="chip"><span><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10l3 2-3 2M13 15h4"/></svg></span>进度与日志</div>
 <div class="logbox">
@@ -2114,34 +2152,13 @@ function renderAccs(info) {
   const sorted = (curAcc ? [curAcc] : []).concat(others);
   sorted.forEach((a, i) => all.appendChild(accRow(a, a === curAcc, i * 0.05)));
 }
-let modelBusy = false;
 function renderModels(j) {
-  const list = (j && j.models) || [];
-  $('mdlBox').hidden = !list.length;
-  if (!list.length) return;
-  const cur = j.model || {};
+  // 只显示网页上现在选着的模型，不能在这里换（换模型到网页上或插件里换）
+  const cur = (j && j.model) || {};
+  $('mdlBox').hidden = !cur.name && !(cur.recipes || []).length && !(cur.loras || []).length;
+  if ($('mdlBox').hidden) return;
   $('mdlCur').textContent = cur.name || '读不到网页上的模型';
   $('mdlSub').textContent = [].concat((cur.recipes || []).map(x => 'Recipe ' + x), (cur.loras || []).map(x => 'LoRA ' + x)).join(' · ');
-  const box = $('mdlBtns');
-  box.textContent = '';
-  list.forEach(m => {
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'mini' + (cur.id === m.id ? ' on' : ''); b.textContent = m.name; b.disabled = modelBusy;
-    b.onclick = () => pickModel(m);
-    box.appendChild(b);
-  });
-}
-async function pickModel(m) {
-  if (modelBusy) return;
-  modelBusy = true; setActs(true);
-  document.querySelectorAll('#mdlBtns button').forEach(b => { b.disabled = true; });
-  say('正在切换模型：' + m.name + '（要十几秒到半分钟）', 'ok');
-  try {
-    const r = await call('/admin/model', { method: 'POST', body: JSON.stringify({ model: m.id }) });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) say('模型已切换：' + m.name, 'ok'); else say(j.message || ('切换失败（' + r.status + '）'), 'bad');
-  } catch (e) { say('切换失败：' + e.message, 'bad'); }
-  modelBusy = false; setActs(false);
-  refresh(true);
 }
 function show(j) {
   if (j && typeof j.allowLocal === 'boolean') $('localOrigin').checked = j.allowLocal;
@@ -2323,7 +2340,7 @@ function persist() {
 // 存在 ACCOUNT_DIR/resolutions.json 里，之后 API 模式不再碰网页。账号有会员时多出来的档位，重新读一次就有了。
 const RES_FILE = path.join(ACCOUNT_DIR, 'resolutions.json');
 let resTable = null; // { at, ratios: { '9:16': [{ size, width, height, locked }] } }
-async function captureResolutions(page) {
+async function readResolutionTable(page) {
   await openSettingsTab(page);
   const before = (await readPageStatus(page)).resolution;
   const names = (before.ratios || []).map(item => item.ratio);
@@ -2340,7 +2357,15 @@ async function captureResolutions(page) {
   if (before.ratio) await setRatio(page, before.ratio).catch(() => {});
   if (before.size) await setSize(page, before.size).catch(() => {});
   if (!Object.keys(ratios).length) throw new Error('一个比例的尺寸档位都没读到');
-  resTable = { at: new Date().toISOString(), ratios };
+  return { at: new Date().toISOString(), ratios };
+}
+async function captureResolutions(page) {
+  const table = await readResolutionTable(page), ratios = table.ratios;
+  resTable = table;
+  // 每个模型给的比例/档位不一样：把读到的表也记到用同一个模型的记录里
+  const name = await ensureModelPanel(page).then(() => readModelInfo(page)).then(info => info?.name || '', () => '');
+  await openSettingsTab(page).catch(() => {}); // 读完模型名回到原来的「設定」标签
+  if (name) { let any = false; for (const rec of tpls) if (rec.modelName === name) { rec.resolutions = table; any = true; } if (any) await saveTemplates(); }
   await fs.mkdir(ACCOUNT_DIR, { recursive: true, mode: 0o700 });
   await fs.writeFile(RES_FILE, JSON.stringify(resTable), { mode: 0o600 });
   console.log(`已读出分辨率表：${Object.entries(ratios).map(([k, v]) => `${k}（${v.map(x => x.size).join('/')}）`).join('，')}`);
@@ -2375,6 +2400,11 @@ async function recordTemplateByClick(page) {
   }
   for (let i = 0; i < 20 && armed && (tpls[tpls.length - 1]?.id || '') === before; i++) await sleep(500);
   const got = (tpls[tpls.length - 1]?.id || '') !== before;
+  // 记录要记住这个模型自己的参数：这时网页上选的就是它，把它的比例/档位表一起记下来
+  if (got) {
+    try { const rec = tpls[tpls.length - 1]; rec.resolutions = await readResolutionTable(page); await saveTemplates(); }
+    catch (error) { note.push('没读到这个模型的分辨率表：' + error.message); console.warn('记录时读分辨率表失败：', error.message); }
+  }
   if (!got) { console.warn('反代自己点「生成」没记下设置：' + (note[0] || '请求没被拦到')); await disarmTemplate(); } // 不再留着拦截：否则之后在网页上点「生成」会被无声截掉
   return { got, message: got ? '' : note[0] || '没拦到网页的请求' };
 }
@@ -2774,7 +2804,7 @@ app.post('/admin/forget', async (req, res) => {
 // 重试：出图卡死 / 账号在后端退出后页面没反应时用。放弃卡住的任务，关掉旧页面，重新打开生图页。不走 settingLock（它可能就是卡在那里）
 async function resetGeneration() {
   stage('放弃卡住的任务', 10);
-  genEpoch++; generating = false; genStart = 0; opening = null;
+  genEpoch++; generating = false; activeGen = 0; genStart = 0; opening = null;
   settingLock = Promise.resolve();
   batcher.runs.clear();
   const ctx = (await connectBrowser()).contexts()[0];
@@ -2866,7 +2896,7 @@ app.post('/admin/stop', (_req, res) => {
     parts.push('已强行停止：后台那一步如果还在动，会自己停在下一个检查点；网页若卡在中间状态，点「重试」重新打开生图页');
   }
   if (gen) {
-    genEpoch++; generating = false; genStart = 0;
+    genEpoch++; generating = false; activeGen = 0; genStart = 0;
     settingLock = Promise.resolve();
     batcher.runs.clear();
     parts.push('已放弃出图任务（页面里那张可能还在画）');
@@ -3008,7 +3038,7 @@ function readSpec(raw, params) {
     return { mode: 'direct', ...(ok ? { ref: { image: r.image, strength: Number.isFinite(Number(r.strength)) ? Number(r.strength) : 0.55 } } : {}) };
   }
   const dim = v => (Number.isInteger(v) && v >= 64 && v <= 8192 ? v : null);
-  return { mode: 'api', source: raw.source === 'page' ? 'page' : 'preset', useLora: raw.useLora !== false, useRecipe: raw.useRecipe !== false, template: typeof raw.template === 'string' ? raw.template.slice(0, 40) : '', loraTweaks: Object.fromEntries(Object.entries(raw.loraTweaks && typeof raw.loraTweaks === 'object' ? raw.loraTweaks : {}).slice(0, 20).filter(([k, v]) => /^\d{1,30}$/.test(k) && v && typeof v === 'object').map(([k, v]) => [k, { on: v.on !== false, weight: Number.isFinite(v.weight) ? Math.min(1, Math.max(0, v.weight)) : null }])), model: typeof raw.model === 'string' ? raw.model.slice(0, 40) : '', loraWeight: Number.isFinite(raw.loraWeight) ? raw.loraWeight : null, width: dim(params.width), height: dim(params.height) };
+  return { mode: 'api', parallel: Number.isInteger(raw.parallel) && raw.parallel >= 1 && raw.parallel <= 6 ? raw.parallel : undefined, source: raw.source === 'page' ? 'page' : 'preset', useLora: raw.useLora !== false, useRecipe: raw.useRecipe !== false, template: typeof raw.template === 'string' ? raw.template.slice(0, 40) : '', loraTweaks: Object.fromEntries(Object.entries(raw.loraTweaks && typeof raw.loraTweaks === 'object' ? raw.loraTweaks : {}).slice(0, 20).filter(([k, v]) => /^\d{1,30}$/.test(k) && v && typeof v === 'object').map(([k, v]) => [k, { on: v.on !== false, weight: Number.isFinite(v.weight) ? Math.min(1, Math.max(0, v.weight)) : null }])), model: typeof raw.model === 'string' ? raw.model.slice(0, 40) : '', loraWeight: Number.isFinite(raw.loraWeight) ? raw.loraWeight : null, width: dim(params.width), height: dim(params.height) };
 }
 
 app.post('/ai/generate-image', async (req, res) => {
@@ -3096,14 +3126,16 @@ app.post('/ai/generate-image', async (req, res) => {
       }
       console.error('生成失败：', error);
       if (!res.headersSent) {
-        res.status(500).json({ message: error.message || 'PixAI 生成失败' });
+        // resumable：任务已经提交（也扣了积分）只是没等到图；插件再问一次（取回）会接着等同一个任务，不会重画
+        res.status(500).json({ message: error.message || 'PixAI 生成失败', ...(error.taskId ? { resumable: true, taskId: error.taskId } : {}) });
       }
     }
   };
 
   // 串行排队，绝不因正在生成而返回 409
-  const queued = requestQueue.then(processRequest, processRequest);
-  requestQueue = queued.catch(error => {
+  // API 模式的请求不排队：各画各的（上限在 generateBatch 里按插件的「同时画」数量控制）；其他模式仍然一个一个来
+  const queued = spec?.mode === 'api' ? processRequest() : requestQueue.then(processRequest, processRequest);
+  if (spec?.mode !== 'api') requestQueue = queued.catch(error => {
     console.error('请求队列错误：', error);
   });
 

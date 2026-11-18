@@ -221,12 +221,12 @@ export function drawApp(ctx) {
   /** The way PixAI draws: the choice, and for API mode its own few settings (model, size, LoRA weight); the page is not touched. */
   const pixaiModeBar = () => `<div class="px-line">${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式'], ['still', '静止']])}${help('API 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快；失败会直接报错，不会改用直控。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n静止：模型由你在网页上自己选，插件管比例、尺寸、张数和参考图，适合测试出图效果。\n\n正在出图时这些都不能切。')}</div>`;
   function pixaiApiParams() {
-    const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null, ratios = table ? Object.keys(table) : [];
+    const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = tableOf() || null, ratios = table ? Object.keys(table) : [];
     const chip = (action, value, on, label, extra = '') => `<button type="button" data-action="${action}" data-value="${esc(value)}" aria-pressed="${on}"${extra}>${label}</button>`;
     const ratioChip = r => { const [x, y] = r.split(':').map(Number), k = 16 / Math.max(x, y); return chip('pixai-api-ratio', r, a.ratio === r, `<i style="width:${Math.max(5, Math.round(x * k))}px;height:${Math.max(5, Math.round(y * k))}px"></i>${esc(r)}`); };
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
-    const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
+    const resAt = recordNow()?.resolutions?.at || i.resolutions?.at, at = resAt && !Number.isNaN(Date.parse(resAt)) ? new Date(resAt).toLocaleString('zh-CN', {hour12: false}) : '';
     const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating || drawing() ? 'disabled' : '');
     const flip = a.ratio && /^\d+:\d+$/.test(a.ratio) ? a.ratio.split(':').reverse().join(':') : '';
     const k = a.width && a.height ? 30 / Math.max(a.width, a.height) : 0;
@@ -239,11 +239,13 @@ export function drawApp(ctx) {
     const pageRow = `<button type="button" class="px-record${sel ? '' : ' empty'}" data-action="pixai-records"><span class="style-cover">${icon('image')}${sel && covers[sel.id] ? `<img src="${esc(covers[sel.id].thumb)}" alt="" draggable="false">` : ''}</span><span class="px-record-main">${sel ? `<strong>${esc(recName(sel))}</strong><span class="px-facts">${facts.map(x => `<i>${esc(x)}</i>`).join('')}</span>` : '<strong>还没有记录</strong><small>先在反代网页里调好设置，再来记录一条</small>'}</span>${icon('chevron')}</button>`;
     const status = pixaiReading ? '读取分辨率中……' : table ? '分辨率表已读取' + (at ? ' · ' + at : '') : '还没读取分辨率表';
     const foot = `<div class="px-foot"><span class="chip${table ? '' : ' warn'}">${esc(status)}</span>${read}</div>`;
-    return `<div class="group pad px-sync px-api">${foot}<div class="px-grid"><div class="px-cell px-wide"><small>模型 / 记录${help('API 模式用的模型、LoRA、Recipe 来自你在反代网页上调好并记录下来的设置；点下面换一条。')}</small>${pageRow}</div>${sizeRow}<div class="px-cell"><small>一次出几张</small><b>${esc(a.count + ' 张')}</b></div></div></div>`;
+    return `<div class="group pad px-sync px-api">${foot}<div class="px-grid"><div class="px-cell px-wide"><small>模型 / 记录${help('API 模式用的模型、LoRA、Recipe 来自你在反代网页上调好并记录下来的设置；点下面换一条。')}</small>${pageRow}</div>${sizeRow}<div class="px-cell"><small>一次出几张</small><b>${esc(a.count + ' 张')}</b></div><div class="px-cell px-wide"><small>同时画${help('PixAI 本来就能同时画几个任务：在几个楼层各点一次生图，会一起画，不用排队等。这里是同时画的上限（积分会一起扣）。只有 API 模式这样；直控和静止要操作网页，仍然一个一个画。')}</small><div class="segmented" style="margin:0">${[1, 2, 3, 4, 5, 6].map(k => chip('pixai-parallel', k, (state().pixai.parallel || 3) === k, k + '')).join('')}</div></div></div></div>`;
   }
   // 记录: the page settings the bridge has recorded, kept in one sheet (PixAI has no 画风; this takes its place).
   const recordList = () => { const t = pixaiInfo?.template || {}, all = Array.isArray(t.list) ? t.list : [], order = state().pixai.api.tplOrder || []; return [...order.map(id => all.find(x => x.id === id)).filter(Boolean), ...all.filter(x => !order.includes(x.id))]; };
   const recordNow = () => { const t = pixaiInfo?.template || {}, list = recordList(), id = state().pixai.api.tplId; return list.find(x => x.id === id) || list.find(x => x.id === t.current) || list[list.length - 1]; };
+  /** The sizes a model offers differ from model to model: the table a 记录 was recorded with is its own (older 记录 use the one read last). */
+  const tableOf = rec => (rec || recordNow())?.resolutions?.ratios || pixaiInfo?.resolutions?.ratios || null;
   const recName = x => state().pixai.api.tplNames?.[x.id] || x.model;
   const recordName = () => { const x = recordNow(); return x ? recName(x) : '记录'; };
   const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="${c ? '看' : '给'}「${esc(recName(x))}」${c ? '的' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
@@ -528,7 +530,7 @@ export function drawApp(ctx) {
   /** The size of a recorded page setting, as the plugin's own ratio / size choice (the table says which chips it is). */
   const sizePatch = rec => {
     if (!rec || !Number.isInteger(rec.width) || !Number.isInteger(rec.height)) return {};
-    const table = pixaiInfo?.resolutions?.ratios || pixaiLast?.resolutions?.ratios || {};
+    const table = tableOf(rec) || pixaiLast?.resolutions?.ratios || {};
     for (const [ratio, list] of Object.entries(table)) { const hit = (list || []).find(x => x.width === rec.width && x.height === rec.height); if (hit) return {ratio, size: hit.size, width: rec.width, height: rec.height}; }
     return {ratio: '', size: '', width: rec.width, height: rec.height};
   };
@@ -775,17 +777,18 @@ export function drawApp(ctx) {
         await refreshPixai(); render(); break;
       }
       case 'pixai-api-model': api.saveDraw({pixai: {api: {model: el.dataset.value}}}); render(); break;
-      case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = (pixaiInfo?.resolutions?.ratios?.[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: bindRes({ratio, size, width: hit.width, height: hit.height})}}); render(); } break; }
+      case 'pixai-api-pick': { const [ratio, size] = el.dataset.value.split('|'), hit = ((tableOf() || {})[ratio] || []).find(x => x.size === size); if (hit && !hit.locked) { api.saveDraw({pixai: {api: bindRes({ratio, size, width: hit.width, height: hit.height})}}); render(); } break; }
+      case 'pixai-parallel': { api.saveDraw({pixai: {parallel: Number(el.dataset.value) || 3}}); render(); break; }
       case 'pixai-api-swap': {
         const a = state().pixai.api, flip = /^\d+:\d+$/.test(a.ratio || '') ? a.ratio.split(':').reverse().join(':') : '';
         if (!flip || flip === a.ratio) break;
-        const list = pixaiInfo?.resolutions?.ratios?.[flip] || [], hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked);
+        const list = (tableOf() || {})[flip] || [], hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked);
         if (hit) api.saveDraw({pixai: {api: bindRes({ratio: flip, size: hit.size, width: hit.width, height: hit.height})}});
         else if (a.width && a.height) api.saveDraw({pixai: {api: bindRes({ratio: flip, size: a.size, width: a.height, height: a.width})}});
         else break;
         render(); break;
       }
-      case 'pixai-api-ratio': { const ratio = el.dataset.value, list = pixaiInfo?.resolutions?.ratios?.[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: bindRes({ratio, size: hit.size, width: hit.width, height: hit.height})}}); render(); } break; }
+      case 'pixai-api-ratio': { const ratio = el.dataset.value, list = (tableOf() || {})[ratio] || [], a = state().pixai.api, hit = list.find(x => x.size === a.size && !x.locked) || list.find(x => !x.locked); if (hit) { api.saveDraw({pixai: {api: bindRes({ratio, size: hit.size, width: hit.width, height: hit.height})}}); render(); } break; }
       case 'pixai-res': {
         if (pixaiReading) break;
         pixaiReading = true; render();

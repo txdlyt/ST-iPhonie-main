@@ -35,12 +35,13 @@ export class DrawQueue {
    * onChange(list, {remoteError}): called whenever the line changes. backoff(attempt): pause before retry `attempt` (1-based).
    * remote(): the shared cloud queue to wait in, or null.
    */
-  constructor({gap = () => 3000, retries = () => 4, onChange = () => {}, remote = () => null, locks = globalThis.navigator?.locks, storage = memoryStorage(), now = Date.now, wait = pause,
+  constructor({gap = () => 3000, retries = () => 4, concurrency = () => 1, onChange = () => {}, remote = () => null, locks = globalThis.navigator?.locks, storage = memoryStorage(), now = Date.now, wait = pause,
     backoff = attempt => Math.min(120000, 15000 * 2 ** (attempt - 1)) + Math.random() * 3000} = {}) {
-    Object.assign(this, {gap, retries, onChange, remote, locks, storage, now, wait, backoff});
+    Object.assign(this, {gap, retries, concurrency, onChange, remote, locks, storage, now, wait, backoff});
     this.jobs = [];
     this.remoteError = '';
     this.active = new Set(); // lanes that have a job running
+    this.live = new Map(); // lane -> jobs running in it (more than one only where concurrency(lane) allows)
     this.stores = new Map([['nai', storage]]);
   }
   /** Where the time of a lane's last request is kept: the injected storage for NovelAI, one of its own for each other engine. */
@@ -72,9 +73,8 @@ export class DrawQueue {
     if (index < 0) return false;
     const job = this.jobs[index];
     job.controller.abort();
-    // The head job is stopped by its own run(); later jobs leave the line right away.
-    const head = this.jobs.find(j => j.lane === job.lane) === job && this.active.has(job.lane);
-    if (!head) { this.jobs.splice(index, 1); job.reject(cancelled()); this.changed(); }
+    // A running job is stopped by its own run(); one still in line leaves right away.
+    if (!job.started) { this.jobs.splice(index, 1); job.reject(cancelled()); this.changed(); }
     return true;
   }
   cancelAll() { for (const job of [...this.jobs].reverse()) this.cancel(job.key); }
@@ -96,21 +96,41 @@ export class DrawQueue {
     }
   }
 
+  /** How many pictures of a lane may be drawn at once (1 unless the lane allows more: PixAI's API mode). */
+  limit(lane) { const n = Math.floor(Number(this.concurrency(lane))); return Number.isFinite(n) && n > 1 ? Math.min(n, 8) : 1; }
   pump() {
-    for (const lane of new Set(this.jobs.map(j => j.lane))) if (!this.active.has(lane)) this.pumpLane(lane);
+    for (const lane of new Set(this.jobs.map(j => j.lane))) {
+      const live = this.live.get(lane) || new Set(), cap = this.limit(lane);
+      let busy = [...live].filter(j => !j.free).length;
+      for (const job of this.jobs) {
+        if (job.lane !== lane || job.started) continue;
+        // In order: a picture that has to wait for a free place holds back the ones behind it. The 2nd–4th picture of one task are answered from the first's, so they take no place.
+        if (!job.free && busy >= cap) break;
+        if (!job.free) busy++;
+        this.start(job);
+      }
+    }
   }
-  async pumpLane(lane) {
+  async start(job) {
+    const lane = job.lane;
+    job.started = true;
+    if (!this.live.has(lane)) this.live.set(lane, new Set());
+    this.live.get(lane).add(job);
     this.active.add(lane);
     try {
-      for (let job; (job = this.jobs.find(j => j.lane === lane));) {
-        const run = () => this.run(job);
-        try { await (this.locks?.request ? this.locks.request('st-iphonie-' + (lane === 'nai' ? 'novelai' : lane), {signal: job.controller.signal}, run) : run()); }
-        catch (error) { job.settled = true; job.reject(job.controller.signal.aborted ? cancelled() : error); }
-        const index = this.jobs.indexOf(job);
-        if (index >= 0) this.jobs.splice(index, 1);
-        this.changed();
-      }
-    } finally { this.active.delete(lane); }
+      const run = () => this.run(job);
+      // Web Locks keep tabs apart for a lane that draws one at a time; a lane that draws several at once has no use for them.
+      try { await (this.locks?.request && this.limit(lane) === 1 ? this.locks.request('st-iphonie-' + (lane === 'nai' ? 'novelai' : lane), {signal: job.controller.signal}, run) : run()); }
+      catch (error) { job.settled = true; job.reject(job.controller.signal.aborted ? cancelled() : error); }
+    } finally {
+      const index = this.jobs.indexOf(job);
+      if (index >= 0) this.jobs.splice(index, 1);
+      const live = this.live.get(lane);
+      live?.delete(job);
+      if (!live?.size) { this.live.delete(lane); this.active.delete(lane); }
+      this.changed();
+      this.pump();
+    }
   }
   async run(job) {
     const signal = job.controller.signal;
@@ -118,7 +138,10 @@ export class DrawQueue {
       for (let attempt = 0; ; attempt++) {
         if (signal.aborted) throw cancelled();
         // free: answered from a cache that is already there (PixAI's 2nd–4th picture of one task), so no gap is kept.
+        const par = this.limit(job.lane) > 1;
         const readyAt = job.free && attempt === 0 ? 0 : this.store(job.lane).get() + this.gap();
+        // Several at once: the start is booked right now, so the next one starts a gap after it (not all at the same moment).
+        if (par && readyAt) this.store(job.lane).set(Math.max(readyAt, this.now()));
         if (readyAt > this.now()) {
           job.state = 'spacing'; job.until = readyAt; this.changed();
           await this.wait(readyAt - this.now(), signal);
@@ -132,13 +155,13 @@ export class DrawQueue {
           work.catch(() => {});
           const result = await Promise.race([work, new Promise((_, no) => { if (signal.aborted) no(cancelled()); else signal.addEventListener('abort', () => no(cancelled()), {once: true}); })]);
           if (signal.aborted) throw cancelled();
-          if (!job.free) this.store(job.lane).set(this.now());
+          if (!job.free && !par) this.store(job.lane).set(this.now());
           lease?.release('done');
           job.settled = true;
           job.resolve(result);
           return;
         } catch (error) {
-          this.store(job.lane).set(this.now());
+          if (!par) this.store(job.lane).set(this.now());
           const delay = error?.status === 429 ? this.backoff(attempt + 1) : 0;
           // A 429 makes everyone in the cloud queue wait as well.
           lease?.release(delay ? 'busy' : 'done', delay);

@@ -236,7 +236,7 @@ export class TTSBackend {
         this.syncState = { busy: false, error: '', lastAt: 0, remote: null, pending: false };
         this.syncTimer = 0;
         this.syncApplying = false;
-        this.drawQueue = new DrawQueue({ gap: () => this.settings.draw.queue.gap * 1000, retries: () => this.settings.draw.queue.retries,
+        this.drawQueue = new DrawQueue({ concurrency: lane => lane === 'pixai' && this.settings.draw.pixai.mode === 'api' ? this.settings.draw.pixai.parallel || 3 : 1, gap: () => this.settings.draw.queue.gap * 1000, retries: () => this.settings.draw.queue.retries,
             remote: lane => lane === 'nai' ? this.cloudQueue() : null, onChange: (queue, { remoteError }) => this.emit('draw', { queue, cloud: remoteError }) });
         this.listeners = new Set();
         this.revision = 0;
@@ -1784,7 +1784,9 @@ export class TTSBackend {
     }
     /** Whether the bridge may still hold the picture of this job (asked before, no answer came). */
     pixaiRecoverable(key) { return !!this.#pixaiPending()[key]; }
-    #pixaiKeep(key, batch) { const all = this.#pixaiPending(); all[key] = { ...batch, at: Date.now() }; delete all[key].recover; this.#savePixaiPending(all); }
+    #pixaiKeep(key, batch, prompt = '') { const all = this.#pixaiPending(); all[key] = { ...batch, at: Date.now(), p: TTSBackend.#promptMark(prompt) }; delete all[key].recover; this.#savePixaiPending(all); }
+    /** A short mark of the prompt a kept run was started with: another prompt under the same key is another picture. */
+    static #promptMark(text) { let h = 0; const t = String(text || ''); for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return t.length + ':' + h; }
     #pixaiDrop(key) { const all = this.#pixaiPending(); if (key in all) { delete all[key]; this.#savePixaiPending(all); } }
     pixaiRemember(info) {
         const r = info?.resolution;
@@ -1966,10 +1968,10 @@ export class TTSBackend {
             // PixAI 反代: which picture of a request for several this is ({run, index, size}); alone, a request of one. Fixed here, so a retry asks for the same picture.
             let pixaiBatch = null;
             if (engine === 'pixai') {
-                const given = normalizeBatch(batch), kept = given ? null : this.#pixaiPending()[key];
+                const given = normalizeBatch(batch), held = given ? null : this.#pixaiPending()[key], kept = held && held.p === TTSBackend.#promptMark(prompt) ? held : null;
                 if (given) pixaiBatch = given;
                 else if (kept) pixaiBatch = { ...normalizeBatch(kept), recover: true };
-                else { pixaiBatch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, pixaiBatch); }
+                else { pixaiBatch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, pixaiBatch, prompt); }
             }
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
             const job = this.drawQueue.add({ key, lane: engine, label: label || String(prompt).slice(0, 40), free: !!(pixaiBatch && pixaiBatch.index > 0 && pixaiBatch.size > 1), task: async signal => {
@@ -1977,11 +1979,22 @@ export class TTSBackend {
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
                 let made;
-                try { made = await this.drawWithEngine(engine, { ...picture, ...(own ? { refs: own.refs, characters: own.characters, roles: true } : {}), signal }); }
+                const attempt = () => this.drawWithEngine(engine, { ...picture, ...(own ? { refs: own.refs, characters: own.characters, roles: true } : {}), signal });
+                try {
+                    try { made = await attempt(); }
+                    catch (error) {
+                        // Asked only to fetch a picture (after a stop, say) the bridge never drew or no longer has: a single picture is drawn now, as the retry asked for.
+                        if (engine !== 'pixai' || error?.code !== 'PIXAI_EXPIRED' || !picture.batch?.recover || picture.batch.size !== 1 || signal?.aborted) throw error;
+                        picture.batch = { run: crypto.randomUUID(), index: 0, size: 1 }; this.#pixaiKeep(key, picture.batch, prompt);
+                        made = await attempt();
+                    }
+                }
                 catch (error) {
                     // Kept only when no answer came (cut, reloaded, unreadable): the bridge may have drawn it. An answer that
                     // says no, a stop, or "no longer here" means asking again must draw anew.
-                    if (engine === 'pixai' && (error?.cancelled || (error?.status > 0 && !error.cut) || error?.code === 'PIXAI_EXPIRED')) this.#pixaiDrop(key);
+                    // A stop keeps it too: the bridge goes on with a task it has already sent, and asking again takes the picture instead of paying again. 'resumable': the task is sent, only its picture is missing.
+                    const resumable = /"resumable"\s*:\s*true/.test(String(error?.detail || ''));
+                    if (engine === 'pixai' && ((error?.status > 0 && !error.cut && !resumable) || error?.code === 'PIXAI_EXPIRED')) this.#pixaiDrop(key);
                     throw error;
                 }
                 if (engine === 'pixai') this.#pixaiDrop(key);
