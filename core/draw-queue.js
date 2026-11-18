@@ -127,7 +127,10 @@ export class DrawQueue {
         job.state = 'running'; job.attempt = attempt; job.until = 0; job.cloud = null; this.changed();
         try {
           if (signal.aborted) throw cancelled();
-          const result = await job.task(signal);
+          // 取消要立刻生效：任务本身可能卡在不认 abort 的地方（比如一直等着一个没有下文的响应），所以不只靠它自己停
+          const work = job.task(signal);
+          work.catch(() => {});
+          const result = await Promise.race([work, new Promise((_, no) => { if (signal.aborted) no(cancelled()); else signal.addEventListener('abort', () => no(cancelled()), {once: true}); })]);
           if (signal.aborted) throw cancelled();
           if (!job.free) this.store(job.lane).set(this.now());
           lease?.release('done');

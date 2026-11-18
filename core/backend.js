@@ -531,9 +531,8 @@ export class TTSBackend {
             for (const [engine, connection] of Object.entries(copy.connections)) modelCheck(engine, connection.model);
             validateSettings(copy);
         } catch (error) { throw Error(message(error)); }
-        // Each engine has its own line: changing one engine's connections waits for that engine's pictures only, and choosing another engine waits for none.
-        const changedImage = Object.keys(copy.draw.connections).filter(id => JSON.stringify(copy.draw.connections[id]) !== JSON.stringify(this.settings.draw.connections?.[id]));
-        if (changedImage.length) this.assertImageIdle(...changedImage);
+        const imageChanged = JSON.stringify([copy.draw.connections, copy.draw.engine]) !== JSON.stringify([this.settings.draw.connections, this.settings.draw.engine]);
+        if (imageChanged) this.assertImageIdle();
         return copy;
     }
     save(next, expectedRevision) {
@@ -792,7 +791,7 @@ export class TTSBackend {
         if (engine === 'github') { const value = validateKey('github', key); this.keyStore.save('github', value); this.githubKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'pixai') { const value = validateKey('pixai', key); this.keyStore.save('pixai', value); this.pixaiKey = value; this.emit('keys', { engine, configured: true }); return; }
         if (engine === 'nai' || engine === 'gpt') {
-            this.assertImageIdle(engine);
+            this.assertImageIdle();
             const map = String(key).includes('\t') ? parseTextKeys(key) : new Map(this.imageKeys[engine]).set(this.settings.draw.connections[engine].active, validateKey(engine, key));
             this.storeImageKeys(engine, map); return;
         }
@@ -917,7 +916,7 @@ export class TTSBackend {
         if (engine === 'embed') { this.keyStore.save('embed', ''); this.embedKey = ''; this.emit('keys', { engine, configured: false }); return; }
         if (engine === 'github') { this.keyStore.save('github', ''); this.githubKey = ''; this.emit('keys', { engine, configured: false }); return; }
         if (engine === 'pixai') { this.keyStore.save('pixai', ''); this.pixaiKey = ''; this.emit('keys', { engine, configured: false }); return; }
-        if (engine === 'nai' || engine === 'gpt') { this.assertImageIdle(engine); const map = new Map(this.imageKeys[engine]); map.delete(this.settings.draw.connections[engine].active); this.storeImageKeys(engine, map); return; }
+        if (engine === 'nai' || engine === 'gpt') { this.assertImageIdle(); const map = new Map(this.imageKeys[engine]); map.delete(this.settings.draw.connections[engine].active); this.storeImageKeys(engine, map); return; }
         this.keyStore.save(engine, '');
         if (SONG_KEYS.includes(engine)) { delete this.songKeys[engine]; this.emit('keys', { engine, configured: false }); return; }
         this.providers.setKey(engine, ''); this.balances.delete(engine);
@@ -1415,8 +1414,7 @@ export class TTSBackend {
 
     // ---------- Drawing ----------
     /** Throws while pictures of these engines (all of them when none is named) are drawing or waiting. */
-    assertImageIdle(...engines) { this.assertImageIdleDoing('换生图引擎或账号连接', ...engines); }
-    assertImageIdleDoing(action, ...engines) { this.assertOpen(); if (this.drawQueue.pendingIn(...engines)) throw Error(`还有图片正在生成或排队，请等完成或取消队列后再${action}`); }
+    assertImageIdle(action = '换生图引擎或账号连接') { this.assertOpen(); if (this.drawQueue.pending) throw Error(`还有图片正在生成或排队，请等完成或取消队列后再${action}`); }
     activateImageKeys() {
         this.novelai.setKey(this.imageKeys.nai.get(this.settings.draw.connections.nai.active) || '');
         this.novelai.relay = this.settings.draw.relay.url;
@@ -1449,7 +1447,7 @@ export class TTSBackend {
     }
     /** Missing id creates and selects an empty connection; a blank key keeps its saved key. */
     saveImageConnection(engine, patch = {}) {
-        this.imageConnectionList(engine); this.assertImageIdle(engine);
+        this.imageConnectionList(engine); this.assertImageIdle();
         const next = this.getState(), group = next.draw.connections[engine];
         const id = patch.id || crypto.randomUUID(), old = group.presets.find(p => p.id === id);
         if (patch.id && !old) throw Error('这组生图连接已经不在了');
@@ -1479,7 +1477,7 @@ export class TTSBackend {
         const list = this.imageConnectionList(engine);
         if (!list.some(p => p.id === id)) throw Error('这组生图连接已经不在了');
         if (list.length < 2) throw Error('请至少保留一组生图连接');
-        this.assertImageIdle(engine);
+        this.assertImageIdle();
         const next = this.getState(), group = next.draw.connections[engine];
         group.presets = group.presets.filter(p => p.id !== id);
         if (group.active === id) group.active = group.presets[0].id;
@@ -1636,7 +1634,7 @@ export class TTSBackend {
     async deleteVibes(ids) {
         this.assertOpen();
         const gone = new Set([...(ids || [])].map(String).filter(id => this.vibes.has(id)));
-        if (gone.size) this.assertImageIdleDoing('删除 Vibe', 'nai');
+        if (gone.size) this.assertImageIdle('删除 Vibe');
         for (const id of gone) { await this.library.deleteVibe(id); this.vibes.delete(id); }
         this.noteGone('vibes', [...gone]);
         const next = this.getState(), v = next.draw.vibe;

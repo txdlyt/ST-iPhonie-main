@@ -40,7 +40,10 @@ const CONFIG = {
 };
 
 const app = express();
-const allowed = origin => !!origin && CONFIG.origins.includes(origin);
+// 「允许本机来源」：手机/电脑本地的酒馆（http://127.0.0.1:8000 之类）也能直接访问反代。admin 页上的开关，即时生效，存在 ACCOUNT_DIR/bridge.json 里，重启后还在。
+let allowLocal = false;
+const LOCAL_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$/;
+const allowed = origin => !!origin && (CONFIG.origins.includes(origin) || (allowLocal && LOCAL_ORIGIN.test(origin)));
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (allowed(origin)) {
@@ -158,11 +161,21 @@ async function openGeneratorPage({ claim = false } = {}) {
   return page;
 }
 
-async function getPixAIPage() {
+// passive：只读类请求（读状态、健康检查、admin 刷新）用。网页不在生图页时（比如你在远程浏览器里看 PixAI 首页）不去动它，
+// 否则插件每 10 秒、admin 页每 30 秒读一次状态，就会把你正在看的页面拉回生图页。出图、切设置、换账号仍然会自己打开生图页。
+async function getPixAIPage({ passive = false } = {}) {
   if (opening) return await opening;
   const ctx = (await connectBrowser()).contexts()[0];
   const existing = ctx.pages().find(p => p.url().includes('/generator/image'));
   if (existing) { watchApiHeaders(existing); return existing; }
+  if (passive) {
+    const other = ctx.pages().find(p => /^https?:\/\/([^/]*\.)?pixai\.art\//.test(p.url()));
+    if (other) {
+      const error = new Error('PixAI 网页现在停在别的页面，为了不打断你浏览，没有去动它；回到生图页后会自动恢复');
+      error.browsing = true; error.url = other.url();
+      throw error;
+    }
+  }
   // 并发调用只开一次页面
   return await (opening ??= openGeneratorPage().finally(() => { opening = null; }));
 }
@@ -1424,7 +1437,7 @@ const batcher = new Batcher({
 
 app.get('/health', async (_req, res) => {
   try {
-    const page = await getPixAIPage();
+    const page = await getPixAIPage({ passive: true }).catch(error => { if (error.browsing) return { url: () => error.url }; throw error; });
     res.json({ status: 'ok', page: page.url(), generating, runs: batcher.runs.size, counts: CONFIG.counts, quantitySwitch: Object.keys(CONFIG.qty).length ? Object.keys(CONFIG.qty) : 'auto' });
   } catch (error) {
     res.status(503).json({ status: 'error', message: error.message });
@@ -1619,12 +1632,12 @@ async function readPageStatus(page, debug = false) {
 // 给酒馆插件取的参数：GET /ai/status（带密钥时同样要 Authorization）；加 ?debug=1 会多返回原始节点信息，用来校准选择器
 app.get('/ai/status', async (req, res) => {
   try {
-    const page = await getPixAIPage();
+    const page = await getPixAIPage({ passive: true });
     const status = await readPageStatus(page, req.query.debug === '1');
     noteBalance(status.balance);
     res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
   } catch (error) {
-    res.status(503).json({ ok: false, message: error.message });
+    res.status(503).json({ ok: false, browsing: !!error.browsing, message: error.message });
   }
 });
 
@@ -1857,6 +1870,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 .go.alt{flex:none;color:var(--ink);background:var(--field);border:1.5px solid var(--line);box-shadow:none;animation:none}
 .go.alt::after{display:none}
 .go.wide{width:100%;flex:none}
+.sw{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:18px;background:var(--card);cursor:pointer}.sw span{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}.sw b{font-size:14px}.sw small{font-size:12px;line-height:1.5;color:var(--muted)}.sw input{appearance:none;-webkit-appearance:none;flex:none;width:46px;height:28px;border-radius:14px;background:var(--line);position:relative;margin:0;transition:background .2s;cursor:pointer}.sw input::after{content:'';position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}.sw input:checked{background:var(--gd)}.sw input:checked::after{transform:translateX(18px)}
 .hint{margin:6px 4px 0;font-size:12px;line-height:1.6;color:var(--muted)}
 .split{height:1px;margin:14px 0 4px;background:var(--line)}
 .shotmask{background:rgba(20,10,40,.7)}
@@ -1938,6 +1952,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <div class="blk"><div class="chip"><span><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg></span>账号列表</div>
 <div class="list" id="accAll"></div></div>
 <div class="blk"><button class="add" id="addBtn" type="button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><b>添加 / 重新登录</b><small>邮箱密码，或存下网页上已登录的推特等账号</small></button></div>
+<div class="blk"><div class="chip"><span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>访问</div><label class="sw"><span><b>允许本机来源</b><small>127.0.0.1 / localhost 的酒馆（手机本地酒馆）也能访问；打开立即生效，不用重启。仍然要密钥。</small></span><input type="checkbox" id="localOrigin"></label></div>
 </section>
 </main>
 </div>
@@ -2129,6 +2144,7 @@ async function pickModel(m) {
   refresh(true);
 }
 function show(j) {
+  if (j && typeof j.allowLocal === 'boolean') $('localOrigin').checked = j.allowLocal;
   if (j && typeof j.balance === 'number') tween($('bal'), j.balance); else $('bal').textContent = '—';
   $('cost').textContent = fmt(j && j.cost);
   const parts = [];
@@ -2165,6 +2181,15 @@ async function refresh(quiet, deep) {
 }
 $('refresh').onclick = async () => { await refresh(false, true); };
 $('keyBtn').onclick = () => openKey(true);
+$('localOrigin').onchange = async function () {
+  const box = this, want = box.checked;
+  try {
+    const r = await call('/admin/local-origin', { method: 'POST', body: JSON.stringify({ on: want }) });
+    const j = await r.json().catch(function () { return {}; });
+    if (!r.ok || j.ok === false) throw new Error(j.message || ('HTTP ' + r.status));
+    box.checked = j.allowLocal === true;
+  } catch (e) { box.checked = !want; alert('没能保存：' + e.message); }
+};
 $('save').onclick = () => { openKey(false); refresh(false); };
 $('token').onkeydown = e => { if (e.key === 'Enter') $('save').onclick(); };
 $('password').onkeydown = e => { if (e.key === 'Enter') doLogin(false); };
@@ -2321,6 +2346,8 @@ async function captureResolutions(page) {
   console.log(`已读出分辨率表：${Object.entries(ratios).map(([k, v]) => `${k}（${v.map(x => x.size).join('/')}）`).join('，')}`);
   return resTable;
 }
+const BRIDGE_FILE = path.join(ACCOUNT_DIR, 'bridge.json');
+fs.readFile(BRIDGE_FILE, 'utf8').then(text => { allowLocal = json(text, {}).allowLocal === true; }).catch(() => {});
 fs.readFile(RES_FILE, 'utf8').then(text => { const v = json(text, null); if (v && v.ratios) resTable = v; }).catch(() => {});
 // 只读：每条记录里有哪些参数（长文字只给开头），用来核对记录里还有没有别的提示词。
 app.get('/ai/template/keys', (_req, res) => {
@@ -2439,18 +2466,30 @@ const adminState = async page => {
   return {
     ok: true, loggedIn: page.url().includes('/generator/image'), accounts: publicAccounts(), page: page.url(), generating, stuck: generating && !isGenerating(),
     ratio: status.resolution.ratio, size: status.resolution.label, count: status.count, balance: status.balance, cost: status.cost,
-    models: status.models, model: status.model
+    models: status.models, model: status.model, allowLocal
   };
 };
 app.get('/admin/state', async (_req, res) => {
-  try { res.json(await adminState(await getPixAIPage())); }
+  try { res.json(await adminState(await getPixAIPage({ passive: true }))); }
   catch (error) { res.status(503).json({ ok: false, message: error.message }); }
+});
+
+app.post('/admin/local-origin', async (req, res) => {
+  const on = req.body?.on === true;
+  try {
+    await fs.mkdir(ACCOUNT_DIR, { recursive: true });
+    await fs.writeFile(BRIDGE_FILE, JSON.stringify({ allowLocal: on }), { mode: 0o600 });
+    allowLocal = on;
+    res.json({ ok: true, allowLocal });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '没能保存：' + error.message });
+  }
 });
 
 // 顶部「刷新」：除了读页面上的积分和设置，还问 PixAI 现在登录的是谁，把「当前账号」对上，并记下它的积分
 app.post('/admin/refresh', async (_req, res) => {
   try {
-    const page = await getPixAIPage();
+    const page = await getPixAIPage({ passive: true });
     let note = '';
     if (generating) note = '正在出图，只刷新了积分和设置';
     else {

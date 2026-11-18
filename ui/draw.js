@@ -219,7 +219,7 @@ export function drawApp(ctx) {
    * itself when the page cannot be read.
    */
   /** The way PixAI draws: the choice, and for API mode its own few settings (model, size, LoRA weight); the page is not touched. */
-  const pixaiModeBar = () => `<div class="px-line">${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式'], ['still', '静止']])}${help('静止：反代只往网页填提示词并点生成，不碰网页上的任何设置——模型、比例、尺寸、张数、参考图都由你在网页上手动设好。不用保存记录，适合测试出图效果。\n\nAPI 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快；失败会直接报错，不会改用直控。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n两种模式各有自己的一套参数，来回切不会互相覆盖。')}</div>`;
+  const pixaiModeBar = () => `<div class="px-line">${seg('pixai-mode', state().pixai.mode, [['api', 'API 模式'], ['direct', '直控模式'], ['still', '静止']])}${help('API 模式：反代直接向 PixAI 发请求，模型、尺寸、张数、LoRA 权重都在酒馆里定，网页不动，更快；失败会直接报错，不会改用直控。\n\n直控模式：反代去点 PixAI 网页上的按钮，模型、比例、尺寸、张数都跟网页走。\n\n静止：模型由你在网页上自己选，插件管比例、尺寸、张数和参考图，适合测试出图效果。\n\n正在出图时这些都不能切。')}</div>`;
   function pixaiApiParams() {
     const i = pixaiInfo || {}, a = state().pixai.api, models = Array.isArray(i.apiModels) ? i.apiModels : [], table = i.resolutions?.ratios || null, ratios = table ? Object.keys(table) : [];
     const chip = (action, value, on, label, extra = '') => `<button type="button" data-action="${action}" data-value="${esc(value)}" aria-pressed="${on}"${extra}>${label}</button>`;
@@ -227,12 +227,12 @@ export function drawApp(ctx) {
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const at = i.resolutions?.at && !Number.isNaN(Date.parse(i.resolutions.at)) ? new Date(i.resolutions.at).toLocaleString('zh-CN', {hour12: false}) : '';
-    const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
+    const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating || drawing() ? 'disabled' : '');
     const flip = a.ratio && /^\d+:\d+$/.test(a.ratio) ? a.ratio.split(':').reverse().join(':') : '';
     const k = a.width && a.height ? 30 / Math.max(a.width, a.height) : 0;
     const shape = k ? `<i style="width:${Math.max(6, Math.round(a.width * k))}px;height:${Math.max(6, Math.round(a.height * k))}px"></i>` : '';
     const resolution = a.width && a.height ? shape + esc(a.width + '×' + a.height) : '未选';
-    const swapBtn = `<button type="button" class="chip-button px-swap" data-action="pixai-api-swap"${!flip || flip === a.ratio || i.generating ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>`;
+    const swapBtn = `<button type="button" class="chip-button px-swap" data-action="pixai-api-swap"${!flip || flip === a.ratio || i.generating || drawing() ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>`;
     const sizeRow = `<div class="px-cell px-wide"><small>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</small><b>${resolution}</b><em>${a.ratio ? `画幅 ${esc(a.ratio)}` : ''}</em>${ratios.length ? `<div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${swapBtn}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}` : `<p class="hint" style="padding:0">还没有分辨率表，点上面的「读取分辨率表」让反代去网页读一次。</p>`}</div>`;
     const sel = recordNow(), covers = a.tplCovers || {}, offs = sel ? sel.loras.filter(l => (a.tplLoras[sel.id]?.[l.id] || {}).on === false).length : 0;
     const facts = sel ? [`${sel.loras.length - offs}${offs ? '/' + sel.loras.length : ''} LoRA`, ...(sel.recipes ? [`${sel.recipes} Recipe`] : []), ...(sel.steps ? [`${sel.steps} 步`] : []), ...(sel.width ? [`${sel.width}×${sel.height}`] : [])] : [];
@@ -364,15 +364,15 @@ export function drawApp(ctx) {
     const shape = k ? `<i style="width:${Math.max(6, Math.round(r.width * k))}px;height:${Math.max(6, Math.round(r.height * k))}px"></i>` : '';
     const resolution = r.width && r.height ? shape + esc(r.label || `${r.width}×${r.height}`) : '—';
     // Ratio, size tier and portrait/landscape are the page's own buttons: a tap switches the page (the bridge clicks them) and the page is read back.
-    const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.generating || !!i.stale;
+    const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.generating || !!i.stale || drawing();
     const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
     const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
     const models = Array.isArray(i.models) ? i.models : [], curModel = i.model?.id || '';
     const still = state().pixai.mode === 'still';
     const modelRow = models.length || still ? `<div class="px-cell px-wide"><small>模型${help(still ? '静止模式不由插件换模型：请在 PixAI 网页上自己选，这里显示网页现在用的是哪个。' : '点一下会去切 PixAI 网页：换模型，并按这个模型的设定带上或去掉 LoRA / Recipe。要等十几秒到半分钟，期间按钮灰着。')}</small><b>${esc(i.model?.name || '读不到网页上的模型')}</b><em>${esc([...(i.model?.recipes || []).map(x => 'Recipe ' + x), ...(i.model?.loras || []).map(x => 'LoRA ' + x)].join(' · '))}</em>${still ? '' : `<div class="size-chips px-pick">${models.map(m => `<button type="button" data-action="pixai-model" data-value="${esc(m.id)}" aria-pressed="${m.id === curModel}"${pick ? ' disabled' : ''}>${esc(m.name)}</button>`).join('')}</div>`}</div>` : '';
-    const miao = still || (state().pixai.mode === 'direct' && /miaomiao/i.test(i.model?.name || '')), pref = api.getPixaiRef(), strength = still && Number.isFinite(i.refStrength) ? i.refStrength : state().pixai.refStrength;
-    const refRow = miao ? `<div class="px-cell px-wide"><small>参考图${help(still ? '选好图就会传到 PixAI 网页，能不能用由网页上的模型决定：不支持的模型，网页会自动切到支持的模型，或把图移除，这里都以网页为准。Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。' : 'MiaoMiao 专有：选一张图当底图，PixAI 网页会上传它并按 Strength 参考：Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。')}</small>${pref ? `<div class="px-ref"><img src="${esc(pref.preview)}" alt="参考图" draggable="false"><div class="px-ref-r"><label class="tpl-lora-head"><span>Strength</span><output>${Number(strength).toFixed(2)}</output></label><input type="range" min="0" max="1" step="0.01" value="${strength}" data-pxref-strength><div class="actions">${btn('pixai-ref-pick', '换一张', 'chip-button')}${btn('pixai-ref-clear', '移除', 'chip-button')}</div></div></div>` : `<div class="actions">${btn('pixai-ref-pick', icon('import') + '选一张参考图', 'secondary')}</div>`}</div>` : '';
+    const webRef = still && i.hasRef === true, miao = still || (state().pixai.mode === 'direct' && /miaomiao/i.test(i.model?.name || '')), pref = api.getPixaiRef(), strength = still && Number.isFinite(i.refStrength) ? i.refStrength : state().pixai.refStrength;
+    const refRow = miao ? `<div class="px-cell px-wide"><small>参考图${help(still ? '选好图就会传到 PixAI 网页，能不能用由网页上的模型决定：不支持的模型，网页会自动切到支持的模型，或把图移除，这里都以网页为准。Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。' : 'MiaoMiao 专有：选一张图当底图，PixAI 网页会上传它并按 Strength 参考：Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。')}</small>${pref || webRef ? `<div class="px-ref">${pref ? `<img src="${esc(pref.preview)}" alt="参考图" draggable="false">` : ''}<div class="px-ref-r"><label class="tpl-lora-head"><span>${pref ? 'Strength' : '网页上已有参考图 · Strength'}</span><output>${Number(strength).toFixed(2)}</output></label><input type="range" min="0" max="1" step="0.01" value="${strength}" data-pxref-strength><div class="actions">${btn('pixai-ref-pick', '换一张', 'chip-button')}${btn('pixai-ref-clear', '移除', 'chip-button')}</div></div></div>` : `<div class="actions">${btn('pixai-ref-pick', icon('import') + '选一张参考图', 'secondary')}</div>`}</div>` : '';
     const perTask = Number.isInteger(i.count) ? i.count : null;
     const lines = [];
     if (state().pixai.mode === 'still') lines.push('<p class="hint" style="padding:0">静止模式：模型请在 PixAI 网页上自己选；比例、尺寸、横竖、张数和参考图在这里点就会去切网页，积分按网页当前设置算，改了就会跟着变。</p>');
@@ -511,7 +511,7 @@ export function drawApp(ctx) {
   function pollPixai() {
     ctx.win.clearTimeout(pixaiTimer);
     if (v.disposed || eng() !== 'pixai') return;
-    pixaiTimer = ctx.win.setTimeout(() => { if (!v.disposed && eng() === 'pixai' && !ctx.win.document?.hidden) refreshPixai(); else pollPixai(); }, 10000);
+    pixaiTimer = ctx.win.setTimeout(() => { if (!v.disposed && eng() === 'pixai' && !ctx.win.document?.hidden) refreshPixai(); else pollPixai(); }, state().pixai.mode === 'still' && api.getPixaiRef() ? 4000 : 10000); // 静止模式带着参考图时读得勤一点，网页上换了模型好尽快跟上
   }
   const onPixaiVisible = () => { if (!ctx.win.document.hidden && eng() === 'pixai') refreshPixai(); };
   async function refreshPixai(wait = 15000) {
@@ -553,11 +553,15 @@ export function drawApp(ctx) {
     const fresh = info && typeof info === 'object' && info.ok !== false && Object.keys(info).length ? info : null;
     // The first reading of a visit: the picture count follows what the page is set to (nothing is changed on the page by looking).
     if (fresh && !pixaiLast && state().pixai.mode !== 'api' && (fresh.count === 1 || fresh.count === 4)) count = fresh.count;
-    if (fresh && state().pixai.mode === 'still' && fresh.hasRef === false && !refBusy && api.getPixaiRef() && Date.now() - refAt > 8000) { api.setPixaiRef(null); ctx.notify('网页上的参考图已经没有了（所选模型不支持参考图时，网页会移除它）', {error: true}); }
+    let refDropped = false;
+    if (fresh && state().pixai.mode === 'still' && api.getPixaiRef()) {
+      if (fresh.hasRef === false && !refBusy && Date.now() - refAt > 8000) { api.setPixaiRef(null); refDropped = true; ctx.notify('网页上的参考图已经没有了（换到不支持参考图的模型时，网页会移除它）', {error: true}); }
+      else if (fresh.hasRef === undefined && !refOldNote) { refOldNote = true; ctx.notify('反代版本太旧，读不到网页上有没有参考图，请更新反代 server.js', {error: true}); }
+    }
     if (fresh) pixaiLast = fresh;
     if (fresh) adoptTemplates(fresh.template);
     const next = fresh || (pixaiLast ? {...pixaiLast, stale: true} : null);
-    const changed = pixaiSig(next) !== pixaiSig(pixaiInfo);
+    const changed = refDropped || pixaiSig(next) !== pixaiSig(pixaiInfo);
     pixaiInfo = next;
     if (changed && !ctx.doc.activeElement?.matches?.('[data-pxref-strength]')) render(); // 正在拖 Strength 时不重画，免得滑块被抢走
   }
@@ -579,7 +583,7 @@ export function drawApp(ctx) {
   }
 
   /** Taps on a ratio, a size tier or 反转: the PixAI page is switched and what it then shows (size, cost) is read back. */
-  let refAt = 0, refBusy = 0;
+  let refAt = 0, refBusy = 0, refOldNote = false;
   async function setPixaiPage(patch) {
     const ticket = ++pixaiSetting, refOp = !!(patch.ref || patch.clearRef || patch.refStrength !== undefined);
     if (refOp) refBusy++;
@@ -737,7 +741,13 @@ export function drawApp(ctx) {
   v.on('change', '[data-ref-slider]', () => render());
   v.on('change', '[data-read-png]', async el => { const file = el.files?.[0]; el.value = ''; if (file) await readPicture(file); });
   v.on('change', '[data-vibe-file]', async el => { const files = [...el.files]; el.value = ''; await vibes.importFiles(files); });
+  // 出图期间不让换模型 / 记录 / 比例 / 尺寸 / 模式 / 参考图：一边画一边改，会和正在画的这一张互相打架（原作者没有这类开关）
+  const PIXAI_LOCKED = new Set(['pixai-mode', 'pixai-model', 'pixai-ratio', 'pixai-size', 'pixai-swap', 'pixai-res', 'pixai-records', 'pixai-api-pick', 'pixai-api-ratio', 'pixai-api-swap', 'pixai-api-model', 'pixai-api-source', 'pixai-ref-pick', 'pixai-ref-clear', 'pixai-tpl-arm', 'pixai-tpl-pick', 'pixai-tpl-clear', 'pixai-tpl-del']);
+  const drawing = () => busy || queue.length > 0 || !!pixaiInfo?.generating;
   v.on('click', '[data-action]', async el => {
+    const act = el.dataset.action;
+    if (eng() === 'pixai' && (PIXAI_LOCKED.has(act) || (act === 'count' && state().pixai.mode !== 'api')) && drawing()) { ctx.notify('正在出图，画完再换这个设置'); return; }
+    if (act === 'pixai-mode' && pixaiInfo?.syncing) { ctx.notify('正在同步网页，等一下再切换模式'); return; }
     if (eng() === 'comfy' && await plans.click(el)) return;
     if (eng() === 'comfy' && await loras.click(el)) return;
     if (el.dataset.action?.startsWith('node-') && await nodes.click(el)) return;
