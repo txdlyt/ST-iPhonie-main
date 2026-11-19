@@ -221,7 +221,7 @@ export function settingsApp(ctx) {
     const state = !st.available ? '在酒馆里打开小手机时才能同步'
       : st.busy ? '正在同步……'
       : st.error ? '同步失败：' + st.error
-      : st.lastAt ? '上次同步 ' + time(st.lastAt) : st.pending ? '有改动，马上同步' : '还没同步过';
+      : st.lastAt ? '上次同步 ' + time(st.lastAt) + (st.lastResult?.skipped?.length ? `（有 ${st.lastResult.skipped.length} 张图这台设备读不出来，没有存到酒馆）` : '') : st.pending ? '有改动，马上同步' : '还没同步过';
     const remote = st.remote?.savedAt ? `酒馆里的是${st.remote.deviceName ? ' ' + st.remote.deviceName + ' ' : ''}在 ${time(st.remote.savedAt)} 存的` : '';
     return toggle('syncEnabled', '保存到酒馆', st.enabled, '聊天和记忆、助手、朋友圈、论坛、查手机、备忘录、相册、绘本、Vibe、收藏的语音、音乐、音效、画画的作品、账本、衣柜、小剧场、我的主题和大游戏存档存进酒馆里你账号的文件夹（data/你的用户名/user/files）。换一台设备、换个浏览器打开酒馆，小手机里的东西都还在；清了浏览器数据也不会丢。有改动几秒后自动保存，打开小手机时自动读取别的设备的新内容。两台设备都改了同一段聊天或同一条朋友圈时，会合并成一份（消息和评论都保留）；只有一边改过就直接用那一边的。助手已发送的附件随会话保存，生成的图片保存在相册。密钥不会存进去；语音缓存、收藏的语音和向量检索缓存也不存，需要时重新生成。\n\n想删掉酒馆里存的那份：存储空间 → 酒馆里存的那份。')
       + (st.enabled ? `<div class="setting-row"><span class="row-text"><strong data-sync-state>${esc(state)}</strong>${remote ? `<small>${esc(remote)}</small>` : ''}</span>${btn('sync-now', icon('refresh') + '立即同步', 'chip-button', st.busy || !st.available ? 'disabled' : '')}</div>` : '');
@@ -588,7 +588,7 @@ export function settingsApp(ctx) {
       case 'backup': backup = {parts: new Set(Object.keys(api.backupParts()).filter(part => part !== 'keys')), password: '', again: ''}; await render(); break;
       case 'sync-clear': if (await ctx.confirm('删除酒馆里的那份？', '酒馆里存的聊天、相册、音乐、画画的作品这些都会删掉，别的设备再同步时就读不到了。这台设备上的内容不受影响；同步开着的话，之后会重新存一份。')) await clearTavernCopy(); break;
       case 'tagger-test': { try { const r = await api.taggerTest(); ctx.notify(`连上了${r.model ? '：' + r.model : ''}${r.tags ? '，' + r.tags + ' 个 tag' : ''}`); } catch (error) { ctx.notify(error.message, {error: true}); } break; }
-      case 'sync-now': { const st = await api.syncNow(); const r = st.lastResult || {}; ctx.notify(r.pulled?.length || r.merged?.length ? '已读取别的设备的新内容' + (r.pushed?.length ? '，也保存了这里的改动' : '') : r.pushed?.length ? '已保存到酒馆' : '已经是最新的了'); await render(); break; }
+      case 'sync-now': { const st = await api.syncNow(); const r = st.lastResult || {}; ctx.notify(r.skipped?.length ? `同步好了，但有 ${r.skipped.length} 张图这台设备读不出来，没有存到酒馆` : r.pulled?.length || r.merged?.length ? '已读取别的设备的新内容' + (r.pushed?.length ? '，也保存了这里的改动' : '') : r.pushed?.length ? '已保存到酒馆' : '已经是最新的了'); await render(); break; }
       case 'make-backup':
         await v.busy(el, async () => {
           if (!passwordOk()) throw Error(backup.password.length < 6 ? '密码至少 6 位' : '两次输入的密码不一样');

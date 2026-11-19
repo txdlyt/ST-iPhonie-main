@@ -187,7 +187,7 @@ export function mergePart(part, local, remote, gone = {}, revived = {}) {
  */
 export async function runSync({stores, files, memory = {}, readGone = () => memory.gone, readRestores = () => memory.restores, onRevived = () => {}, onPartApplied = () => {}, device = '', deviceName = '', now = () => Date.now(), parts = Object.keys(SYNC_PARTS)}) {
   const blobOf = (part, row) => stores.fileBlob ? stores.fileBlob(part, row) : stores.photoBlob(row);
-  const hashes = {...(memory.hashes || {})}, pulled = [], pushed = [], merged = [];
+  const hashes = {...(memory.hashes || {})}, pulled = [], pushed = [], merged = [], skipped = [];
   let gone = joinGone([memory.gone], now());
   let manifest = null;
   const raw = await files.read(MANIFEST);
@@ -285,7 +285,18 @@ export async function runSync({stores, files, memory = {}, readGone = () => memo
         // The files first: a list in the tavern never names one that is not there.
         const theirs = new Set((remoteHash ? readPart(await files.read(partFile(part)) || '[]', part) : []).map(fileOf).filter(Boolean));
         const mine = new Set(items.map(fileOf).filter(Boolean));
-        for (const row of items) { const name = fileOf(row); if (name && !theirs.has(name)) await files.write(name, await blobOf(part, row)); }
+        // A picture whose file this device can no longer read (iPhone Safari lost the blob behind the row: "The object can not be found
+        // here.") cannot be saved. It is left out of the tavern's list, so the list still names only files that are there, and the
+        // rest of the sync goes on; the report names it.
+        const lost = [];
+        for (const row of items) {
+          const name = fileOf(row);
+          if (!name || theirs.has(name)) continue;
+          const blob = await blobOf(part, row);
+          if (blob instanceof Blob) { try { await blob.slice(0, 1).arrayBuffer(); } catch { lost.push(row); skipped.push({part, id: row.id, name}); continue; } }
+          await files.write(name, blob);
+        }
+        if (lost.length) { items = items.filter(row => !lost.includes(row)); text = JSON.stringify(canonical(part, items)); hash = await hashText(text); }
         for (const name of theirs) if (!mine.has(name)) obsolete.push(name);
       }
       await files.write(partFile(part), text);
@@ -307,7 +318,7 @@ export async function runSync({stores, files, memory = {}, readGone = () => memo
   for (const [part, keys] of Object.entries(readRestores() || {})) for (const [id, at] of Object.entries(keys))
     if (at !== appliedRestores[part]?.[id]) (restores[part] ||= {})[id] = at;
   const appliedRevived = joinGone([localRevived, Object.fromEntries(parts.map(part => [part, revived[part]]))], now());
-  return {memory: {hashes, savedAt: remote.savedAt, gone, revived: appliedRevived, restores}, pulled, pushed, merged, savedAt: remote.savedAt, remote};
+  return {memory: {hashes, savedAt: remote.savedAt, gone, revived: appliedRevived, restores}, pulled, pushed, merged, skipped, savedAt: remote.savedAt, remote};
 }
 
 /**

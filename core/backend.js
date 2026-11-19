@@ -1213,7 +1213,7 @@ export class TTSBackend {
                 this.#syncMemory({ ...result.memory, gone: joinGone([result.memory.gone, this.#syncMemory().gone]), revived: joinGone([result.memory.revived, this.#syncMemory().revived]) });
                 stage = '同步完成后刷新';
                 const preferences = [...result.pulled, ...result.merged].includes('photos') ? await this.getPhone() : null;
-                this.syncState = { ...this.syncState, error: '', lastAt: Date.now(), remote: result.remote, lastResult: { pulled: result.pulled, pushed: result.pushed, merged: result.merged } };
+                this.syncState = { ...this.syncState, error: '', lastAt: Date.now(), remote: result.remote, lastResult: { pulled: result.pulled, pushed: result.pushed, merged: result.merged, skipped: result.skipped || [] } };
                 // Only these refresh notifications came from syncing. User writes during network waits stay dirty.
                 for (const part of [...result.pulled, ...result.merged]) {
                     if (part === 'vibes') await this.loadVibes();
@@ -1919,10 +1919,8 @@ export class TTSBackend {
             this.pixai.relay = draw.pixai.url; this.pixai.setKey(this.pixaiKey);
             const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [], pixai: draw.pixai, ref: draw.pixai.mode === 'direct' ? this.pixaiRef : null });
             const made = await this.pixai.generate(request.body, signal);
-            // Kept smaller from the start, by the same rule as 压缩旧图 (a PNG becomes WebP, only when it comes out clearly smaller): the album
-            // no longer piles up big PNGs. Anything else, or a picture that will not compress, stays as it came.
-            const blob = await packPicture(made).catch(() => null) || made;
-            return { blob, seed: request.seed, params: request.params, prompt: request.body.input };
+            // The bridge makes the picture smaller before it sends it (docs/pixai-bridge/server.js, packImage): it is kept as it arrives.
+            return { blob: made, seed: request.seed, params: request.params, prompt: request.body.input };
         }
         if (engine === 'gpt') {
             const paint = async list => {
