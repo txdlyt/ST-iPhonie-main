@@ -227,19 +227,19 @@ export function drawApp(ctx) {
     const sizes = table && a.ratio && table[a.ratio] ? table[a.ratio] : [];
     const sizeChip = x => chip('pixai-api-pick', a.ratio + '|' + x.size, a.size === x.size, `${esc(x.size)}<small>${x.width}×${x.height}</small>`, x.locked ? ' disabled title="这一档被锁住了（可能要会员）"' : '');
     const resAt = recordNow()?.resolutions?.at || i.resolutions?.at, at = resAt && !Number.isNaN(Date.parse(resAt)) ? new Date(resAt).toLocaleString('zh-CN', {hour12: false}) : '';
-    const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating || drawing() ? 'disabled' : '');
+    const read = btn('pixai-res', pixaiReading ? '读取中……' : table ? '重新读取' : '读取分辨率表', 'chip-button', pixaiReading || i.generating ? 'disabled' : '');
     const flip = a.ratio && /^\d+:\d+$/.test(a.ratio) ? a.ratio.split(':').reverse().join(':') : '';
     const k = a.width && a.height ? 30 / Math.max(a.width, a.height) : 0;
     const shape = k ? `<i style="width:${Math.max(6, Math.round(a.width * k))}px;height:${Math.max(6, Math.round(a.height * k))}px"></i>` : '';
     const resolution = a.width && a.height ? shape + esc(a.width + '×' + a.height) : '未选';
-    const swapBtn = `<button type="button" class="chip-button px-swap" data-action="pixai-api-swap"${!flip || flip === a.ratio || i.generating || drawing() ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>`;
+    const swapBtn = `<button type="button" class="chip-button px-swap" data-action="pixai-api-swap"${!flip || flip === a.ratio ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>`;
     const sizeRow = `<div class="px-cell px-wide"><small>分辨率${help('比例和尺寸档位是反代从 PixAI 网页读来的，读一次就记住，之后出图不再碰网页。账号换成会员后点「重新读取」，会多出更大的档位。' + (at ? '\n\n上次读取：' + at : ''))}</small><b>${resolution}</b><em>${a.ratio ? `画幅 ${esc(a.ratio)}` : ''}</em>${ratios.length ? `<div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${swapBtn}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}` : `<p class="hint" style="padding:0">还没有分辨率表，点上面的「读取分辨率表」让反代去网页读一次。</p>`}</div>`;
     const sel = recordNow(), covers = a.tplCovers || {}, offs = sel ? sel.loras.filter(l => (a.tplLoras[sel.id]?.[l.id] || {}).on === false).length : 0;
-    const facts = sel ? [`${sel.loras.length - offs}${offs ? '/' + sel.loras.length : ''} LoRA`, ...(sel.recipes ? [`${sel.recipes} Recipe`] : []), ...(sel.steps ? [`${sel.steps} 步`] : []), ...(sel.width ? [`${sel.width}×${sel.height}`] : [])] : [];
+    const facts = sel ? [`${sel.loras.length - offs}${offs ? '/' + sel.loras.length : ''} LoRA`, ...(sel.recipes ? [`${sel.recipes} Recipe`] : []), ...(sel.steps ? [`${sel.steps} 步`] : [])] : []; // the 分辨率 is its own card: a 记录 keeps its own table, it does not show its size
     const pageRow = `<button type="button" class="px-record${sel ? '' : ' empty'}" data-action="pixai-records"><span class="style-cover">${icon('image')}${sel && covers[sel.id] ? `<img src="${esc(covers[sel.id].thumb)}" alt="" draggable="false">` : ''}</span><span class="px-record-main">${sel ? `<strong>${esc(recName(sel))}</strong><span class="px-facts">${facts.map(x => `<i>${esc(x)}</i>`).join('')}</span>` : '<strong>还没有记录</strong><small>先在反代网页里调好设置，再来记录一条</small>'}</span>${icon('chevron')}</button>`;
     const status = pixaiReading ? '读取分辨率中……' : table ? '分辨率表已读取' + (at ? ' · ' + at : '') : '还没读取分辨率表';
     const foot = `<div class="px-foot"><span class="chip${table ? '' : ' warn'}">${esc(status)}</span>${read}</div>`;
-    return `<div class="group pad px-sync px-api">${foot}<div class="px-grid"><div class="px-cell px-wide"><small>模型 / 记录${help('API 模式用的模型、LoRA、Recipe 来自你在反代网页上调好并记录下来的设置；点下面换一条。')}</small>${pageRow}</div>${sizeRow}<div class="px-cell"><small>一次出几张</small><b>${esc(a.count + ' 张')}</b></div><div class="px-cell px-wide"><small>同时画${help('PixAI 本来就能同时画几个任务：在几个楼层各点一次生图，会一起画，不用排队等。这里是同时画的上限（积分会一起扣）。只有 API 模式这样；直控和静止要操作网页，仍然一个一个画。')}</small><div class="segmented" style="margin:0">${[1, 2, 3, 4, 5, 6].map(k => chip('pixai-parallel', k, (state().pixai.parallel || 3) === k, k + '')).join('')}</div></div></div></div>`;
+    return `<div class="group pad px-sync px-api">${foot}<div class="px-grid"><div class="px-cell px-wide"><small>模型 / 记录${help('API 模式用的模型、LoRA、Recipe 来自你在反代网页上调好并记录下来的设置；点下面换一条。')}</small>${pageRow}</div>${sizeRow}<div class="px-cell"><small>一次出几张</small><b>${esc(a.count + ' 张')}</b></div><div class="px-cell"><small>同时画${help('PixAI 本来就能同时画几个任务：在几个楼层各点一次生图，会一起画，不用排队等。这里是同时画的上限（积分会一起扣）。只有 API 模式这样；直控和静止要操作网页，仍然一个一个画。')}</small><div class="px-step">${(() => { const n = state().pixai.parallel || 3; return `<button type="button" class="chip-button" data-action="pixai-parallel" data-value="${Math.max(1, n - 1)}" aria-label="少一个"${n <= 1 ? ' disabled' : ''}>−</button><b>${n}</b><button type="button" class="chip-button" data-action="pixai-parallel" data-value="${Math.min(6, n + 1)}" aria-label="多一个"${n >= 6 ? ' disabled' : ''}>＋</button>`; })()}</div></div></div></div>`;
   }
   // 记录: the page settings the bridge has recorded, kept in one sheet (PixAI has no 画风; this takes its place).
   const recordList = () => { const t = pixaiInfo?.template || {}, all = Array.isArray(t.list) ? t.list : [], order = state().pixai.api.tplOrder || []; return [...order.map(id => all.find(x => x.id === id)).filter(Boolean), ...all.filter(x => !order.includes(x.id))]; };
@@ -249,7 +249,7 @@ export function drawApp(ctx) {
   const recName = x => state().pixai.api.tplNames?.[x.id] || x.model;
   const recordName = () => { const x = recordNow(); return x ? recName(x) : '记录'; };
   const recCover = x => { const c = state().pixai.api.tplCovers?.[x.id]; return `<button type="button" class="style-cover" data-rec-cover="${esc(x.id)}" aria-label="${c ? '看' : '给'}「${esc(recName(x))}」${c ? '的' : '加'}效果图">${icon('image')}${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</button>`; };
-  const recFacts = x => [`${x.loras.length} LoRA`, ...(x.recipes ? [`${x.recipes} Recipe`] : []), ...(x.steps ? [`${x.steps} 步`] : []), ...(x.width ? [`${x.width}×${x.height}`] : [])].join(' · ');
+  const recFacts = x => [`${x.loras.length} LoRA`, ...(x.recipes ? [`${x.recipes} Recipe`] : []), ...(x.steps ? [`${x.steps} 步`] : [])].join(' · ');
   const recStamp = x => { const t = new Date(x.at); return Number.isNaN(+t) ? '' : t.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}); };
   const recUse = rec => { api.saveDraw({pixai: {api: {tplId: rec.id, ...resOf(rec)}}}); render(); };
   const recAdd = async () => {
@@ -366,7 +366,7 @@ export function drawApp(ctx) {
     const shape = k ? `<i style="width:${Math.max(6, Math.round(r.width * k))}px;height:${Math.max(6, Math.round(r.height * k))}px"></i>` : '';
     const resolution = r.width && r.height ? shape + esc(r.label || `${r.width}×${r.height}`) : '—';
     // Ratio, size tier and portrait/landscape are the page's own buttons: a tap switches the page (the bridge clicks them) and the page is read back.
-    const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.generating || !!i.stale || drawing();
+    const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.stale;
     const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
     const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
@@ -744,11 +744,14 @@ export function drawApp(ctx) {
   v.on('change', '[data-read-png]', async el => { const file = el.files?.[0]; el.value = ''; if (file) await readPicture(file); });
   v.on('change', '[data-vibe-file]', async el => { const files = [...el.files]; el.value = ''; await vibes.importFiles(files); });
   // 出图期间不让换模型 / 记录 / 比例 / 尺寸 / 模式 / 参考图：一边画一边改，会和正在画的这一张互相打架（原作者没有这类开关）
-  const PIXAI_LOCKED = new Set(['pixai-mode', 'pixai-model', 'pixai-ratio', 'pixai-size', 'pixai-swap', 'pixai-res', 'pixai-records', 'pixai-api-pick', 'pixai-api-ratio', 'pixai-api-swap', 'pixai-api-model', 'pixai-api-source', 'pixai-ref-pick', 'pixai-ref-clear', 'pixai-tpl-arm', 'pixai-tpl-pick', 'pixai-tpl-clear', 'pixai-tpl-del']);
-  const drawing = () => busy || queue.length > 0 || !!pixaiInfo?.generating;
+  // A picture drawing only stops the engine from being switched; PixAI's mode and parameters stay free (the bridge waits out the few seconds it
+  // drives the page itself). Only what takes the whole page (reading its table, recording a 记录 from its 生成 button) waits for the picture.
+  const PIXAI_PAGE = new Set(['pixai-res', 'pixai-tpl-arm']);
   v.on('click', '[data-action]', async el => {
     const act = el.dataset.action;
-    if (eng() === 'pixai' && (PIXAI_LOCKED.has(act) || (act === 'count' && state().pixai.mode !== 'api')) && drawing()) { ctx.notify('正在出图，画完再换这个设置'); return; }
+    if (eng() === 'pixai') {
+      if (pixaiInfo?.generating && PIXAI_PAGE.has(act)) { ctx.notify('网页正在出图，画完这一张再做这个'); return; }
+    }
     if (act === 'pixai-mode' && pixaiInfo?.syncing) { ctx.notify('正在同步网页，等一下再切换模式'); return; }
     if (eng() === 'comfy' && await plans.click(el)) return;
     if (eng() === 'comfy' && await loras.click(el)) return;

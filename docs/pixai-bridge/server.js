@@ -64,6 +64,9 @@ app.use(express.json({ limit: '20mb' }));
 
 let browser;
 let generating = false;
+// 网页在被驱动的两段：出图前的准备（填提示词、点「生成」）和图画好后的取图（点下载）。这两段里不能动网页上的设置；中间等 PixAI 画的那段可以。
+let preparing = false, collecting = false;
+const pageDriven = () => preparing || collecting;
 let genStart = 0, genEpoch = 0;
 // 出图超过 8 分钟还没结束，就当它卡死了：管理页允许换账号 / 重试，不再被一直挡着
 const isGenerating = () => generating && Date.now() - genStart < 8 * 60 * 1000;
@@ -1403,6 +1406,7 @@ async function generateBatch(prompt, count, spec = null, resume = null) {
   let epoch;
   if (parallel) { epoch = genEpoch; activeGen++; } else { epoch = ++genEpoch; activeGen = 1; }
   generating = true; genStart = Date.now();
+  if (!parallel) preparing = true;
   let slot = false;
   if (parallel) { await takeApiSlot(spec); slot = true; if (epoch !== genEpoch) { freeApiSlot(); throw new Error('这次出图已被放弃（重试或重置了反代）'); } }
   if (!parallel) await disarmTemplate().catch(() => {});
@@ -1450,6 +1454,7 @@ async function generateBatch(prompt, count, spec = null, resume = null) {
       throw new Error('PixAI 生成按钮当前不可用');
     }
     await generateButton.click();
+    preparing = false; // 点出去了：等 PixAI 画的这段时间，网页上的设置可以改，不影响返图
 
     // 点了「生成」之后网页可能弹「积分不足」或审核拒绝的提示：边等图边看，看到就立刻报明确的错，不傻等 5 分钟
     let watching = true;
@@ -1473,6 +1478,8 @@ async function generateBatch(prompt, count, spec = null, resume = null) {
     }, { previousIds: oldIds, card: CARD, thumb: THUMB, min: needed }, { timeout: 300000 })]).finally(() => { watching = false; });
 
     const taskId = await taskHandle.jsonValue();
+    collecting = true; // 开始取图：这时不让别的操作碰网页
+    await settingLock.catch(() => {}); // 取图前，正在进行的设置先做完
     const card = page.locator(`section[data-testid="mobile-task-card"][data-task-id="${taskId}"]`);
 
     // 缩略图可能先于任务最终完成出现；先确认图片已加载且任务卡连续稳定，再开始下载。
@@ -1484,6 +1491,7 @@ async function generateBatch(prompt, count, spec = null, resume = null) {
     console.log(`PixAI 任务 ${taskId} 完成：要 ${count} 张，网页出了 ${actual} 张`);
     return { taskId, files };
   } finally {
+    if (!parallel && genEpoch === epoch) { preparing = false; collecting = false; }
     if (slot) freeApiSlot();
     if (genEpoch === epoch) { activeGen = Math.max(0, activeGen - 1); generating = activeGen > 0; } // 被「重试」放弃的旧任务，不能把新任务的状态清掉
   }
@@ -1744,8 +1752,11 @@ app.post('/ai/settings', async (req, res) => {
   if (body.clearRef === true) want.clearRef = true;
   if (body.refStrength !== undefined) { if (!Number.isFinite(Number(body.refStrength))) return res.status(400).json({ ok: false, message: 'Strength 要是 0 到 1 的数' }); want.refStrength = Number(body.refStrength); }
   if (!Object.keys(want).length) return res.status(400).json({ ok: false, message: '没有要切的内容（model / count / ratio / size / swap）' });
-  if (isGenerating()) {
-    return res.status(409).json({ ok: false, generating: true, message: '反代正在出图，画完再切' });
+  // 出图时动这些设置不影响返图：只有准备（填提示词、点生成）和取图这两段要等一等，其余时间直接改
+  if (isGenerating() && pageDriven()) {
+    const until = Date.now() + 90000;
+    while (pageDriven() && isGenerating() && Date.now() < until) await sleep(300);
+    if (pageDriven() && isGenerating()) return res.status(409).json({ ok: false, generating: true, message: '反代正在取图，等几秒再改' });
   }
   const run = async () => {
     const page = await getPixAIPage();
@@ -2826,7 +2837,7 @@ app.post('/admin/forget', async (req, res) => {
 // 重试：出图卡死 / 账号在后端退出后页面没反应时用。放弃卡住的任务，关掉旧页面，重新打开生图页。不走 settingLock（它可能就是卡在那里）
 async function resetGeneration() {
   stage('放弃卡住的任务', 10);
-  genEpoch++; generating = false; activeGen = 0; genStart = 0; opening = null;
+  genEpoch++; generating = false; preparing = false; collecting = false; activeGen = 0; genStart = 0; opening = null;
   settingLock = Promise.resolve();
   batcher.runs.clear();
   const ctx = (await connectBrowser()).contexts()[0];
@@ -2918,7 +2929,7 @@ app.post('/admin/stop', (_req, res) => {
     parts.push('已强行停止：后台那一步如果还在动，会自己停在下一个检查点；网页若卡在中间状态，点「重试」重新打开生图页');
   }
   if (gen) {
-    genEpoch++; generating = false; activeGen = 0; genStart = 0;
+    genEpoch++; generating = false; preparing = false; collecting = false; activeGen = 0; genStart = 0;
     settingLock = Promise.resolve();
     batcher.runs.clear();
     parts.push('已放弃出图任务（页面里那张可能还在画）');

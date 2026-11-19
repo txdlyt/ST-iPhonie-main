@@ -3521,3 +3521,5 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .screen [inert]{pointer-events:none;user-select:none;-webkit-user-select:none}
 
 .px-ref{display:flex;gap:12px;align-items:flex-start}.px-ref img{width:72px;height:72px;object-fit:cover;border-radius:12px;flex:none}.px-ref-r{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}.px-ref-r input[type=range]{width:100%}
+
+.px-step{display:flex;align-items:center;gap:10px}.px-step b{min-width:1.6em;justify-content:center}.px-step button{min-width:36px;padding:4px 0;justify-content:center}
