@@ -1183,6 +1183,14 @@ export class TTSBackend {
                 return new Blob([await rowJSON({ thumb: work?.thumb ?? row.thumb, layers: work?.layers || [] })], { type: 'application/json' });
             },
         };
+        // A failure says which part it was and whether it was reading, writing or reading a file: "The object can not be found here." alone does not.
+        for (const [kind, label] of [['read', '读取'], ['write', '写入'], ['fileBlob', '读文件']]) {
+            const run = stores[kind];
+            if (run) stores[kind] = async (part, ...rest) => {
+                try { return await run(part, ...rest); }
+                catch (error) { if (error?.syncPart) throw error; throw Object.assign(Error(`${SYNC_PARTS[part] || part}（${part}，${label}）：${error?.message || error}`), { name: error?.name || 'Error', cause: error, syncPart: part }); }
+            };
+        }
         this.syncState = { ...this.syncState, busy: true, pending: false, error: '' };
         this.emit('sync', this.syncStatus());
         this.syncState.running = (async () => {
