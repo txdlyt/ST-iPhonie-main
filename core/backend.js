@@ -1184,23 +1184,34 @@ export class TTSBackend {
             },
         };
         // A failure says which part it was and whether it was reading, writing or reading a file: "The object can not be found here." alone does not.
+        let stage = '开始';
+        const named = (where, error) => error?.syncPart ? error : Object.assign(Error(`${where}：${error?.message || error}`), { name: error?.name || 'Error', cause: error, syncPart: where });
         for (const [kind, label] of [['read', '读取'], ['write', '写入'], ['fileBlob', '读文件']]) {
             const run = stores[kind];
             if (run) stores[kind] = async (part, ...rest) => {
+                const where = `${SYNC_PARTS[part] || part}（${part}，${label}）`;
+                stage = where;
                 try { return await run(part, ...rest); }
-                catch (error) { if (error?.syncPart) throw error; throw Object.assign(Error(`${SYNC_PARTS[part] || part}（${part}，${label}）：${error?.message || error}`), { name: error?.name || 'Error', cause: error, syncPart: part }); }
+                catch (error) { throw named(where, error); }
             };
         }
+        const tavern = this.syncFiles;
+        const files = new Proxy(tavern, { get: (target, key) => typeof target[key] === 'function' ? async (...args) => {
+            const where = `酒馆文件（${String(key)} ${typeof args[0] === 'string' ? args[0] : ''}）`;
+            stage = where;
+            try { return await target[key](...args); } catch (error) { throw named(where, error); }
+        } : target[key] });
         this.syncState = { ...this.syncState, busy: true, pending: false, error: '' };
         this.emit('sync', this.syncStatus());
         this.syncState.running = (async () => {
             try {
-                const result = await runSync({ stores, files: this.syncFiles, memory: this.#syncMemory(), readGone: () => this.#syncMemory().gone, readRestores: () => this.#syncMemory().restores,
+                const result = await runSync({ stores, files, memory: this.#syncMemory(), readGone: () => this.#syncMemory().gone, readRestores: () => this.#syncMemory().restores,
                     onRevived: (revived, gone, observedRevived) => { const current = this.#syncMemory(); this.#syncMemory({...current, revived: joinGone([current.revived, revived]), gone: joinGone([current.gone, gone]), observedRevived}); },
                     onPartApplied: (part, versions) => { const current = this.#syncMemory(); this.#syncMemory({...current, revived: joinGone([current.revived, {[part]: versions}])}); },
                     device: this.#device(), deviceName: deviceName || this.syncDeviceName || '' });
                 // Deletions made while it ran are kept too.
                 this.#syncMemory({ ...result.memory, gone: joinGone([result.memory.gone, this.#syncMemory().gone]), revived: joinGone([result.memory.revived, this.#syncMemory().revived]) });
+                stage = '同步完成后刷新';
                 const preferences = [...result.pulled, ...result.merged].includes('photos') ? await this.getPhone() : null;
                 this.syncState = { ...this.syncState, error: '', lastAt: Date.now(), remote: result.remote, lastResult: { pulled: result.pulled, pushed: result.pushed, merged: result.merged } };
                 // Only these refresh notifications came from syncing. User writes during network waits stay dirty.
@@ -1222,6 +1233,8 @@ export class TTSBackend {
                 if (preferences) this.emit('phone', { preferences });
                 return clone(result);
             } catch (error) {
+                // Where it stopped: an error that came from neither a store nor a tavern file (a plain "not found", say) is named by the step before it.
+                if (!error?.syncPart) error = named(`同步里的「${stage}」之后`, error);
                 this.syncState = { ...this.syncState, busy: false, error: error.message || '同步失败' };
                 throw error;
             } finally {
