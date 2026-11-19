@@ -6,11 +6,11 @@ import {whenVisible, onShown} from './storage-visible.js';
 const fail = (message, code = 'INVALID') => Object.assign(new Error(message), {code});
 
 export class AppStore {
-  #scope; #factory; #name; #db = null; #opening = null; #closed = false; #busy = 0; #unshown = null; #openAt = 0;
+  #scope; #factory; #name; #db = null; #opening = null; #closed = false; #busy = 0; #unshown = null;
   constructor(scope, {indexedDB = globalThis.indexedDB, database = 'st-iphonie-apps-v1'} = {}) {
     this.#scope = String(scope); this.#factory = indexedDB; this.#name = database;
     // Back from the background: nothing is using the connection, so it is dropped (it may be dead), and an open() still unanswered is let go.
-    this.#unshown = onShown(() => { if (this.#closed) return; if (!this.#busy && this.#db) { try { this.#db.close(); } catch {} this.#db = null; } if (this.#opening && !this.#db && Date.now() - this.#openAt > 40000) this.#opening = null; });
+    this.#unshown = onShown(() => { if (this.#closed) return; if (!this.#busy && this.#db) { try { this.#db.close(); } catch {} this.#db = null; } if (this.#opening && !this.#db) this.#opening = null; });
   }
   async #open() {
     if (this.#closed) throw fail('已关闭', 'CLOSED');
@@ -50,23 +50,19 @@ export class AppStore {
     try { return await this.#txAttempt(mode, work, again); } finally { this.#busy--; }
   }
   async #txAttempt(mode, work, again) {
-    const write = mode !== 'readonly', ms = write ? 60000 : 5000;
+    const write = mode !== 'readonly', ms = write ? 60000 : 8000;
     // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
-    // A slow open() (an upgrade) is waited for, up to 40 s, not started again every few seconds.
     let db;
-    if (!this.#opening) this.#openAt = Date.now();
-    try { db = await this.#guard(this.#open(), 40000); }
+    try { db = await this.#guard(this.#open(), ms); }
     catch (error) {
       if (error?.code !== 'STORAGE_TIMEOUT' || this.#closed) throw error;
-      this.#opening = null; this.#openAt = Date.now();
+      this.#opening = null;
       db = await this.#guard(this.#open(), ms).catch(e => { if (e?.code === 'STORAGE_TIMEOUT') this.#opening = null; throw e; });
     }
-    // The transaction is kept: one that got no answer is aborted, so it stops holding up the requests queued behind it.
-    let live = null;
     try {
       return await this.#guard(new Promise((resolve, reject) => {
         let result, own, tx;
-        try { tx = live = db.transaction('docs', mode); } catch (error) { reject(this.#closed ? fail('已关闭', 'CLOSED') : lostError(error)); return; }
+        try { tx = db.transaction('docs', mode); } catch (error) { reject(this.#closed ? fail('已关闭', 'CLOSED') : lostError(error)); return; }
         const store = tx.objectStore('docs');
         tx.oncomplete = () => resolve(result);
         tx.onabort = () => reject(own || (connectionLost(tx.error) ? lostError(tx.error) : fail(tx.error?.name === 'QuotaExceededError' ? '设备存储空间不足，没有保存' : '没有保存，请重试', 'STORAGE')));
@@ -74,7 +70,6 @@ export class AppStore {
       }), ms);
     } catch (error) {
       const timeout = error?.code === 'STORAGE_TIMEOUT';
-      if (timeout) { try { live?.abort(); } catch {} }
       if ((error?.code !== 'STORAGE_LOST' && !(timeout && !write)) || this.#closed) throw error;
       if (this.#db === db) { try { db.close(); } catch {} this.#db = null; }
       if (timeout) this.#opening = null;

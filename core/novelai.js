@@ -553,8 +553,7 @@ export class NovelAIClient {
     if (!reader) return unzipFirstImage(await response.arrayBuffer());
     const steps = body.parameters.steps;
     let held = new Uint8Array(0), final = null, failed = '', checked = false;
-    let seen = false, cut = '', total = 0, last = null, head = '';
-    const blank = byte => byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+    let seen = false, cut = '', total = 0, last = null;
     const kinds = new Map();
     for (;;) {
       let piece;
@@ -563,16 +562,11 @@ export class NovelAIClient {
       const {done, value} = piece;
       if (done) break;
       seen = true; total += value.length;
-      if (!head) head = Array.from(value.subarray(0, 8), byte => byte.toString(16).padStart(2, '0')).join(' ');
       const next = new Uint8Array(held.length + value.length);
       next.set(held); next.set(value, held.length); held = next;
       // A relay may answer the stream's address with the usual ZIP.
-      if (!checked) { let lead = 0; while (lead < held.length && blank(held[lead])) lead++; if (held.length >= lead + 2) { checked = true; if (held[lead] === 0x50 && held[lead + 1] === 0x4b) { for (;;) { const more = await reader.read(); if (more.done) break; const all = new Uint8Array(held.length + more.value.length); all.set(held); all.set(more.value, held.length); held = all; } return unzipFirstImage(held.buffer.slice(held.byteOffset, held.byteOffset + held.byteLength)); } if (lead) held = held.subarray(lead); } }
-      for (;;) {
-        if (!checked) break; // 还没判断出开头是 ZIP 还是帧：先别动数据（ZIP 的偏移量要把前导空白算进去）
-        // 帧与帧之间如果夹着空白保活字节也跳过（真正的帧长度第一个字节不可能是空白：那要 150MB 以上）
-        let skip = 0; while (skip < held.length && blank(held[skip])) skip++; if (skip) held = held.subarray(skip);
-        if (held.length < 4) break;
+      if (!checked && held.length >= 2) { checked = true; if (held[0] === 0x50 && held[1] === 0x4b) { for (;;) { const more = await reader.read(); if (more.done) break; const all = new Uint8Array(held.length + more.value.length); all.set(held); all.set(more.value, held.length); held = all; } return unzipFirstImage(held.buffer.slice(held.byteOffset, held.byteOffset + held.byteLength)); } }
+      while (held.length >= 4) {
         const size = new DataView(held.buffer, held.byteOffset, 4).getUint32(0);
         if (held.length < 4 + size) break;
         const frame = unpack(held.subarray(4, 4 + size));
@@ -593,8 +587,7 @@ export class NovelAIClient {
     // What did arrive, so that where it broke can be told: a frame cut in the middle (held bytes left) is a connection or relay that
     // gave up while the last picture was on its way; a clean end with only previews is a relay that does not send the last frame.
     const seenKinds = [...kinds].map(([k, n]) => `${k}×${n}`).join(' ') || '无';
-    const declared = held.length >= 4 ? new DataView(held.buffer, held.byteOffset, 4).getUint32(0) : 0;
-    const facts = `收到 ${total} 字节，帧：${seenKinds}${held.length ? `，最后一帧只到一半（剩 ${held.length} 字节${declared ? `，这一帧声明有 ${declared} 字节` : ''}）` : ''}，开头字节：${head || '无'}`;
+    const facts = `收到 ${total} 字节，帧：${seenKinds}${held.length ? `，最后一帧只到一半（剩 ${held.length} 字节）` : ''}`;
     throw Object.assign(Error(failed ? 'NovelAI 没画成：' + failed : `NovelAI 的流式回应中断了，没有收到最后的图（${facts}）`), {status: 0});
   }
   /** Tags that begin with what is being typed: [{tag, count}]. NovelAI asks no Anlas for this. */

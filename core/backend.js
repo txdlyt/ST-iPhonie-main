@@ -4,7 +4,7 @@ import { ownBlob } from './compat.js';
 import { normalizeNarration, NARRATOR } from './narration.js';
 import {RequestLog} from './request-log.js';
 import {PROMPT_BLOCKS, normalizePromptRules} from './prompt-rules.js';
-import { normalizeVn, spriteRequest, castFiles, moveCastFiles } from './vn.js';
+import { actorActions, normalizeVn, spriteRequest, castFiles, moveCastFiles } from './vn.js';
 import { currentModel } from './model-files.js';
 import { MomentStore } from './moments-store.js';
 import { isGoMusic, goUrl, goData, goSongs, goGroups, goCategories, goQrSession, goQrState, goLogins, goSongParams, readGoId, GO_PLATFORMS, GO_LOGINS, GO_LIMITS } from './go-music.js';
@@ -568,7 +568,7 @@ export class TTSBackend {
         return [...new Set(names)].filter(n => n && !isPlaceholderRole(n) && n !== NARRATOR).map(name => {
             const route = s.routes.find(r => r.name === name), key = route ? roleStore(route) : name;
             const entry = s.vn.cast[key];
-            return { name, key, appearance: route?.appearance || '', sprite: entry?.sprite || '', seed: entry?.seed ?? -1, alts: clone(entry?.alts || []), mix: !!entry?.mix, looks: clone(entry?.looks || {}), actions: clone(entry?.actions || []), outfits: clone(entry?.outfits || []), models: clone(entry?.models || []), useModel: entry?.useModel || '', model: clone(currentModel(entry)) };
+            return { name, key, appearance: route?.appearance || '', sprite: entry?.sprite || '', seed: entry?.seed ?? -1, alts: clone(entry?.alts || []), mix: !!entry?.mix, looks: clone(entry?.looks || {}), actions: clone(actorActions(s.vn,entry)), outfits: clone(entry?.outfits || []), models: clone(entry?.models || []), useModel: entry?.useModel || '', model: clone(currentModel(entry)) };
         });
     }
     updateGeneral(patch) {
@@ -1897,7 +1897,10 @@ export class TTSBackend {
         if (engine === 'pixai') {
             this.pixai.relay = draw.pixai.url; this.pixai.setKey(this.pixaiKey);
             const request = pixaiRequest({ prompt, negative, characters, params: p, batch, chunks: draw.chunks || [], pixai: draw.pixai, ref: draw.pixai.mode === 'direct' ? this.pixaiRef : null });
-            const blob = await this.pixai.generate(request.body, signal);
+            const made = await this.pixai.generate(request.body, signal);
+            // Kept smaller from the start, by the same rule as 压缩旧图 (a PNG becomes WebP, only when it comes out clearly smaller): the album
+            // no longer piles up big PNGs. Anything else, or a picture that will not compress, stays as it came.
+            const blob = await packPicture(made).catch(() => null) || made;
             return { blob, seed: request.seed, params: request.params, prompt: request.body.input };
         }
         if (engine === 'gpt') {
@@ -4282,7 +4285,7 @@ export class TTSBackend {
             postMoment: ({ text, photoId } = {}) => this.momentsMutate(async () => (await this.moments.add([{ author: 'me', source: 'me', text, photoId, ...this.spaceTag() }]))[0]),
             likeMoment: (id, on = true) => this.momentsMutate(() => this.moments.like(id, 'me', on)),
             // One of the pictures drawn for a post becomes the one shown.
-            momentsPickImage: (id, photoId) => this.momentsMutate(async () => { const post = await this.moments.get(id); if (!post || ![post.photoId, ...(post.imageVersions || [])].includes(photoId)) throw Error('这张配图已经不在了'); return this.moments.setImage(id, { photoId }); }),
+            momentsPickImage: (id, photoId, replace=false) => this.momentsMutate(async () => { const post = await this.moments.get(id); if (replace && post && await this.library.getPhoto(photoId)) return this.moments.setImage(id,{photoId,imageState:'done',imageVersions:[...new Set([...(post.imageVersions||[]),post.photoId,photoId].filter(Boolean))]}); if (!post || ![post.photoId, ...(post.imageVersions || [])].includes(photoId)) throw Error('这张配图已经不在了'); return this.moments.setImage(id, { photoId }); }),
             commentMoment: (id, { text, to } = {}) => this.momentsMutate(() => this.moments.comment(id, { from: 'me', text, to })),
             deleteMoment: id => this.momentsMutate(async () => { const done = await this.moments.remove(id); this.noteGone('moments', [id]); return done; }), deleteMomentComment: (id, commentId) => this.momentsMutate(async () => { const post = await this.moments.removeComment(id, commentId); this.noteGone('moments', [`${id}/${commentId}`]); return post; }),
             clearMoments: () => this.momentsMutate(() => this.dropping('moments', () => this.moments.list(), () => this.clearHere(() => this.moments.list(), id => this.moments.remove(id), () => this.moments.clear()))),

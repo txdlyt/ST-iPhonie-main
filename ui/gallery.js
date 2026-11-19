@@ -35,8 +35,7 @@ export function galleryApp(ctx) {
 
   // ---------- what there is ----------
   async function read() {
-    // 相簿 are kept in another store than the photos: when only that one does not answer, the photos still show (without 相簿 and hearts).
-    const [photos, lists] = await Promise.all([api.listPhotos(), api.listAlbums().catch(() => [])]);
+    const [photos, lists] = await Promise.all([api.listPhotos(), api.listAlbums()]);
     rows = byNewest(photos);
     byId = new Map(rows.map(r => [r.id, r]));
     sources = null;
@@ -90,7 +89,7 @@ export function galleryApp(ctx) {
     // A store the browser hangs on (iPhone WebKit) used to leave this page blank with nothing said: now it says so, and 重新读取 asks again.
     try {
       let timer;
-      try { await Promise.race([read(), new Promise((_, no) => { timer = setTimeout(() => no(Error('相册读取超时（浏览器的本地存储没有回应）')), 60000); })]); }
+      try { await Promise.race([read(), new Promise((_, no) => { timer = setTimeout(() => no(Error('相册读取超时（浏览器的本地存储没有回应）')), 20000); })]); }
       finally { clearTimeout(timer); }
     } catch (error) {
       if (v.disposed || ticket !== epoch) return;

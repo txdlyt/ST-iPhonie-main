@@ -1,3 +1,4 @@
+import {replacePicture,storyPickerContext} from './ui/replace-picture.js';
 import {replyBody, replyRevision} from './core/reply-revision.js';
 import {storyScope, mapStory} from './core/story-scope.js';
 // In-chat pictures: fills the placeholders left by <img>…</img> tags, generates them with NovelAI,
@@ -20,7 +21,7 @@ import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
 import {plainStory, activeChatPreset} from './core/chat.js';
 import {worldInfoFor, loreOptions} from './host-lore.js';
-import {voicePlanRequest, combinedRequest, insertVoiced} from './core/voice-plan.js';
+import {voicePlanRequest, combinedRequest, voicedRows, insertVoiced} from './core/voice-plan.js';
 import {withPhone, phoneSection} from './core/chat.js';
 import {TIER_NAMES, NAI_MODEL_NAMES} from './core/novelai.js';
 
@@ -93,7 +94,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const base64 = await backend.base64(blob);
     const response = await fetch('/api/images/upload', {
       method: 'POST', headers: ctx.getRequestHeaders(),
-      body: JSON.stringify({image: base64, format: 'png', ch_name: folder, filename: String(name).replace(/\./g, '_')})
+      body: JSON.stringify({image: base64, format: ({'image/jpeg':'jpg','image/webp':'webp'})[blob.type] || 'png', ch_name: folder, filename: String(name).replace(/\./g, '_')})
     });
     if (!response.ok) throw Error('图片已生成，但上传到酒馆失败（' + response.status + '）');
     return tavernPicture((await response.json()).path);
@@ -352,9 +353,11 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
         current = entry.revision.target(); result = assemble(current.mes);
       }
       if (!result.voiced && !result.pictured && !sent && wantPictures && !wantVoice && noneOk(s.draw) && !force) { pendingAnswers.delete(id); notice('这条回复没有值得画的画面'); return {voiced: 0, pictured: 0}; }
+      const candidates=wantVoice ? voicedRows(reply,entry.format).length : 0;
+      const quoted=wantVoice ? (storyScope(current.mes,entry.scope).masked.match(/[“「『"][^”」』"\n]+[”」』"]/g) || []).length : 0;
       if (!result.voiced && !result.pictured && !sent) {
         pendingAnswers.delete(id);
-        stage(id, '模型已返回，但未匹配到正文台词或画面', {voiced: 0, pictured: 0}, 'warn');
+        stage(id, wantVoice ? (candidates ? '未匹配到正文台词：配音行有效，但在选定正文范围内找不到原句' : '模型返回中没有符合当前预设的配音行') : '未匹配到正文画面', {quoted,candidates,voiced: 0, pictured: 0}, 'warn');
         throw Error(wantVoice ? '模型已返回，但这次没有匹配上正文台词，可用「给这层楼配音」重试；具体原因见日志' : '这次没有挑出画面，可以用「给这层楼生图」重试');
       }
       // Re-read the whole current reply: ignored panels belong to other tools and are never replaced by our snapshot.
@@ -376,7 +379,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
         throw Error('配音结果已保留，但正文没保存成功；用「给这层楼配音」可重试补写：' + error.message);
       }
       pendingAnswers.delete(id);
-      stage(id, '已写入并保存正文', {voiced, pictured});
+      stage(id, '已写入并保存正文', {quoted,candidates,voiced, pictured});
       const now = entry.revision.current();
       if (now) {
         redrawMessage(id, now); scheduleRender();
@@ -416,7 +419,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
    * saved and, when automatic drawing is on and free, all its pictures are queued.
    */
   const afterReplies = new WeakMap(), replyTasks = new Map();
-  function prepareReply(id, {retry = false} = {}) {
+  function prepareReply(id, {retry = false, canDraw = () => true} = {}) {
     const ctx = context(), message = ctx.chat[id], s = settings(), chat = ctx.getCurrentChatId?.() ?? ctx.chatId;
     if (!message || message.is_user || message.is_system) return Promise.resolve();
     const sibling = replyTasks.get(id);
@@ -429,7 +432,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     task.promise = Promise.resolve().then(async () => {
       if (context().chat[id] !== message || message.mes !== task.raw || message.swipe_id !== task.swipe || (context().getCurrentChatId?.() ?? context().chatId) !== chat) return;
       const wantVoice = !!voice?.wanted() && !voice.has(storyScope(message.mes, s.narration).masked);
-      const wantPictures = s.draw.enabled && drawSeparate(s.draw) && !parsePictures(message.mes).length;
+      const wantPictures = canDraw() && s.draw.enabled && drawSeparate(s.draw) && !parsePictures(message.mes).length;
       if (!storyScope(message.mes, s.narration).masked.replace(/<[^>]+>/g, '').trim()) return;
       const result = wantVoice || wantPictures ? await planReply(id, {voiced: wantVoice, pictured: wantPictures, phoned: true}) : {written: true};
       task.state = result.written ? 'written' : 'skipped';
@@ -438,14 +441,15 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     }).catch(error => { task.state = 'failed'; throw error; }).finally(() => { task.running = false; });
     return task.promise;
   }
-  async function autoPictures(id) {
+  async function autoPictures(id, canDraw = () => true) {
+    if (!canDraw()) return;
     const s = settings(), ctx = context(), message = ctx.chat[id], chat = ctx.getCurrentChatId?.() ?? ctx.chatId, swipe = message?.swipe_id;
     if (!message || message.is_user || message.is_system) return;
     const current = () => {
       const now = context();
       return now.chat[id] === message && message.swipe_id === swipe && (now.getCurrentChatId?.() ?? now.chatId) === chat;
     };
-    await prepareReply(id);
+    await prepareReply(id,{canDraw});
     if (!current()) return;
     if (!s.draw.enabled) return;
     registerAppearances(message);
@@ -462,7 +466,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       if (backend.drawQuote?.().free === null) notice('自动出图没有执行：暂时读不到订阅信息，确认不了免不免费。可以点楼层菜单里的「给这层楼生图」手动画');
       scheduleRender(); return;
     }
-    if (!current() || !settings().draw.enabled || !settings().draw.auto) return;
+    if (!canDraw() || !current() || !settings().draw.enabled || !settings().draw.auto) return;
     const remaining = new Set(parsePictures(message.mes).map(tag => tag.hash));
     await Promise.all(tags.filter(tag => remaining.has(tag.hash) && !stored(message,tag.hash)).map(tag => generate(id, tag, {permission})));
   }
@@ -588,10 +592,11 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       scheduleRender();
     }
     if (action === 'zoom' && pic) {
+      let viewer; const swipe=message.swipe_id;
       const list = versionsOf(stored(message, tag.hash));
       // Paging in the viewer also changes which version the chat shows.
       const pick = i => { if (i !== shown(message, tag.hash)?.index) { keep(message, tag.hash, list, i); saveSoon(); scheduleRender(); } };
-      Promise.all([viewerCode(), Promise.resolve(backend.favoritePhotoIds?.()).catch(() => null)]).then(([{openImageViewer}, ids]) => (hearts = new Set(ids || []), openImageViewer({doc: document, from: source?.querySelector?.('img') || source,
+      Promise.all([viewerCode(), Promise.resolve(backend.favoritePhotoIds?.()).catch(() => null)]).then(([{openImageViewer}, ids]) => (hearts = new Set(ids || []), viewer=openImageViewer({doc: document, from: source?.querySelector?.('img') || source,
         gallery: {items: list.map(v => ({src: v.url, alt: tag.prompt, info: pictureInfo(v, tag)})), index: pic.index, onIndex: pick},
         actions: [
           {label: i => list[i].photoId && hearts.has(list[i].photoId) ? '♥ 已收藏' : '♡ 收藏', run: i => toggleHeart(message, tag, list, i).then(() => false, error => { notice(error.message); return false; })},
@@ -600,7 +605,26 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
           {label: '改提示词再画', run: () => rewrite(id, tag).then(ok => ok ? undefined : false, error => { notice(error.message); return false; })},
           {label: '在绘图中打开', run: () => act('open', id, message, tag)},
           {label: '收起', run: () => act('fold', id, message, tag)},
-          {label: '删除这版', danger: true, run: i => { pick(i); return remove(id, tag).then(done => done ? undefined : false, error => { notice(error.message); return false; }); }}
+          {label: '删除这版', danger: true, run: i => { pick(i); return remove(id, tag).then(done => done ? undefined : false, error => { notice(error.message); return false; }); }},
+          {label:'替换图片',run:()=>replacePicture(storyPickerContext(document,notice),backend.api(),()=>viewer.close(),async photoId=>{
+            const photo=await backend.library.getPhoto(photoId);
+            if(!photo?.blob) throw Error('图片已不存在');
+            const url=await upload(photo.blob,'st-iphonie-'+Date.now());
+            if(context().chat[id]!==message || message.swipe_id!==swipe || !parsePictures(message.mes).some(t=>t.hash===tag.hash)) {
+              await removeFile(url).catch(()=>{});
+              throw Error('正文已变化，请重新打开插图');
+            }
+            const versions=[...versionsOf(stored(message,tag.hash)),{url,photoId,at:Date.now(),prompt:tag.prompt}];
+            const previous=stored(message,tag.hash);
+            keep(message,tag.hash,versions,versions.length-1);
+            const changed=stored(message,tag.hash);
+            try { await context().saveChat(); }
+            catch(error) {
+              if(stored(message,tag.hash)===changed) message.extra.sttts_pics[tag.hash]=previous;
+              throw error;
+            }
+            scheduleRender();
+          }).run()}
         ]}))).catch(error => notice(error.message));
     }
     if (action === 'delete') remove(id, tag).catch(error => notice(error.message));
