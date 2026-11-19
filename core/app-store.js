@@ -2,11 +2,16 @@
 // this browser (IndexedDB) and scoped to the tavern account like the other local data. Each document is {id, kind, at, ...}; the apps check their own
 // fields (core/forum.js, core/peek.js) before anything is written.
 import {connectionLost, lostError, breath} from './idb.js';
+import {whenVisible, onShown} from './storage-visible.js';
 const fail = (message, code = 'INVALID') => Object.assign(new Error(message), {code});
 
 export class AppStore {
-  #scope; #factory; #name; #db = null; #opening = null; #closed = false;
-  constructor(scope, {indexedDB = globalThis.indexedDB, database = 'st-iphonie-apps-v1'} = {}) { this.#scope = String(scope); this.#factory = indexedDB; this.#name = database; }
+  #scope; #factory; #name; #db = null; #opening = null; #closed = false; #busy = 0; #unshown = null;
+  constructor(scope, {indexedDB = globalThis.indexedDB, database = 'st-iphonie-apps-v1'} = {}) {
+    this.#scope = String(scope); this.#factory = indexedDB; this.#name = database;
+    // Back from the background: nothing is using the connection, so it is dropped (it may be dead), and an open() still unanswered is let go.
+    this.#unshown = onShown(() => { if (this.#closed) return; if (!this.#busy && this.#db) { try { this.#db.close(); } catch {} this.#db = null; } if (this.#opening && !this.#db) this.#opening = null; });
+  }
   async #open() {
     if (this.#closed) throw fail('已关闭', 'CLOSED');
     if (this.#db) return this.#db;
@@ -39,7 +44,12 @@ export class AppStore {
     return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(fail('本地数据没有回应（浏览器的存储卡住了），请刷新页面后再试', 'STORAGE_TIMEOUT')), ms); })]).finally(() => clearTimeout(timer));
   }
   // A read that gets no answer in 8 s is asked again on a fresh connection; a write (60 s) is not: it may still go through.
-  async #tx(mode, work, again = true) {
+  async #tx(mode, work, again = 2) {
+    await whenVisible();
+    this.#busy++;
+    try { return await this.#txAttempt(mode, work, again); } finally { this.#busy--; }
+  }
+  async #txAttempt(mode, work, again) {
     const write = mode !== 'readonly', ms = write ? 60000 : 8000;
     // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
     let db;
@@ -63,7 +73,7 @@ export class AppStore {
       if ((error?.code !== 'STORAGE_LOST' && !(timeout && !write)) || this.#closed) throw error;
       if (this.#db === db) { try { db.close(); } catch {} this.#db = null; }
       if (timeout) this.#opening = null;
-      if (again) { await breath(); return this.#tx(mode, work, false); }
+      if (again > 0) { await breath(); await whenVisible(); return this.#txAttempt(mode, work, again - 1); }
       throw error;
     }
   }
@@ -188,5 +198,5 @@ export class AppStore {
   async remove(id) { return this.#tx('readwrite', (store, done) => { store.delete([this.#scope, String(id)]); done(true); }); }
   async removeMany(ids) { return this.#tx('readwrite', (store, done) => { for (const id of ids) store.delete([this.#scope, String(id)]); done(true); }); }
   async clear(kind) { return this.#tx('readwrite', (store, done) => this.#all(store, rows => { const gone = rows.filter(r => !kind || r.kind === kind); for (const r of gone) store.delete([this.#scope, r.id]); done(gone.length); })); }
-  close() { this.#closed = true; this.#db?.close(); this.#db = null; }
+  close() { this.#closed = true; this.#unshown?.(); this.#db?.close(); this.#db = null; }
 }

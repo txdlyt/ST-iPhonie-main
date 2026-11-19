@@ -106,12 +106,15 @@ function friendly(error){
  if(error?.name==='AbortError')return fail('保存被中止，内容没有更新，请重试','STORAGE_ABORTED');
  return fail('无法读写本地资料，请检查浏览器的存储权限后重试','STORAGE_UNAVAILABLE');
 }
+import {whenVisible,onShown} from './storage-visible.js';
 export class LocalLibrary {
- #scope; #factory; #now; #id; #limit; #keep; #db=null; #opening=null; #closed=false;
+ #scope; #factory; #now; #id; #limit; #keep; #db=null; #opening=null; #closed=false; #busy=0; #unshown=null;
  // limit(): the bytes it may hold (core/storage-budget.js; LIBRARY_LIMITS.total when not told); keep(): asks the browser to keep it.
  constructor(scope,{indexedDB=globalThis.indexedDB,now=Date.now,id=()=>globalThis.crypto.randomUUID(),limit=async()=>LIBRARY_LIMITS.total,keep=()=>{}}={}){
   this.#scope=string(scope,'账户编号',512,true);this.#factory=indexedDB;this.#now=now;this.#id=id;this.#limit=limit;this.#keep=keep;
   if(typeof now!=='function'||typeof id!=='function')throw fail('本地资料配置无效');
+  // Back from the background: nothing is using the connection, so it is dropped (it may be dead), and an open() still unanswered is let go.
+  this.#unshown=onShown(()=>{if(this.#closed)return;if(!this.#busy&&this.#db){try{this.#db.close();}catch{}this.#db=null;}if(this.#opening&&!this.#db)this.#opening=null;});
  }
  #time(){const n=this.#now();if(!Number.isFinite(n)||n<0)throw fail('设备时间无效');return n;}
  #key(id){return [this.#scope,identifier(id)];}
@@ -162,8 +165,13 @@ export class LocalLibrary {
  // A connection that neither answers nor fails (the same WebKit trouble, the request just hangs) used to leave the 相册 and 设置
  // pages blank for good: now a read that gets no answer in 8 s is asked again on a fresh connection; a write that gets none in
  // 60 s fails with a message (it is not asked again: it may still go through, and a second copy would be a second photo).
- async #run(work,again=true,write=false){
+ async #run(work,again=2,write=false){
   const ms=write?60000:8000;
+  await whenVisible();
+  this.#busy++;
+  try{return await this.#attempt(work,again,write,ms);}finally{this.#busy--;}
+ }
+ async #attempt(work,again,write,ms){
   // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
   let db;
   try{db=await this.#guard(this.#open(),ms);}
@@ -174,7 +182,7 @@ export class LocalLibrary {
    if((error?.code!=='STORAGE_LOST'&&!(timeout&&!write))||this.#closed)throw error;
    if(this.#db===db){try{db.close();}catch{}this.#db=null;}
    if(timeout)this.#opening=null;
-   if(again){await breath();return this.#run(work,false,write);}
+   if(again>0){await breath();await whenVisible();return this.#attempt(work,again-1,write,ms);}
    throw error;
   }
  }
@@ -456,5 +464,5 @@ export class LocalLibrary {
    tx.oncomplete=()=>resolve(structuredClone(result));tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
   }));
  }
- async close(){this.#closed=true;const db=this.#db||await this.#opening?.catch(()=>null);db?.close();this.#db=null;}
+ async close(){this.#closed=true;this.#unshown?.();const db=this.#db||await this.#opening?.catch(()=>null);db?.close();this.#db=null;}
 }
