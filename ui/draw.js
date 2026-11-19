@@ -644,6 +644,7 @@ export function drawApp(ctx) {
     if (!box) return;
     let img = box.querySelector('.canvas-preview');
     if (!img) { img = ctx.doc.createElement('img'); img.className = 'canvas-preview'; img.alt = ''; box.append(img); }
+    box.classList.add('has-preview'); // the frosted cover of 正在画 steps aside: each step is seen as it is, not through glass
     const url = ctx.win.URL.createObjectURL(blob);
     img.src = url;
     if (previewUrl) ctx.win.URL.revokeObjectURL(previewUrl);
