@@ -53,7 +53,9 @@ export class DrawQueue {
   /** Adds a job; the same key joins the job already in line. task(signal) makes the request. */
   add({key = crypto.randomUUID(), label = '', task, free = false, lane = 'nai'}) {
     const existing = this.jobs.find(j => j.key === key);
-    if (existing) return existing.promise;
+    // One that has already failed or finished (it only has not left the line yet) is not joined: asking again right away must draw anew.
+    if (existing && !existing.settled) return existing.promise;
+    if (existing) this.jobs.splice(this.jobs.indexOf(existing), 1);
     const job = {key, label, task, free, lane, state: 'waiting', attempt: 0, until: 0, controller: new AbortController()};
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     this.jobs.push(job);

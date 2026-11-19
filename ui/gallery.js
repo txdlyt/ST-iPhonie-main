@@ -94,7 +94,7 @@ export function galleryApp(ctx) {
     } catch (error) {
       if (v.disposed || ticket !== epoch) return;
       drawn = '';
-      v.draw(heading('相册', '', 'Album') + empty('相册读不出来', `${error.message || '读取失败'}。照片还在，多半是浏览器的本地存储暂时卡住了：点下面重试，不行就刷新页面。`, 'image') + `<div class="actions">${btn('reload-album', '重新读取', 'primary')}</div>`);
+      v.draw(heading('相册', '', 'Album') + empty('相册读不出来', `${error.message || '读取失败'}。照片还在，多半是浏览器的本地存储暂时卡住了：点下面重试，不行就刷新页面。`, 'image') + `<div class="actions">${btn('reload-album', '重新读取', 'primary')}${btn('reload-page', '刷新页面')}</div>`);
       return;
     }
     if (v.disposed || ticket !== epoch) return;
@@ -450,6 +450,7 @@ export function galleryApp(ctx) {
         if (selecting) { const id = el.dataset.id; if (selecting.has(id)) selecting.delete(id); else selecting.add(id); syncSelection(); break; }
         openPhoto(el.dataset.id, (el.querySelector('img') || el).getBoundingClientRect()); break;
       case 'reload-album': await render(); break;
+      case 'reload-page': globalThis.location?.reload(); break; // a store the browser hangs on often only answers again after the page is reloaded
       case 'album-tab': if (tab !== el.dataset.tab) { tab = el.dataset.tab; selecting = null; await render(); v.root.scrollTop = 0; } break;
       case 'open-album': place = {kind: 'album', id: el.dataset.albumId}; selecting = null; await render(); v.root.scrollTop = 0; break;
       case 'open-source': place = {kind: 'source', key: el.dataset.key}; selecting = null; await render(); v.root.scrollTop = 0; break;

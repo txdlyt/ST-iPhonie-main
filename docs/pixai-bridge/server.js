@@ -71,6 +71,7 @@ const isGenerating = () => generating && Date.now() - genStart < 8 * 60 * 1000;
 async function connectBrowser() {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.connectOverCDP(CONFIG.cdp);
+    for (const ctx of browser.contexts()) if (!ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); }
   }
   return browser;
 }
@@ -139,6 +140,8 @@ async function openGeneratorPage({ claim = false } = {}) {
     ?? pages.find(p => p.url().includes('pixai.art'))
     ?? await ctx.newPage();
 
+  // 必须在导航前安装监听：PixAI 初始化时会发出带鉴权头的 API 请求，等页面加载完再监听可能已经错过。
+  watchApiHeaders(page);
   console.log(`未找到生图页，正在打开：${CONFIG.pixaiUrl}`);
   await safeGoto(page, CONFIG.pixaiUrl);
 
@@ -157,7 +160,6 @@ async function openGeneratorPage({ claim = false } = {}) {
   // 切换账号时才等弹窗并签到；平时（启动、重试）只处理已经弹出来的
   if (claim) await claimDailyIfShown(page); else await dismissDailyReward(page);
   // 只打开生图页：不再自动选模型、比例（模型、LoRA、比例由你在网页上定，或由插件出图时指定）
-  watchApiHeaders(page);
   return page;
 }
 
@@ -939,12 +941,17 @@ async function fillPrompt(page, editor, prompt) {
   await sleep(150);
   await page.keyboard.insertText(prompt);
   await sleep(250);
-  const ok = await editor.evaluate((root, args) => {
+  const info = await editor.evaluate((root, args) => {
     const plain = value => String(value || '').replace(/\s+/g, '');
-    const text = plain(root.innerText);
-    return root.querySelectorAll(args.sel).length === args.chips && text.endsWith(plain(args.prompt).slice(-40)) && text.length <= plain(args.prompt).length + 200;
-  }, { sel: chipSel, chips, prompt });
-  if (!ok) throw new Error('输入框里有 LoRA 触发词芯片，但没能只替换芯片后面的提示词（网页可能改版了）');
+    const text = plain(root.innerText), want = plain(args.prompt), tail = want.slice(-40);
+    const chipLen = Array.from(root.querySelectorAll(args.sel)).reduce((n, el) => n + plain(el.innerText || el.textContent).length, 0);
+    return { chipsNow: root.querySelectorAll(args.sel).length, hasTail: text.includes(tail), textLen: text.length, wantLen: want.length, chipLen, editorTail: text.slice(-60) };
+  }, { sel: chipSel, prompt });
+  const ok = info.chipsNow === chips && info.hasTail && info.textLen <= info.wantLen + info.chipLen + 200;
+  if (!ok) {
+    console.warn('[提示词写入诊断]', JSON.stringify({ chipsBefore: chips, ...info }));
+    throw new Error('输入框里有 LoRA 触发词芯片，但没能只替换芯片后面的提示词（网页可能改版了）');
+  }
 }
 
 let settingLock = Promise.resolve();
@@ -961,20 +968,42 @@ const live = { headers: null, at: 0 };
 const watched = new WeakSet();
 const API_KEEP = ['authorization', 'x-u3t', 'x-browser-id', 'x-pricing-script-version'];
 
-/** 记下页面发给 api.pixai.art 的请求头（令牌、x-u3t 每小时会变，页面自己会更新，我们每次都用最新的）。 */
+/** 记下页面发给 pixai.art 的 API 请求头。监听挂在整个 context 上（页面、worker、后开的标签都收得到），不只挂单个 page。 */
+const ctxWatched = new WeakSet();
+const seenPaths = new Set();
+async function onApiRequest(request) {
+  try {
+    const url = request.url();
+    if (!url.startsWith(API.base + '/')) return; // 只看 API 请求（图片、脚本等不用读头）
+    const h = await request.allHeaders();
+    const picked = {};
+    for (const key of API_KEEP) if (h[key]) picked[key] = h[key];
+    if (!picked.authorization) {
+      const u = new URL(url), tag = u.host + u.pathname;
+      if (u.host.startsWith('api.') && !seenPaths.has(tag) && seenPaths.size < 20) {
+        seenPaths.add(tag);
+        console.log(`[抓头诊断] ${request.method()} ${tag} 没有 authorization；带的头：${Object.keys(h).join(',')}`);
+      }
+      return;
+    }
+    const fresh = !live.headers || Date.now() - live.at > 5 * 60 * 1000;
+    live.headers = picked;
+    live.at = Date.now();
+    if (fresh) console.log('已捕获 PixAI API 鉴权请求头'); // 页面每几秒就会发请求，只在第一次或隔了很久才记一行
+  } catch (error) {
+    console.warn('读取 PixAI API 请求头失败：', error.message);
+  }
+}
 function watchApiHeaders(page) {
-  if (!page || watched.has(page)) return;
-  watched.add(page);
-  page.on('request', request => {
-    try {
-      if (!request.url().startsWith(API.base + '/')) return;
-      const h = request.headers();
-      if (!h.authorization) return;
-      const picked = {};
-      for (const key of API_KEEP) if (h[key]) picked[key] = h[key];
-      live.headers = picked; live.at = Date.now();
-    } catch { /* 抄不到就算了，会退回网页 */ }
-  });
+  const ctx = page?.context?.();
+  if (ctx && !ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); }
+}
+async function nudgePage(page) {
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('online'));
+  }).catch(() => {});
 }
 // ── 网页设置记录：用户在网页上把模型、LoRA、Recipe、步数……都设好，在插件里点「记录」，再到网页上点一次「生成」，
 // 反代把页面发出的这条请求拦下来记成一条记录（不真的提交、不扣积分）。可以记好几条，API 模式的「网页设置」来源选其中一条，
@@ -1122,8 +1151,11 @@ async function apiCall(page, method, path, body) {
 }
 
 async function apiGenerate(page, prompt, count, spec = null, resume = null) {
-  // 刚启动或页面刚打开时还没抄到头：页面自己每几秒会发请求，等一会儿
-  for (let i = 0; i < 30 && !apiReady(); i++) await sleep(500);
+  // 不主动刷新 PixAI 页面：只等待当前页面自然产生鉴权请求。
+  // 如果仍未捕获到请求头，由上层按原有逻辑报错或回退网页模式。
+  for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500);
+  if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500); }
+  if (!apiReady()) throw apiFail('当前 PixAI 页面尚未产生可用的 API 鉴权请求；请在已登录的生图页正常操作一次后重试（本程序不会自动刷新页面；日志里的「抓头诊断」会说明看到了什么请求）', true);
   // 插件在 API 模式下把模型、宽高、LoRA 权重都带在请求里：不碰网页、不用页面上选着的东西
   const fromPage = spec?.source === 'page';
   const id = fromPage ? null : spec?.model || await currentModelId(page);
@@ -2550,16 +2582,6 @@ app.post('/admin/refresh', async (_req, res) => {
 });
 
 // 管理页切模型：和 POST /ai/settings 里的 model 是同一套动作（同样排队、出图时不让切）
-app.post('/admin/model', async (req, res) => {
-  const id = String((req.body || {}).model || '').trim();
-  if (!MODEL_PRESETS.some(item => item.id === id)) return res.status(400).json({ ok: false, message: '没有这个模型预设' });
-  if (isGenerating()) return res.status(409).json({ ok: false, message: '反代正在出图，画完再切' });
-  const job = settingLock.then(async () => { const page = await getPixAIPage(); await chooseModelPreset(page, id); });
-  settingLock = holdLock(job);
-  try { await job; res.json({ ok: true }); }
-  catch (error) { console.warn('管理页切换模型失败：', error.message); res.status(502).json({ ok: false, message: '没能切换模型：' + error.message }); }
-});
-
 app.get('/admin/screenshot', async (_req, res) => {
   try {
     const ctx = (await connectBrowser()).contexts()[0];
