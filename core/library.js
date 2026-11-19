@@ -108,13 +108,13 @@ function friendly(error){
 }
 import {whenVisible,onShown} from './storage-visible.js';
 export class LocalLibrary {
- #scope; #factory; #now; #id; #limit; #keep; #db=null; #opening=null; #closed=false; #busy=0; #unshown=null;
+ #scope; #factory; #now; #id; #limit; #keep; #db=null; #opening=null; #closed=false; #busy=0; #unshown=null; #lastLists=new Map(); #openAt=0;
  // limit(): the bytes it may hold (core/storage-budget.js; LIBRARY_LIMITS.total when not told); keep(): asks the browser to keep it.
  constructor(scope,{indexedDB=globalThis.indexedDB,now=Date.now,id=()=>globalThis.crypto.randomUUID(),limit=async()=>LIBRARY_LIMITS.total,keep=()=>{}}={}){
   this.#scope=string(scope,'账户编号',512,true);this.#factory=indexedDB;this.#now=now;this.#id=id;this.#limit=limit;this.#keep=keep;
   if(typeof now!=='function'||typeof id!=='function')throw fail('本地资料配置无效');
   // Back from the background: nothing is using the connection, so it is dropped (it may be dead), and an open() still unanswered is let go.
-  this.#unshown=onShown(()=>{if(this.#closed)return;if(!this.#busy&&this.#db){try{this.#db.close();}catch{}this.#db=null;}if(this.#opening&&!this.#db)this.#opening=null;});
+  this.#unshown=onShown(()=>{if(this.#closed)return;if(!this.#busy&&this.#db){try{this.#db.close();}catch{}this.#db=null;}if(this.#opening&&!this.#db&&Date.now()-this.#openAt>40000)this.#opening=null;});
  }
  #time(){const n=this.#now();if(!Number.isFinite(n)||n<0)throw fail('设备时间无效');return n;}
  #key(id){return [this.#scope,identifier(id)];}
@@ -163,22 +163,29 @@ export class LocalLibrary {
  }
  // A dropped connection (iPhone Safari after the page sat in the background) is reopened once; nothing was written.
  // A connection that neither answers nor fails (the same WebKit trouble, the request just hangs) used to leave the 相册 and 设置
- // pages blank for good: now a read that gets no answer in 8 s is asked again on a fresh connection; a write that gets none in
+ // pages blank for good: now a read that gets no answer in 5 s is asked again on a fresh connection; a write that gets none in
  // 60 s fails with a message (it is not asked again: it may still go through, and a second copy would be a second photo).
  async #run(work,again=2,write=false){
-  const ms=write?60000:8000;
+  const ms=write?60000:5000;
   await whenVisible();
   this.#busy++;
   try{return await this.#attempt(work,again,write,ms);}finally{this.#busy--;}
  }
  async #attempt(work,again,write,ms){
   // An open() that never answers would stay as the shared #opening for every later call: it is dropped, and asked once more.
+  // Opening can take a while (the first open after an update upgrades the database, row by row): it is waited for, up to 40 s, and
+  // not started again every few seconds, which would only begin the upgrade over and over.
   let db;
-  try{db=await this.#guard(this.#open(),ms);}
-  catch(error){if(error?.code!=='STORAGE_TIMEOUT'||this.#closed)throw error;this.#opening=null;db=await this.#guard(this.#open(),ms).catch(e=>{if(e?.code==='STORAGE_TIMEOUT')this.#opening=null;throw e;});}
-  try{return await this.#guard(work(db),ms);}
+  if(!this.#opening)this.#openAt=Date.now();
+  try{db=await this.#guard(this.#open(),40000);}
+  catch(error){if(error?.code!=='STORAGE_TIMEOUT'||this.#closed)throw error;this.#opening=null;this.#openAt=Date.now();db=await this.#guard(this.#open(),ms).catch(e=>{if(e?.code==='STORAGE_TIMEOUT')this.#opening=null;throw e;});}
+  // Every transaction a request makes is held here: one that got no answer is aborted, so it stops queueing the requests behind it
+  // (IndexedDB runs a database's transactions in order: one that hangs keeps every later read of 相册 and 设置 waiting too).
+  const held=new Set(),hold=tx=>{held.add(tx);return tx;};
+  try{return await this.#guard(work(db,hold),ms);}
   catch(error){
    const timeout=error?.code==='STORAGE_TIMEOUT';
+   if(timeout)for(const tx of held){try{tx.abort();}catch{}}
    if((error?.code!=='STORAGE_LOST'&&!(timeout&&!write))||this.#closed)throw error;
    if(this.#db===db){try{db.close();}catch{}this.#db=null;}
    if(timeout)this.#opening=null;
@@ -192,9 +199,9 @@ export class LocalLibrary {
   return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(fail('本地资料没有回应（浏览器的存储卡住了），请刷新页面后再试','STORAGE_TIMEOUT')),ms);})]).finally(()=>clearTimeout(timer));
  }
  async #read(name,id){
-  return this.#run(db=>new Promise((resolve,reject)=>{
+  return this.#run((db,hold)=>new Promise((resolve,reject)=>{
    let tx,result;
-   try{tx=db.transaction(name,'readonly');const store=tx.objectStore(name);const req=id===undefined?store.index('scope').getAll(this.#scope):store.get(this.#key(id));req.onsuccess=()=>{result=req.result;};}
+   try{tx=hold(db.transaction(name,'readonly'));const store=tx.objectStore(name);const req=id===undefined?store.index('scope').getAll(this.#scope):store.get(this.#key(id));req.onsuccess=()=>{result=req.result;};}
    catch(e){reject(friendly(e));return;}
    tx.oncomplete=()=>resolve(result);
    tx.onabort=()=>reject(friendly(tx.error));tx.onerror=()=>{};
@@ -206,10 +213,10 @@ export class LocalLibrary {
   * save reads only the rows it changes, not every picture and recording.
   */
  async #mutate(change,need='all'){
-  const limit=await this.#room();this.#keep();
-  return this.#run(db=>new Promise((resolve,reject)=>{
+  const limit=await this.#room();this.#keep();this.#lastLists.clear();
+  return this.#run((db,hold)=>new Promise((resolve,reject)=>{
    let tx,result,ownError,pending=1;const rows={},ops=[],ledger=new Map(),key=(name,id)=>name+'\n'+id;
-   try{tx=db.transaction([...STORES,'sizes','meta','thumbs','previews'],'readwrite');}catch(e){reject(friendly(e));return;}
+   try{tx=hold(db.transaction([...STORES,'sizes','meta','thumbs','previews'],'readwrite'));}catch(e){reject(friendly(e));return;}
    tx.oncomplete=()=>resolve(structuredClone(result));
    tx.onabort=()=>reject(ownError||friendly(tx.error));tx.onerror=()=>{};
    for(const name of STORES)rows[name]=new RowView();
@@ -249,15 +256,25 @@ export class LocalLibrary {
   }),true,true);
  }
  async #list(name,metadata=false){
-  const rows=metadata&&MEDIA.includes(name)?await this.#metaRows(name):(await this.#read(name)).map(row=>publicRow(row,metadata));
-  return rows.sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id));
+  const cacheKey=name+(metadata?':meta':'');
+  let rows;
+  try{rows=metadata&&MEDIA.includes(name)?await this.#metaRows(name):(await this.#read(name)).map(row=>publicRow(row,metadata));}
+  catch(error){
+   // Storage that hangs or drops must not leave a page blank: what was read last time is shown (it may be a little old).
+   const last=this.#lastLists.get(cacheKey);
+   if(last&&(error?.code==='STORAGE_TIMEOUT'||error?.code==='STORAGE_LOST'))return structuredClone(last);
+   throw error;
+  }
+  rows.sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id));
+  this.#lastLists.set(cacheKey,structuredClone(rows));
+  return rows;
  }
  /** The rows of a picture or recording store without their files ('meta'). */
  async #metaRows(name){
-  return this.#run(db=>new Promise((resolve,reject)=>{
+  return this.#run((db,hold)=>new Promise((resolve,reject)=>{
    let tx,rows=[];
    try{
-    tx=db.transaction(['meta'],'readonly');
+    tx=hold(db.transaction(['meta'],'readonly'));
     const req=tx.objectStore('meta').index('store').getAll([this.#scope,name]);req.onsuccess=()=>{rows=req.result.map(r=>r.data);};
    }catch(e){reject(friendly(e));return;}
    tx.oncomplete=()=>resolve(rows);
