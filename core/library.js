@@ -177,9 +177,13 @@ export class LocalLibrary {
   let db;
   try{db=await this.#guard(this.#open(),ms);}
   catch(error){if(error?.code!=='STORAGE_TIMEOUT'||this.#closed)throw error;this.#opening=null;db=await this.#guard(this.#open(),ms).catch(e=>{if(e?.code==='STORAGE_TIMEOUT')this.#opening=null;throw e;});}
-  try{return await this.#guard(work(db),ms);}
+  // Every transaction of the request is kept: one that got no answer is aborted, so it stops holding up the requests queued behind it
+  // (IndexedDB runs a database's transactions in order; one that hangs keeps every later read of 相册 and 设置 waiting).
+  const held=new Set(),via={transaction:(...args)=>{const tx=db.transaction(...args);held.add(tx);return tx;}};
+  try{return await this.#guard(work(via),ms);}
   catch(error){
    const timeout=error?.code==='STORAGE_TIMEOUT';
+   if(timeout){for(const tx of held){try{tx.abort();}catch{}}if(write&&this.#db===db){try{db.close();}catch{}this.#db=null;}}
    if((error?.code!=='STORAGE_LOST'&&!(timeout&&!write))||this.#closed)throw error;
    if(this.#db===db){try{db.close();}catch{}this.#db=null;}
    if(timeout)this.#opening=null;
@@ -251,8 +255,8 @@ export class LocalLibrary {
    const all=sizes.index('scope').getAll(this.#scope);
    all.onsuccess=()=>{for(const r of all.result)if(rows[r.store]){ledger.set(key(r.store,r.id),r.bytes);rows[r.store].know(r.id);}done();};
    for(const name of STORES){
-    const ids=need==='all'?null:need[name];
-    if(need!=='all'&&!ids?.length)continue;
+    const ids=need==='all'||need[name]==='all'?null:need[name];
+    if(need!=='all'&&need[name]!=='all'&&!ids?.length)continue;
     if(!ids){pending++;const req=tx.objectStore(name).index('scope').getAll(this.#scope);req.onsuccess=()=>{for(const row of req.result)found(name,row);done();};continue;}
     for(const id of ids){pending++;const req=tx.objectStore(name).get(this.#key(id));req.onsuccess=()=>{if(req.result)found(name,req.result);done();};}
    }
@@ -444,13 +448,19 @@ export class LocalLibrary {
  checkImport(data){for(const [name,list] of Object.entries(data||{})){if(!STORES.includes(name)||!Array.isArray(list))throw fail('备份内容无效：'+name);for(const row of list)this.#backupRow(name,row);}}
  async importRows(data,{replace=false,merge}={}){
   const clean={};for(const [name,list] of Object.entries(data||{})){if(!STORES.includes(name))throw fail('备份里有未知的资料类型：'+name);if(!Array.isArray(list))throw fail('备份内容无效：'+name);clean[name]=list.map(row=>this.#backupRow(name,row));}
+  // Only the rows an import touches are read. It used to read every row of every store, pictures included (a library of a gigabyte
+  // is a gigabyte read inside one write transaction over all stores): that transaction held every other read, 相册 and 设置 among
+  // them, for minutes. Which rows exist comes from 'sizes'; a merge is the one case that needs a store's rows in full.
+  const need={};
+  for(const [name,list] of Object.entries(clean))need[name]=name==='phone'?['preferences']:replace&&merge?'all':list.map(row=>row.id);
+  if(replace&&clean.photos&&!need.phone)need.phone=['preferences'];
   return this.#mutate(({rows,put,remove})=>{
    const counts={};
    for(const [name,incoming] of Object.entries(clean)){if(name==='phone')continue;const list=replace&&merge?merge([...rows[name].values()].map(row=>publicRow(row)),name).map(row=>this.#backupRow(name,row)):incoming;const ids=new Set(list.map(row=>row.id));if(replace)for(const id of [...rows[name].keys()])if(!ids.has(id))remove(name,id);for(const row of list){put(name,row);}counts[name]=list.length;}
    const phone=clean.phone?.at(-1)||(replace&&clean.photos&&rows.phone.get('preferences'));
    if(phone){const next={...publicRow(phone)};delete next.id;if(next.wallpaper.kind==='photo'&&!rows.photos.has(next.wallpaper.photoId))next.wallpaper=defaults().wallpaper;next.icons={...next.icons};for(const [app,icon] of Object.entries(next.icons))if(icon.kind==='photo'&&!rows.photos.has(icon.photoId))delete next.icons[app];put('phone',{...next,id:'preferences'});if(clean.phone)counts.phone=1;}
    return counts;
-  });
+  },need);
  }
  #backupRow(name,row){
   if(!row||typeof row!=='object')throw fail('备份内容无效：'+name);
