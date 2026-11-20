@@ -153,7 +153,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     if (!valid()) return;
     let list = findSounds(rows, name, 'ambience');
     if (!list.length) {
-      if (!describe || !canMake()) { wanted = ''; stopAmbience(); missing('ambience', name, describe); return; }
+      if (!canMake() || failed.has('ambience|' + name)) { wanted = ''; stopAmbience(); missing('ambience', name, describe); return; }
       const row = await make('ambience', name, describe);
       if (!row || !valid()) return;
       list = [row];
@@ -190,16 +190,26 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
       dot(current);
     }, wait);
   }
+  const KIND_WORD = {ambience: '环境氛围音：', sfx: '音效：'};
   const changed = () => { try { backend.emit?.('sound-state', state()); } catch {} };
 
   // ---------- Missing sounds: ElevenLabs, or 缺的声音 ----------
   const canMake = () => opts().generate === true && !!backend.keyStatus?.('eleven');
   function missing(type, name, describe = '') { backend.noteMissing?.({type, name, describe}).catch(() => {}); }
+  // A sound that could not be made is not asked for again until the page is loaded again: each ask costs ElevenLabs credits.
+  const failed = new Set();
+  /** The English description ElevenLabs needs: the one the story gave, else the phone's text model writes it from the name. */
+  async function english(type, name, describe) {
+    if (/[a-z]/i.test(String(describe || ''))) return describe;
+    const said = await prompt({text: `${KIND_WORD[type] || ''}${name}${describe ? '：' + describe : ''}`, mode: 'english'});
+    return String(said?.text ?? said ?? '').trim();
+  }
   function make(type, name, describe) {
     const key = type + '|' + name;
+    if (failed.has(key)) return Promise.resolve(null);
     if (!making.has(key)) {
-      const job = backend.generateSound({name, type, describe}).then(row => { if (!rows.some(r => r.id === row.id)) rows = [row, ...rows]; return row; })
-        .catch(error => { notice(`没能生成「${name}」：${error.message}`); missing(type, name, describe); return null; })
+      const job = english(type, name, describe).then(text => backend.generateSound({name, type, describe: text})).then(row => { if (!rows.some(r => r.id === row.id)) rows = [row, ...rows]; return row; })
+        .catch(error => { failed.add(key); notice(`没能生成「${name}」：${error.message}`); missing(type, name, describe); return null; })
         .finally(() => { making.delete(key); changed(); });
       making.set(key, job);
       changed();
@@ -225,7 +235,7 @@ export function createSoundHost({context, settings, backend, notice = () => {}, 
     if (!valid()) return;
     let list = findSounds(rows, tag.name, 'sfx');
     if (!list.length) {
-      if (!tag.describe || !canMake()) { missing('sfx', tag.name, tag.describe); return; }
+      if (!canMake() || failed.has('sfx|' + tag.name)) { missing('sfx', tag.name, tag.describe); return; }
       const asked = now(), row = await make('sfx', tag.name, tag.describe);
       // Made too late to belong to the moment: kept for next time.
       if (!row || !valid() || now() - asked > LATE) return;
