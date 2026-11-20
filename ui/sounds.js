@@ -258,7 +258,9 @@ export function soundsApp(ctx) {
   v.on('input', '[data-sound-search]', el => { query = el.value.trim(); filterNames(); });
   v.on('input', '[data-volume]', el => { const out = el.closest('.field')?.querySelector('output'); if (out) out.textContent = el.value + '%'; });
   v.on('change', '[data-volume]', el => { api.saveSounds({[el.dataset.volume]: Number(el.value) / 100}); });
-  v.on('click', '[data-sound-file]', () => { if (!pickingMissing) uploadFor = null; });
+  // Not v.on(): that one cancels every click it handles, and a cancelled click on a file input opens no picker (添加声音 and the 上传 arrow of a
+  // missing sound both did nothing).
+  v.root.addEventListener('click', e => { if (e.target.closest?.('[data-sound-file]') && !pickingMissing) uploadFor = null; });
   v.on('change', '[data-sound-file]', el => { const files = [...el.files]; el.value = ''; if (!files.length) return; const preset = uploadFor; uploadFor = null; addFiles(files, preset); });
   v.on('click', '[data-action]', async el => {
     switch (el.dataset.action) {
