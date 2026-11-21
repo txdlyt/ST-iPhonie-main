@@ -15,7 +15,7 @@ import {storyScope, mapStory} from './core/story-scope.js';
 // automatically. Older records ({url, seed, …}) read as a single version.
 import {storyReply} from './core/outgoing.js';
 import {OUTFIT_KEY, normalizeBook, outfitsBefore, currentOutfits, recordOutfits, forgetOutfit} from './core/outfits.js';
-import {naturalLooks, lookOf, drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
+import {lookOf, drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
 import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
@@ -404,11 +404,13 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const here = x => !x.cards?.length || x.cards.some(k => k === key || k === save || (!!key && k.split('#')[0] === key));
     for (const tag of parsePictures(message?.mes || '')) for (const r of tag.spec?.register || []) {
       const route = settings().routes.find(x => sameExact(x.name, r.name) && here(x));
-      if (route?.appearance?.trim() || route?.appearanceNl?.trim() || added.includes(r.name)) continue;
-      // The model wrote it the way the preset in use asks: tags, or natural language.
-      const field = naturalLooks(settings()) ? 'appearanceNl' : 'appearance';
+      // Both looks are kept; a role that already has one only gets the one it lacks.
+      const patch = {};
+      if (r.appearance && !route?.appearance?.trim()) patch.appearance = r.appearance;
+      if (r.appearanceNl && !route?.appearanceNl?.trim()) patch.appearanceNl = r.appearanceNl;
+      if (!Object.keys(patch).length || added.includes(r.name)) continue;
       try {
-        backend.saveRoute(route ? {...route, [field]: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', [field]: r.appearance});
+        backend.saveRoute(route ? {...route, ...patch} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', ...patch});
         added.push(r.name);
       } catch { /* an unusable name is skipped */ }
     }
@@ -663,8 +665,9 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const card = ctx.characters?.[ctx.characterId], cardText = card ? [card.description, card.personality, card.scenario].filter(Boolean).join('\n').slice(0, 2500) : '';
     const prompt = [
       `你是出图提示词助手。读下面的角色卡和聊天，只写「${name}」这一个人。`,
-      '输出恰好两行，不要别的话、不要引号、不要代码块：',
+      '输出恰好三行，不要别的话、不要引号、不要代码块：',
       '外貌：她固定的样子，用英文 tag，逗号分隔：发型发色、眼睛、体型、肤色、固定的特征（痣、疤、耳朵等）。不写衣服、配饰、表情、动作。',
+      '自然语言：同样的外貌，写成一两句中文，不用 tag：年龄和性别、发型发色、瞳色、体型、肤色、固定的特征。同样不写衣服、配饰、表情、动作，内容和上一行一致。',
       '服装：聊天最后她身上穿戴的衣服和配饰，用英文 tag，逗号分隔。聊天里没有说，或脱了、没穿，就留空。',
       '只写文字里明确说了的；颜色写明了就原样用，没写的不要编。',
       '',
@@ -674,9 +677,28 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const answer = await backend.generateText(ctx, {use: 'picture', prompt, plainText: true, trimNames: false, responseLength: 600});
     const text = String(answer || '');
     const pick = key => (text.match(new RegExp(`(?:^|\\n)\\s*${key}\\s*[:：]\\s*(.*)`)) || [])[1]?.trim().replace(/^["「]|["」]$/g, '').replace(/[,，]\s*$/, '') || '';
-    const appearance = pick('外貌'), outfit = pick('服装');
-    if (!appearance && !outfit) throw Error('模型没有读出内容，再试一次');
-    return {appearance, outfit};
+    const appearance = pick('外貌'), appearanceNl = pick('自然语言'), outfit = pick('服装');
+    if (!appearance && !appearanceNl && !outfit) throw Error('模型没有读出内容，再试一次');
+    return {appearance, appearanceNl, outfit};
+  }
+  /**
+   * 补全另一栏: writes the look a role lacks from the one it has (the tags as a Chinese sentence, or the sentence as English
+   * tags). Nothing is saved here; the role page shows the answer.
+   */
+  async function completeLook({name = '', appearance = '', appearanceNl = '', to = 'nl'} = {}) {
+    const toNl = to === 'nl', source = String(toNl ? appearance : appearanceNl).trim();
+    if (!source) throw Error('先写好另一栏');
+    const prompt = (toNl ? [
+      '你是出图提示词助手。把下面这个角色的外貌 tag 写成一两句中文自然语言外貌，只输出这一段，不要解释、不要引号、不要代码块。',
+      '只写 tag 里有的固定特征：年龄和性别、发型发色、瞳色、体型、肤色、显眼的特征；不要编造，不写衣服、表情、动作。'
+    ] : [
+      '你是出图提示词助手。把下面这个角色的中文外貌描述写成英文 tag，逗号分隔，只输出这一行，不要解释、不要引号、不要代码块。',
+      '第一个 tag 是 1girl 或 1boy（按描述判断），然后是发型发色、眼睛、体型、肤色、显眼的特征；不要编造，不写衣服、表情、动作。'
+    ]).concat(name ? [`角色：${name}`] : [], [`【${toNl ? '外貌 tag' : '中文外貌'}】`, source]).join('\n');
+    const answer = await backend.generateText(context(), {use: 'picture', prompt, plainText: true, trimNames: false, responseLength: 500});
+    const text = String(answer || '').trim().replace(/^(?:外貌 tag|外貌|自然语言)\s*[:：]\s*/, '').replace(/^["「]|["」]$/g, '').replace(/\s*\n+\s*/g, toNl ? '' : ', ');
+    if (!text) throw Error('模型没有回内容，再试一次');
+    return text;
   }
   async function tagText(text, mode, wish = '') {
     if (!String(text).trim()) throw Error('框里是空的');
@@ -917,5 +939,5 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const permission = await allowed(true); if (!permission) return;
     for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {drawFor, tagText, readLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {drawFor, tagText, readLook, completeLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }

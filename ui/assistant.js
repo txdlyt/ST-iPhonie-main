@@ -193,7 +193,7 @@ export function assistantPictureHTML(text, attrs = '', {live = false} = {}) {
     + (spec.tags ? row('场景', esc(spec.tags)) : '')
     + (tag.negative ? row('不要', esc(tag.negative)) : '')
     + spec.cast.map(c => row(c.name, `${esc(c.tags)}${c.negative ? `<small>不要：${esc(c.negative)}</small>` : ''}${c.position ? `<small>站位 ${esc(c.position)}</small>` : ''}`)).join('')
-    + spec.register.map(r => row('新外貌', `<b>${esc(r.name)}</b> ${esc(r.appearance)}`)).join('')
+    + spec.register.map(r => row('新外貌', `<b>${esc(r.name)}</b> ${esc([r.appearance, r.appearanceNl].filter(Boolean).join('｜'))}`)).join('')
     + (live ? '' : `<div class="aui-tools">${btn('pic-copy', icon('copy') + '复制', 'text-button', attrs)}${btn('pic-draw', icon('paint') + '画这张', 'aui-go', attrs)}</div>`)
     + '</div>';
 }

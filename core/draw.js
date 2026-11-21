@@ -11,7 +11,8 @@ import {storyScope} from './story-scope.js';
 //   画幅 portrait/landscape/square · 场景 base tags · 角色 name｜tags｜negative tags｜position (one per person)
 //   描述 (a base sentence) is no longer asked for but still read. Blocks written before 0.6 have
 //   角色 name｜tags｜sentence; both forms are read.
-//   新外貌 name｜fixed appearance (first appearance of a named character; the plugin saves it to the 角色 App)
+//   新外貌 name｜appearance tag｜appearance in a Chinese sentence (first appearance of a named character; both are saved to the 角色 App,
+//   the preset's 自然语言 switch picks which one is drawn with)
 //   位置 Pn (only when pictures are planned after the reply: which paragraph the picture follows)
 // Two ways to get blocks (draw.mode): 'separate' asks the model in its own request after the reply is written and
 // inserts the blocks; 'inline' injects the rules into the story request so the reply carries the blocks itself.
@@ -27,7 +28,7 @@ import {escapeHTML, isPlaceholderRole} from './protocol.js';
 import {baibaiDrawPreset, baibaiMessages, baibaiBodies, baibaiOutfits, isBaibai} from './draw-baibai.js';
 import {OUTFIT_RULE, outfitBlock, outfitLines} from './outfits.js';
 
-const BLOCK = ['<img>', '画幅：竖 / 横 / 方', '场景：英文 tag', '角色：名字｜这一刻的 tag｜不要出现的 tag｜站位（画面里每个人单独一行，每一行都以「角色：」开头）', '新外貌：名字｜固定外貌 tag（只在名单外的新角色第一次出现时写）', '</img>'];
+const BLOCK = ['<img>', '画幅：竖 / 横 / 方', '场景：英文 tag', '角色：名字｜这一刻的 tag｜不要出现的 tag｜站位（画面里每个人单独一行，每一行都以「角色：」开头）', '新外貌：名字｜外貌 tag｜外貌的中文描述（只在名单外的新角色第一次出现时写，两份都写）', '</img>'];
 export const PIC_TAG_FORMAT = BLOCK.join('\n');
 export const PLAN_TAG_FORMAT = [BLOCK[0], '位置：P几（这张图放在哪一段后面）', ...BLOCK.slice(1)].join('\n');
 export const DRAW_COUNT_MAX = 10;
@@ -105,7 +106,7 @@ export const DEFAULT_DRAW_ENTRIES = Object.freeze([
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ]);
@@ -199,7 +200,7 @@ export const V07_DRAW_ENTRIES = Object.freeze([
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ]);
@@ -269,7 +270,7 @@ export const V05_DRAW_ENTRIES = [
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ];
@@ -533,8 +534,10 @@ const drawFormat = (settings, p, plan = false) => promptTemplate(settings.prompt
 const activePreset = (draw, preset) => preset || draw.presets.find(x => x.id === draw.activePreset) || draw.presets[0];
 /** Does the preset in use write its picture blocks in natural language? (柏宝绘 never does.) */
 export const naturalLooks = settings => { const p = settings?.draw ? activePreset(settings.draw) : null; return p?.natural === true && !isBaibai(p); };
-/** The look a role is drawn with: its 自然语言 one when the preset in use is on, else its 外貌 tag; each stands in for the other when empty. */
-export const lookOf = (settings, role) => { const tag = String(role?.appearance || '').trim(), nl = String(role?.appearanceNl || '').trim(); return naturalLooks(settings) ? nl || tag : tag || nl; };
+/** The look a role is drawn with: its 自然语言 one when the preset in use is on, else its 外貌 tag. The two never stand in for each other: both are written, the switch only picks one. */
+export const lookOf = (settings, role) => String((naturalLooks(settings) ? role?.appearanceNl : role?.appearance) || '').trim();
+/** The same for a 新外貌 line of a block that is not saved yet. */
+export const registeredLook = (settings, line) => String((naturalLooks(settings) ? line?.appearanceNl : line?.appearance) || '').trim();
 const countOf = p => Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1));
 
 /** girl, boy or other from an appearance (its first gender tag); '' when it does not say. */
@@ -879,7 +882,14 @@ export function parseBlock(body) {
       }
       if (name) spec.cast.push(c);
     }
-    else if (key === 'register') { const [name, ...rest] = split(value); if (name && rest.join(', ').trim()) spec.register.push({name, appearance: rest.join(', ').trim()}); }
+    else if (key === 'register') {
+      // name｜tag｜sentence. A line with one part only (an older block, a hand-written one): Chinese words make it the sentence.
+      const [name, ...rest] = split(value), parts = rest.filter(Boolean);
+      let appearance = '', appearanceNl = '';
+      if (parts.length >= 2) { [appearance, appearanceNl] = /[\u3400-\u9fff]/.test(parts[0]) && !/[\u3400-\u9fff]/.test(parts[1]) ? [parts[1], parts[0]] : parts; }
+      else if (parts.length) { if (/[\u3400-\u9fff]/.test(parts[0])) appearanceNl = parts[0]; else appearance = parts[0]; }
+      if (name && (appearance || appearanceNl)) spec.register.push({name, appearance, appearanceNl});
+    }
     // 原样：是 — the tags already hold everyone's looks (柏宝绘 blocks without 角色 lines): the phone adds none of its own.
     else if (key === 'whole') spec.whole = /^(?:是|true|yes|1)/i.test(value);
     // 服装：名字｜衣服 tag — who changed clothes: kept in the chat's 当前服装 (readOutfits), not part of the picture's own fields.
@@ -1004,7 +1014,7 @@ export function peopleCount(prompt) {
   for (const m of String(prompt).matchAll(/(?:^|[,\s(])(\d+)\+?\s*(?:girls?|boys?|others?)\b/gi)) n += Number(m[1]);
   return n;
 }
-const drawable = settings => settings.routes.filter(r => (r.appearance?.trim() || r.appearanceNl?.trim()) && !isPlaceholderRole(r.name));
+const drawable = settings => settings.routes.filter(r => lookOf(settings, r) && !isPlaceholderRole(r.name));
 /** The role a name in a picture means: by its name, else by one of its 别名 (roles merged keep their old names that way). */
 const roleNamed = (roles, name) => {
   const exact = roles.find(r => sameExact(r.name, name)); if (exact) return exact;
@@ -1226,7 +1236,7 @@ function pictureInputsOf(settings, tag, text = '') {
     return cell;
   };
   const characters = spec.cast.map(c => {
-    const role = roleNamed(roles, c.name), fixed = (role && lookOf(settings, role)) || spec.register.find(x => sameName(x.name, c.name))?.appearance || '';
+    const role = roleNamed(roles, c.name), fixed = (role && lookOf(settings, role)) || registeredLook(settings, spec.register.find(x => sameName(x.name, c.name)));
     // 固定负面 first (a role can have one with no 外貌 yet), then what this picture asks. Gender and count tags would hit the others.
     const unwanted = mergeTags((role || roleNamed(settings.routes, c.name))?.negative, c.negative);
     return {prompt: [mergeTags(soloTags(fixed), c.tags), c.nl].filter(Boolean).join(', '), negative: many ? mergeTags(withoutPeopleTags(unwanted), 'fused bodies') : unwanted, position: place(c.position)};

@@ -53,6 +53,7 @@ export function rolesApp(ctx) {
     return state.roleGroups?.find(g => g.card === key)?.name || (key === space().key && space().name) || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '');
   };
   /** What the 筛选 chips ask for. */
+  const lookNote = r => { const tag = r.appearance?.trim(), nl = r.appearanceNl?.trim(); return !tag && !nl ? '没写' : (tag || nl).slice(0, 24) + (tag && !nl ? ' · 缺自然语言' : !tag && nl ? ' · 缺 tag' : ''); };
   const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim() && !r.appearanceNl?.trim()]};
   const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
   const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
@@ -240,11 +241,11 @@ export function rolesApp(ctx) {
           ${languageField('language', r.language || '', true, typedLanguages(api.getState()))}
         </div></details>
         <details data-group="role-persona"><summary>角色资料<small class="fold-note">${r.persona?.trim() ? r.persona.trim().length + ' 字' : '没写（读角色卡）'}</small></summary><div class="fold-body">${field('角色资料', textArea('persona', r.persona || '', 'rows="4" maxlength="4000" placeholder="例如：Hina，17 岁，学生会会长，嘴硬心软，和小春是青梅竹马"'), '聊天、论坛、朋友圈、查手机和电话写这个人时用的资料：身份、性格、说话方式、和谁是什么关系。\n\n酒馆里有这个人的角色卡时，不写也会读角色卡；写了就用这里的。没出场过、也没有角色卡的人（比如只在别的卡里出现的），在这里写几句，模型就不用凭空猜了。世界书照常按名字去找，最近的剧情也一直会带上。')}</div></details>
-        <details data-group="role-look"><summary>外貌<small class="fold-note">${esc((r.appearance?.trim() || r.appearanceNl?.trim()) ? (r.appearance?.trim() || r.appearanceNl.trim()).slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
+        <details data-group="role-look"><summary>外貌<small class="fold-note">${esc(lookNote(r))}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
           ${field('外貌 自然语言', textArea('appearanceNl', r.appearanceNl || '', 'rows="3" maxlength="1500" placeholder="例如 四十二岁女性，黑色长发松散地挽在脑后，皮肤白皙，身材丰腴"'), '出图预设打开「出图块用自然语言」时，入画用这一栏；没打开就用上面的外貌 tag。两栏都写最省事，换预设不用改角色。\n\n用自然语言写，只写不会变的特征：年龄和性别、发型发色、瞳色、体型、肤色；衣服、表情、动作让模型按剧情写。哪一栏留空，就退回用另一栏。\n\n新角色第一次入画时，模型写的外貌会按当前预设的写法，自动填到对应的一栏。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
           ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
-          <div class="actions role-try">${api.readLook ? btn('role-from-chat', icon('chat') + '从聊天读取', 'secondary') : ''}${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
+          <div class="actions role-try">${api.readLook ? btn('role-from-chat', icon('chat') + '从聊天读取', 'secondary') : ''}${api.completeLook ? btn('role-complete', icon('paint') + '补全另一栏', 'secondary') : ''}${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
           ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}
           ${refField(r)}</div></details>
         <div class="savebar" data-engine="${r.engine}"><span class="save-state" data-save-state>草稿</span>${btn('audition', icon('play', true) + '试听', 'secondary')}${btn('save-role', '保存', 'primary')}</div>
@@ -426,11 +427,37 @@ export function rolesApp(ctx) {
       how(text); changed(); render(); openLook(); ctx.notify(note);
     };
     openTagSheet(ctx, api, {blob: file, title: '从图片提取', actions: [
-      {label: '替换外貌 tag', style: 'primary', run: sel => apply(sel.looks, text => { current.appearance = text; }, '已写进外貌 tag，点保存生效')},
-      {label: '追加到外貌 tag', run: sel => apply(sel.looks, text => { current.appearance = [String(current.appearance || '').trim().replace(/[,，]\s*$/, ''), text].filter(Boolean).join(', '); }, '已追加到外貌 tag，点保存生效')},
+      {label: '替换外貌', style: 'primary', run: sel => { const ok = apply(sel.looks, text => { current.appearance = text; }, '已写进外貌 tag，正在补自然语言栏……'); if (ok !== false) fillNl(sel.looks, 'replace'); return ok; }},
+      {label: '追加到外貌', run: sel => { const ok = apply(sel.looks, text => { current.appearance = [String(current.appearance || '').trim().replace(/[,，]\s*$/, ''), text].filter(Boolean).join(', '); }, '已追加到外貌 tag，正在补自然语言栏……'); if (ok !== false) fillNl(sel.looks, 'append'); return ok; }},
       ...(api.outfitSave ? [{label: '服装写进当前服装', run: sel => apply(sel.outfit, text => { outfitDraft = text; }, '已写进「这个聊天里现在穿的」，点保存生效')}] : [])
     ]});
   });
+  // The picture gives tags only: the text model writes the same looks as a Chinese sentence for the 自然语言 column.
+  async function fillNl(tags, how) {
+    if (!api.completeLook || !tags) return;
+    const target = current;
+    try {
+      const text = await api.completeLook({name: target.name, appearance: tags, to: 'nl'});
+      if (current !== target) return;
+      target.appearanceNl = how === 'append' ? [String(target.appearanceNl || '').trim().replace(/[，,]\s*$/, ''), text].filter(Boolean).join('，') : text;
+      changed(); render(); openLook(); ctx.notify('自然语言栏也写好了，点保存生效');
+    } catch (error) { ctx.notify('外貌 tag 已写好，自然语言栏没生成出来：' + error.message + '。可以点「补全另一栏」再试', {error: true}); }
+  }
+  // 补全另一栏: one column is written, the text model writes the other from it (never over a column that has content).
+  async function completeOther(button) {
+    const tag = String(current?.appearance || '').trim(), nl = String(current?.appearanceNl || '').trim();
+    if (!tag && !nl) { ctx.notify('先写好一栏', {error: true}); return; }
+    if (tag && nl) { ctx.notify('两栏都有内容了。想重写哪一栏，先把它清空，再点「补全另一栏」', {error: true}); return; }
+    const to = tag ? 'nl' : 'tag', target = current;
+    button.disabled = true;
+    ctx.notify('正在补全，要等一会儿……');
+    try {
+      const text = await api.completeLook({name: target.name, appearance: tag, appearanceNl: nl, to});
+      if (current !== target) return;
+      if (to === 'nl') target.appearanceNl = text; else target.appearance = text;
+      changed(); render(); openLook(); ctx.notify('已补全，看一眼没问题就点保存');
+    } catch (error) { ctx.notify(error.message, {error: true}); } finally { button.disabled = false; }
+  }
   // 从聊天读取: the text model reads this chat for her looks and what she wears; the person sees the answer and chooses what to keep.
   async function lookFromChat(button) {
     const name = String(current?.name || '').trim();
@@ -439,11 +466,12 @@ export function rolesApp(ctx) {
     ctx.notify('正在读聊天，要等一会儿……');
     let got;
     try { got = await api.readLook(name); } catch (error) { ctx.notify(error.message, {error: true}); return; } finally { button.disabled = false; }
-    const d = ctx.dialog('从聊天读取', `<p class="hint">读出来的内容，先看一眼再决定写不写。</p>${field('外貌 tag', `<div class="code readonly">${esc(got.appearance || '（没读出来）')}</div>`)}${api.outfitSave ? field('这个聊天里现在穿的', `<div class="code readonly">${esc(got.outfit || '（没读出来）')}</div>`) : ''}<div class="actions">${btn('look-chat-all', '全部写入', 'primary')}${btn('look-chat-look', '只写外貌', 'secondary')}${api.outfitSave ? btn('look-chat-outfit', '只写服装', 'secondary') : ''}</div>`);
+    const d = ctx.dialog('从聊天读取', `<p class="hint">读出来的内容，先看一眼再决定写不写。</p>${field('外貌 tag', `<div class="code readonly">${esc(got.appearance || '（没读出来）')}</div>`)}${field('外貌 自然语言', `<div class="code readonly">${esc(got.appearanceNl || '（没读出来）')}</div>`)}${api.outfitSave ? field('这个聊天里现在穿的', `<div class="code readonly">${esc(got.outfit || '（没读出来）')}</div>`) : ''}<div class="actions">${btn('look-chat-all', '全部写入', 'primary')}${btn('look-chat-look', '只写外貌', 'secondary')}${api.outfitSave ? btn('look-chat-outfit', '只写服装', 'secondary') : ''}</div>`);
     d.body.addEventListener('click', e => {
       const kind = e.target.closest('[data-action]')?.dataset.action; if (!kind) return;
       const look = kind === 'look-chat-all' || kind === 'look-chat-look', outfit = (kind === 'look-chat-all' || kind === 'look-chat-outfit') && api.outfitSave;
       if (look && got.appearance) current.appearance = got.appearance;
+      if (look && got.appearanceNl) current.appearanceNl = got.appearanceNl;
       if (outfit && got.outfit) outfitDraft = got.outfit;
       d.close(); changed(); render(); openLook(); ctx.notify('已写进表单，点保存生效');
     });
@@ -525,6 +553,7 @@ export function rolesApp(ctx) {
       // 全局的外貌就是这个角色自己的外貌：清空后点保存才生效。
       case 'role-from-chat': await lookFromChat(el); break;
       case 'role-from-image': v.root.querySelector('[data-role-image]')?.click(); break;
+      case 'role-complete': await completeOther(el); break;
       case 'role-clear-look': current.appearance = ''; current.appearanceNl = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
       case 'audition': api.audition(current); break;
       case 'delete-role':
@@ -605,7 +634,7 @@ export function rolesApp(ctx) {
   let tried = null;
   async function tryLook(el) {
     const look = lookOf(api.getState(), current);
-    if (!look) { ctx.notify('先写外貌'); return; }
+    if (!look) { ctx.notify('当前预设用的那一栏还是空的，先写好外貌'); return; }
     if (!api.drawReady()) { ctx.notify(api.drawMissing(), {error: true}); return; }
     const input = lookTest(api.getState(), {...current, appearance: look}), ask = api.paidPrompt(), paid = api.drawQuote(input.params).free === false, name = current.name?.trim() || '新角色', id = current.id || 'new';
     if (paid && !await ctx.confirm(ask.title, ask.text)) return;
