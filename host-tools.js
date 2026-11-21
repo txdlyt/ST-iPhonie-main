@@ -42,7 +42,7 @@ export function createStoryTools({doc = document, hidden, entry = () => true, me
   const snap = scope(button); if (!snap || hidden()) return;
   // 给这层楼配音 (while 正文语音 is on): any reply's lines voiced again, not only the newest one's.
   const selected = selection.forMessage(snap.id);
-  show(button, [...(selected ? [['给选中文字生图', () => selection.activate(selected)]] : []), ['给这层楼生图', checked(snap, () => actions.draw(snap.id))], ...(actions.canVoice?.() ? [['给这层楼配音', checked(snap, () => actions.voice(snap.id))]] : []), ['从这层看视觉小说', checked(snap, () => actions.vn(snap.id))], ['台词小窗', checked(snap, () => actions.dialogue(snap.id))], actions.playing?.(snap.id) ? ['停止播放', () => actions.stop()] : ['整条播放', checked(snap, () => actions.play(snap.id))]]);
+  show(button, [...(selected ? [['给选中文字生图', () => selection.activate(selected)]] : []), ['给这层楼生图', checked(snap, () => actions.draw(snap.id))], ['重新配图', checked(snap, () => actions.redraw(snap.id))], ['重新生成提示词', checked(snap, () => actions.replan(snap.id))], ...(actions.canVoice?.() ? [['给这层楼配音', checked(snap, () => actions.voice(snap.id))]] : []), ['从这层看视觉小说', checked(snap, () => actions.vn(snap.id))], ['台词小窗', checked(snap, () => actions.dialogue(snap.id))], actions.playing?.(snap.id) ? ['停止播放', () => actions.stop()] : ['整条播放', checked(snap, () => actions.play(snap.id))]]);
  }
  function down(event) {
   cancel(); suppress = null; if (event.button !== 0 || hidden()) return;

@@ -856,7 +856,7 @@ export function hashText(value) {
 
 /** 姐姐、阿姨、护士… are how people are called or what they do, not who they are: never a name to register. */
 export const isAddressTerm = name => /^(?:[大小老]?(?:姐姐?|哥哥?|妹妹?|弟弟?|姨|阿姨|叔叔?|伯伯?|姑姑?|舅舅?|妈妈?|爸爸?|奶奶|爷爷|婆婆|公公|嫂子|姐夫)|(?:护士|医生|大夫|老师|老板|老板娘|店员|服务员|师傅|同学|女士|先生|小姐|美女|帅哥|姑娘|大妈|大爷|路人|陌生人|她|他)(?:们)?)$/.test(String(name || '').trim());
-const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at', 负面: 'negative', 原样: 'whole', 服装: 'outfitLine'};
+const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 思路: 'thought', 位置: 'at', 负面: 'negative', 原样: 'whole', 服装: 'outfitLine'};
 const split = value => value.split(/[|｜]/).map(x => x.trim());
 /** Reads a block body; null when it has none of the field lines (an older one-line tag). */
 export function parseBlock(body) {
@@ -870,6 +870,8 @@ export function parseBlock(body) {
     // A person's line without the field name, under a 角色： (or 新外貌：) line of its own.
     if (!key && list && /[|｜]/.test(line)) { key = list; value = line; }
     if (!key) continue;
+    // 思路：the model's own shot note before the fields (镜头, what makes the tension): kept, never drawn.
+    if (key === 'thought') { spec.thought = value; list = ''; continue; }
     found = true;
     list = (key === 'cast' || key === 'register') ? key : '';
     if (!value) continue;

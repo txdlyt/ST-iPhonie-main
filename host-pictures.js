@@ -939,5 +939,24 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const permission = await allowed(true); if (!permission) return;
     for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission}); }
   }
-  return {drawFor, tagText, readLook, completeLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  /** 重新配图: every picture of the reply drawn once more from the blocks it has (people's looks are read again now); each lands as a new version. */
+  async function redrawAll(id) {
+    const message = context().chat[id];
+    if (!storyReply(message)) throw Error('找不到这层楼的回复');
+    if (!backend.drawReady()) throw Error('请先在小手机的绘图 App 配好绘图接口');
+    const tags = parsePictures(message.mes);
+    if (!tags.length) return drawMessage(id);
+    const permission = await allowed(true); if (!permission) return;
+    for (const tag of tags) { if (context().chat[id] !== message) break; await generate(id, tag, {permission, interactive: true}); }
+  }
+  /** 重新生成提示词: the model picks the moments and writes the blocks again (old blocks dropped), then the pictures are drawn. */
+  async function replanAndDraw(id) {
+    const message = context().chat[id];
+    if (!storyReply(message)) throw Error('找不到这层楼的回复');
+    if (!backend.drawReady()) throw Error('请先在小手机的绘图 App 配好绘图接口');
+    if (!await planPictures(id, {force: true})) return;
+    registerAppearances(context().chat[id]);
+    await drawMessage(id);
+  }
+  return {redrawAll, replanAndDraw, drawFor, tagText, readLook, completeLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }
