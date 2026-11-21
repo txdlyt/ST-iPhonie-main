@@ -2531,6 +2531,29 @@ async function recordTemplateByClick(page) {
   if (!got) { console.warn('反代自己点「生成」没记下设置：' + (note[0] || '请求没被拦到')); await disarmTemplate(); } // 不再留着拦截：否则之后在网页上点「生成」会被无声截掉
   return { got, message: got ? '' : note[0] || '没拦到网页的请求' };
 }
+/** 左侧历史记录区里最上面那张缩略图（区域用「在資料庫中查看全部」认出来），点开，读打开后的参数原文，再关掉。 */
+async function readFirstHistory(page) {
+  const handle = await page.evaluateHandle(() => {
+    const visible = el => !!(el.offsetWidth || el.offsetHeight);
+    const mark = Array.from(document.querySelectorAll('a,button,div,span')).find(el => visible(el) && /^在(資料庫|资料库)中查看全部\s*$/.test((el.innerText || '').trim()));
+    if (!mark) return null;
+    let box = mark;
+    for (let i = 0; i < 8 && box.parentElement; i++) { box = box.parentElement; if (box.querySelectorAll('img').length >= 2) break; }
+    const rect = el => el.getBoundingClientRect();
+    return Array.from(box.querySelectorAll('img')).filter(el => visible(el) && rect(el).width > 40).sort((a, b) => rect(a).top - rect(b).top || rect(a).left - rect(b).left)[0] || null;
+  });
+  const first = handle.asElement();
+  if (!first) return { ok: false, opened: false, message: '页面上没找到历史记录区的缩略图（左边要能看到历史记录和「在資料庫中查看全部」）' };
+  await first.click({ timeout: 8000 });
+  // 点历史记录不会弹窗：还是生图界面，网页把设置换成这条记录用的（模型、比例、尺寸……）。等它换完，再用平时读设置的办法读回来
+  await sleep(2500);
+  const status = await readPageStatus(page);
+  const info = await readModelInfo(page).catch(() => null);
+  const r = status.resolution || {};
+  console.log('[历史] 点开第一条后网页上的设置：模型 ' + (info?.name || '读不到') + '，比例 ' + (r.ratio || '?') + '，尺寸 ' + (r.label || '?') + '，一次 ' + (status.count ?? '?') + ' 张');
+  return { ok: true, opened: true, message: '已点开第一条历史记录，网页设置已换成它的：' + [info?.name, r.ratio, r.label].filter(Boolean).join(' · ') };
+}
+
 app.post('/ai/template', async (req, res) => {
   const action = req.body?.action;
   try {
@@ -2545,21 +2568,12 @@ app.post('/ai/template', async (req, res) => {
       try { result = await job; } catch (error) { await disarmTemplate(); throw error; }
       return res.json({ ok: true, recorded: result.got, message: result.message, template: templateState() });
     } else if (action === 'history') {
-      // 取最新一条历史任务（你在官方软件里最后一次用的），把它的参数存成一条记录：不点网页、不提交、不扣积分
-      const page = await getPixAIPage();
-      watchApiHeaders(page);
-      for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500);
-      const listed = await apiCall(page, 'GET', '/v2/user/me/tasks?first=10');
-      if (listed.status !== 200 || !Array.isArray(listed.json?.data)) return res.status(502).json({ ok: false, message: `读不到历史任务（${listed.status}）：回到生图页正常操作一次后再试` });
-      const task = listed.json.data.find(item => item?.parameters && typeof item.parameters === 'object' && item.parameters.modelId);
-      if (!task) {
-        const first = listed.json.data[0];
-        console.warn('[历史] 最新任务里没找到 parameters.modelId，任务字段：', JSON.stringify(shapeOf(first)));
-        return res.status(502).json({ ok: false, message: first ? '最新一条历史任务里没有模型参数（字段：' + Object.keys(first).join('、') + '），把反代日志里「[历史]」那行发给我' : '历史记录是空的' });
-      }
-      const body = { parameters: JSON.parse(JSON.stringify(task.parameters)) };
-      if (!rememberTemplate(JSON.stringify(body))) return res.status(502).json({ ok: false, message: '没能把这条历史任务存成记录' });
-      return res.json({ ok: true, recorded: true, message: '已读取最新一条历史记录的参数：' + templateInfo(tpls[tpls.length - 1]).summary, template: templateState() });
+      // 点开左侧历史记录里的第一条，网页会把设置换成这条记录用的（模型、分辨率……），再读回来：不提交、不扣积分
+      if (isGenerating()) return res.status(409).json({ ok: false, message: '反代正在出图，画完再读' });
+      const job = settingLock.then(async () => readFirstHistory(await getPixAIPage()));
+      settingLock = holdLock(job);
+      const result = await job;
+      return res.json({ ok: result.ok, opened: result.opened, message: result.message, template: templateState() });
     } else if (action === 'cancel') await disarmTemplate();
     else if (action === 'delete') {
       const id = String(req.body?.id || '');

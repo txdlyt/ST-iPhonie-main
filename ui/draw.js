@@ -770,7 +770,7 @@ export function drawApp(ctx) {
       case 'pixai-history': {
         if (pixaiHistoryBusy) break;
         pixaiHistoryBusy = true; render();
-        try { const r = await api.pixaiTemplate('history'); ctx.notify(r.message || '已读取', r.recorded ? undefined : {error: true}); }
+        try { const r = await api.pixaiTemplate('history'); ctx.notify(r.message || '已读取', r.ok ? undefined : {error: true}); }
         catch (error) { ctx.notify(error.message, {error: true}); }
         finally { pixaiHistoryBusy = false; }
         await refreshPixai(); render(); break;
