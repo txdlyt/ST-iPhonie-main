@@ -531,6 +531,10 @@ export const activeStyle = draw => draw.engine === 'pixai' ? PIXAI_STYLE : draw.
 /** The 出图块格式 of a preset: the tag one, or the 自然语言 one when the preset says so (柏宝绘 writes its own). */
 const drawFormat = (settings, p, plan = false) => promptTemplate(settings.promptRules, 'draw-story', (plan ? 'planFormat' : 'format') + (p?.natural === true && !isBaibai(p) ? 'Nl' : ''));
 const activePreset = (draw, preset) => preset || draw.presets.find(x => x.id === draw.activePreset) || draw.presets[0];
+/** Does the preset in use write its picture blocks in natural language? (柏宝绘 never does.) */
+export const naturalLooks = settings => { const p = settings?.draw ? activePreset(settings.draw) : null; return p?.natural === true && !isBaibai(p); };
+/** The look a role is drawn with: its 自然语言 one when the preset in use is on, else its 外貌 tag; each stands in for the other when empty. */
+export const lookOf = (settings, role) => { const tag = String(role?.appearance || '').trim(), nl = String(role?.appearanceNl || '').trim(); return naturalLooks(settings) ? nl || tag : tag || nl; };
 const countOf = p => Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1));
 
 /** girl, boy or other from an appearance (its first gender tag); '' when it does not say. */
@@ -547,7 +551,7 @@ export function castList(settings, only = null) {
   const wanted = Array.isArray(only) ? new Set(only.map(n => String(n).trim())) : null;
   const roles = settings.routes.filter(r => !isPlaceholderRole(r.name) && (!wanted || wanted.has(r.name)));
   if (!roles.length) return wanted ? '（这段剧情里还没有登记的角色）' : '（还没有登记的角色）';
-  return roles.map(r => !r.appearance?.trim() ? `${r.name}（还没有外貌）` : genderOf(r.appearance) ? `${r.name}（${genderOf(r.appearance)}）` : r.name).join('；');
+  return roles.map(r => !lookOf(settings, r) ? `${r.name}（还没有外貌）` : (genderOf(r.appearance) || genderOf(r.appearanceNl)) ? `${r.name}（${genderOf(r.appearance) || genderOf(r.appearanceNl)}）` : r.name).join('；');
 }
 /**
  * Who the picture rules name: the open card's own people (its characters, the roles met in its story) and who speaks
@@ -596,7 +600,7 @@ export function budgetNumbers(settings, only = null) {
   if (!b) return null;
   const count = counterNow(b.kind) || estimateTokens, st = activeStyle(d);
   const head = countField(count, [st.artist, st.positive].map(x => (x || '').trim()).filter(Boolean).join(', '));
-  const looks = drawable(settings).filter(r => r.appearance?.trim() && (!only || only.includes(r.name))).map(r => `${r.name}约 ${countField(count, r.appearance)}`);
+  const looks = drawable(settings).filter(r => lookOf(settings, r) && (!only || only.includes(r.name))).map(r => `${r.name}约 ${countField(count, lookOf(settings, r))}`);
   const left = Math.max(0, b.limit - head);
   return {name: NAI_MODEL_NAMES[d.params.model] || d.params.model, limit: b.limit, head, looks, left, tags: Math.floor(left / tagCost(count))};
 }
@@ -662,7 +666,7 @@ export function planRequest(settings, {message, before = [], preset, only = null
  */
 function baibaiRequest(settings, p, {message, before = [], only = null, lore = '', outfits = [], min = null}) {
   const d = settings.draw, wanted = Array.isArray(only) ? new Set(only.map(n => String(n).trim())) : null;
-  const library = drawable(settings).filter(r => !wanted || wanted.has(r.name)).map(r => `- ${r.name}: tag=${r.appearance.trim().replace(/\s*\n+\s*/g, ' ')}`);
+  const library = drawable(settings).filter(r => !wanted || wanted.has(r.name)).map(r => `- ${r.name}: tag=${lookOf(settings, r).replace(/\s*\n+\s*/g, ' ')}`);
   return baibaiMessages({preset: p, engine: d.engine || 'nai', model: d.params?.model, story: paragraphs(message), library, lore, count: countOf(p), min: min ?? p.baibai?.min ?? 0, outfits, outfitsOn: p.outfits === true,
     previous: before.map(m => `${m.name}：${m.text}`).join('\n')});
 }
@@ -1000,7 +1004,7 @@ export function peopleCount(prompt) {
   for (const m of String(prompt).matchAll(/(?:^|[,\s(])(\d+)\+?\s*(?:girls?|boys?|others?)\b/gi)) n += Number(m[1]);
   return n;
 }
-const drawable = settings => settings.routes.filter(r => r.appearance?.trim() && !isPlaceholderRole(r.name));
+const drawable = settings => settings.routes.filter(r => (r.appearance?.trim() || r.appearanceNl?.trim()) && !isPlaceholderRole(r.name));
 /** The role a name in a picture means: by its name, else by one of its 别名 (roles merged keep their old names that way). */
 const roleNamed = (roles, name) => {
   const exact = roles.find(r => sameExact(r.name, name)); if (exact) return exact;
@@ -1098,7 +1102,7 @@ const LOOK_TAGS = /\b(?:hair|eyes|bangs|ponytail|twintails|braids?|ahoge|sideloc
 export function photoPicture(settings, {text = '', tags = '', owner = '', names = []}) {
   const caption = {text, tags, owner, names, roles: settings.routes};
   const drawn = photoTags(caption), cast = photoCast({...caption, tags: drawn}), roles = drawable(settings);
-  const looks = cast.map(n => roleNamed(roles, n)?.appearance || '').filter(Boolean);
+  const looks = cast.map(n => lookOf(settings, roleNamed(roles, n))).filter(Boolean);
   const count = peopleCount(drawn);
   if (!looks.length && cast.length < 2) return {prompt: drawn, characters: cast};
   let list = sceneTags(drawn, cast.length).split(',').map(t => t.trim()).filter(t => t && (!looks.length || !LOOK_TAGS.test(t)));
@@ -1198,7 +1202,7 @@ function pictureInputsOf(settings, tag, text = '') {
   if (!spec) {
     const roles = pictureRoles(settings, tag, text);
     return {prompt: [...head, tag.prompt].join(', '), negative: style.negative.trim(),
-      characters: roles.map(r => ({prompt: r.appearance.trim(), negative: fixedNegative(r, roles.length > 1), position: -1})), names: roles.map(r => r.name), params, ...withRefs(roles)};
+      characters: roles.map(r => ({prompt: lookOf(settings, r), negative: fixedNegative(r, roles.length > 1), position: -1})), names: roles.map(r => r.name), params, ...withRefs(roles)};
   }
   const roles = drawable(settings);
   // A block with no 角色 lines still shows somebody when its scene counts people: the registered ones the reply
@@ -1206,7 +1210,7 @@ function pictureInputsOf(settings, tag, text = '') {
   if (!spec.cast.length && peopleCount(spec.tags)) {
     const seen = pictureRoles(settings, {...tag, characters: [], prompt: spec.tags}, text);
     if (seen.length) return {prompt: [...head, sceneTags(spec.tags, seen.length), spec.nl].filter(Boolean).join(', '), negative: style.negative.trim(),
-      characters: seen.map(r => ({prompt: soloTags(r.appearance.trim()), negative: fixedNegative(r, seen.length > 1), position: -1})), names: seen.map(r => r.name), params, ...withRefs(seen)};
+      characters: seen.map(r => ({prompt: soloTags(lookOf(settings, r)), negative: fixedNegative(r, seen.length > 1), position: -1})), names: seen.map(r => r.name), params, ...withRefs(seen)};
   }
   const many = spec.cast.length > 1, taken = new Set();
   // Two people on one cell are drawn as one: a later one moves to the nearest free cell (below, above, right, left).
@@ -1222,7 +1226,7 @@ function pictureInputsOf(settings, tag, text = '') {
     return cell;
   };
   const characters = spec.cast.map(c => {
-    const role = roleNamed(roles, c.name), fixed = role?.appearance || spec.register.find(x => sameName(x.name, c.name))?.appearance || '';
+    const role = roleNamed(roles, c.name), fixed = (role && lookOf(settings, role)) || spec.register.find(x => sameName(x.name, c.name))?.appearance || '';
     // 固定负面 first (a role can have one with no 外貌 yet), then what this picture asks. Gender and count tags would hit the others.
     const unwanted = mergeTags((role || roleNamed(settings.routes, c.name))?.negative, c.negative);
     return {prompt: [mergeTags(soloTags(fixed), c.tags), c.nl].filter(Boolean).join(', '), negative: many ? mergeTags(withoutPeopleTags(unwanted), 'fused bodies') : unwanted, position: place(c.position)};

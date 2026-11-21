@@ -2,7 +2,7 @@ import {createView, esc, engines, btn, field, input, select, textArea, heading, 
 import {swipeRow, mountSwipeList} from './swipe-list.js';
 import {layerSort} from './layer-sort.js';
 import {layerTree} from '../core/layers.js';
-import {lookTest} from '../core/draw.js';
+import {lookTest, lookOf} from '../core/draw.js';
 import {openCustomCatalog, modelPicker} from './custom-catalog.js';
 import {voiceFromLink, customSetOf, customParams, customSlots} from '../core/custom-voice.js';
 import {pickPicture} from './draw-images.js';
@@ -53,7 +53,7 @@ export function rolesApp(ctx) {
     return state.roleGroups?.find(g => g.card === key)?.name || (key === space().key && space().name) || key.replace(/^[a-z]+:/, '').replace(/\.[^.]+$/, '');
   };
   /** What the 筛选 chips ask for. */
-  const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim()]};
+  const FILTERS = {card: ['这张卡', inCard], voice: ['待配音', r => !r.voice], look: ['没外貌', r => !r.appearance?.trim() && !r.appearanceNl?.trim()]};
   const tree = () => layerTree(api.getState().routes, api.getState().roleGroups).map(e => e.style ? {style: e.style.id} : {group: {...e.group}, styles: e.styles.map(r => r.id)});
   const groupName = () => { const taken = new Set(api.getState().roleGroups.map(g => g.name)); for (let n = 1; ; n++) { const name = n === 1 ? '新建组' : `新建组 ${n}`; if (!taken.has(name)) return name; } };
   /** Picked rows as roles: a group's row stands for its roles. */
@@ -240,7 +240,8 @@ export function rolesApp(ctx) {
           ${languageField('language', r.language || '', true, typedLanguages(api.getState()))}
         </div></details>
         <details data-group="role-persona"><summary>角色资料<small class="fold-note">${r.persona?.trim() ? r.persona.trim().length + ' 字' : '没写（读角色卡）'}</small></summary><div class="fold-body">${field('角色资料', textArea('persona', r.persona || '', 'rows="4" maxlength="4000" placeholder="例如：Hina，17 岁，学生会会长，嘴硬心软，和小春是青梅竹马"'), '聊天、论坛、朋友圈、查手机和电话写这个人时用的资料：身份、性格、说话方式、和谁是什么关系。\n\n酒馆里有这个人的角色卡时，不写也会读角色卡；写了就用这里的。没出场过、也没有角色卡的人（比如只在别的卡里出现的），在这里写几句，模型就不用凭空猜了。世界书照常按名字去找，最近的剧情也一直会带上。')}</div></details>
-        <details data-group="role-look"><summary>外貌 tag<small class="fold-note">${esc(r.appearance?.trim() ? r.appearance.trim().slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
+        <details data-group="role-look"><summary>外貌<small class="fold-note">${esc((r.appearance?.trim() || r.appearanceNl?.trim()) ? (r.appearance?.trim() || r.appearanceNl.trim()).slice(0, 24) : '没写')}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
+          ${field('外貌 自然语言', textArea('appearanceNl', r.appearanceNl || '', 'rows="3" maxlength="1500" placeholder="例如 四十二岁女性，黑色长发松散地挽在脑后，皮肤白皙，身材丰腴"'), '出图预设打开「出图块用自然语言」时，入画用这一栏；没打开就用上面的外貌 tag。两栏都写最省事，换预设不用改角色。\n\n用自然语言写，只写不会变的特征：年龄和性别、发型发色、瞳色、体型、肤色；衣服、表情、动作让模型按剧情写。哪一栏留空，就退回用另一栏。\n\n新角色第一次入画时，模型写的外貌会按当前预设的写法，自动填到对应的一栏。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
           ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
           <div class="actions role-try">${api.readLook ? btn('role-from-chat', icon('chat') + '从聊天读取', 'secondary') : ''}${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
@@ -524,7 +525,7 @@ export function rolesApp(ctx) {
       // 全局的外貌就是这个角色自己的外貌：清空后点保存才生效。
       case 'role-from-chat': await lookFromChat(el); break;
       case 'role-from-image': v.root.querySelector('[data-role-image]')?.click(); break;
-      case 'role-clear-look': current.appearance = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
+      case 'role-clear-look': current.appearance = ''; current.appearanceNl = ''; changed(); render(); ctx.notify('外貌已清空，点保存生效'); break;
       case 'audition': api.audition(current); break;
       case 'delete-role':
         if (await ctx.confirm('删除角色配音？', '其他角色的音色和预设会保留。')) {
@@ -603,9 +604,10 @@ export function rolesApp(ctx) {
   /** 试画一张: this look as it stands, on the 画风 in use. */
   let tried = null;
   async function tryLook(el) {
-    if (!current.appearance?.trim()) { ctx.notify('先写外貌 tag'); return; }
+    const look = lookOf(api.getState(), current);
+    if (!look) { ctx.notify('先写外貌'); return; }
     if (!api.drawReady()) { ctx.notify(api.drawMissing(), {error: true}); return; }
-    const input = lookTest(api.getState(), current), ask = api.paidPrompt(), paid = api.drawQuote(input.params).free === false, name = current.name?.trim() || '新角色', id = current.id || 'new';
+    const input = lookTest(api.getState(), {...current, appearance: look}), ask = api.paidPrompt(), paid = api.drawQuote(input.params).free === false, name = current.name?.trim() || '新角色', id = current.id || 'new';
     if (paid && !await ctx.confirm(ask.title, ask.text)) return;
     const label = el.innerHTML;
     await v.busy(el, async () => {

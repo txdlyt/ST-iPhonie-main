@@ -112,7 +112,7 @@ export function chooseRole(ctx, api, {title = '存给哪个角色'} = {}) {
     const roles = api.getState().routes.filter(r => r.name && !r.name.startsWith('(') );
     let done = false;
     const d = ctx.dialog(title, roles.length
-      ? `<div class="group">${roles.map(r => `<button type="button" class="list-row" data-pick-role="${esc(r.id)}"><span><strong class="tag-role-name">${esc(r.name)}</strong><small>${esc(r.appearance?.trim() ? '已有外貌：' + r.appearance.trim().slice(0, 28) : '还没写外貌')}</small></span></button>`).join('')}</div>`
+      ? `<div class="group">${roles.map(r => `<button type="button" class="list-row" data-pick-role="${esc(r.id)}"><span><strong class="tag-role-name">${esc(r.name)}</strong><small>${esc((r.appearance?.trim() || r.appearanceNl?.trim()) ? '已有外貌：' + (r.appearance?.trim() || r.appearanceNl.trim()).slice(0, 28) : '还没写外貌')}</small></span></button>`).join('')}</div>`
       : '<p class="help-copy">还没有角色。先在角色页新增一个。</p>');
     d.body.addEventListener('click', e => {
       const b = e.target.closest('[data-pick-role]');

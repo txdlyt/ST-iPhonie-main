@@ -706,7 +706,7 @@ export class TTSBackend {
         if (list.length < 2) throw Error('至少选两个角色才能合并');
         const keep = list.find(r => r.voice) || list[0], others = list.filter(r => r !== keep);
         keep.aliases = cleanAliases([...(keep.aliases || []), ...others.flatMap(r => [r.name, ...(r.aliases || [])])], keep.name);
-        for (const key of ['appearance', 'negative', 'persona']) if (!keep[key]?.trim()) { const from = others.find(r => r[key]?.trim()); if (from) keep[key] = from[key]; }
+        for (const key of ['appearance', 'appearanceNl', 'negative', 'persona']) if (!keep[key]?.trim()) { const from = others.find(r => r[key]?.trim()); if (from) keep[key] = from[key]; }
         if (!keep.ref) { const from = others.find(r => r.ref); if (from) keep.ref = from.ref; }
         const refs = others.map(r => r.ref);
         keep.bindings = Object.assign({}, ...others.map(r => r.bindings), keep.bindings);

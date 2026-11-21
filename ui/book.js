@@ -133,7 +133,7 @@ export function bookApp(ctx) {
       peopleSeen = {key, names};
     }
     if (!peopleSeen.names.length) return '';
-    const chip = name => { const looks = !!ctx.routeFor?.(name)?.appearance?.trim(); return `<button type="button" class="chip${looks ? '' : ' warn'}" data-bk-person="${esc(name)}" aria-label="${esc(name)}${looks ? '' : '，没写外貌'}">${esc(name)}${looks ? '' : ' · 没写外貌'}</button>`; };
+    const chip = name => { const looks = !!(r => r?.appearance?.trim() || r?.appearanceNl?.trim())(ctx.routeFor?.(name)); return `<button type="button" class="chip${looks ? '' : ' warn'}" data-bk-person="${esc(name)}" aria-label="${esc(name)}${looks ? '' : '，没写外貌'}">${esc(name)}${looks ? '' : ' · 没写外貌'}</button>`; };
     return `<div class="field"><span>出场人物${help('这一段里说过话的人。画他们的时候用角色 App 里写的外貌（有参考图也会带上），没写外貌的画出来就不像：点名字去角色 App 写一句，再回来做。改编时模型会给书里要紧的人一页「这本书里的人」，每人一小幅图和一句介绍。')}</span><div class="bk-people-row">${peopleSeen.names.map(chip).join('')}</div></div>`;
   }
 

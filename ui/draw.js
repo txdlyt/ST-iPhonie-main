@@ -14,7 +14,7 @@ import {layerSort} from './layer-sort.js';
 import {openImageViewer} from '../image-viewer.js';
 import {pickPicture, pictureData, readNovelAI, fitBase, fitGptReference, scaledPicture, enhanceSizes, composeFocused, composeGrid, canCopyPicture, copyPicture} from './draw-images.js';
 import {DIRECTOR_TOOLS, DIRECTOR_WORDS, EMOTIONS, upscaleBy, UPSCALE_MAX, naiFeatures, samplersFor, schedulesFor, qualityPresets, ucPresets, finalWords, NAI_SAMPLER_NAMES, maxEnhanceSize, usageImages, usageRefillPerDay} from '../core/novelai.js';
-import {LOCKS, unlockedParams, POSITION_GRIDS} from '../core/draw.js';
+import {LOCKS, unlockedParams, POSITION_GRIDS, lookOf} from '../core/draw.js';
 import {embeddedVibeFile} from '../core/vibes.js';
 import {randomPicture} from '../core/nai-random.js';
 import {wordHelper, chunkSheet, markedBox} from './draw-words.js';
@@ -44,7 +44,7 @@ const guideHTML = g => { const [across, down] = guideLines(g); return across.map
 
 export function drawApp(ctx) {
   const {api} = ctx, v = createView(ctx, 'draw'), urls = new Map();
-  let tab = 'prompt', idea = '', prompt = '', negative = '', characters = [], seed = -1, results = [], current = -1, newest = false, busy = false, subscription = null, epoch = 0;
+  let tab = 'prompt', idea = '', prompt = '', negative = '', characters = [], seed = -1, results = [], current = -1, newest = false, busy = false, inflight = 0, subscription = null, epoch = 0;
   /** 随机提示词: while it is there it is drawn instead of what is written; what is written stays. */
   let randomText = '', randomChars = null;
   /** How many pictures one 生成 makes (one request each, one after another). */
@@ -195,7 +195,7 @@ export function drawApp(ctx) {
         ${shown && e === 'nai' && keyed ? toolsHTML() : ''}
         <div class="segmented draw-tabs">${tabs.map(([k, l]) => `<button data-action="tab" data-tab="${k}" aria-pressed="${k === tab}">${l}</button>`).join('')}</div>
         ${body}
-        <div class="savebar"><div class="draw-count" role="group" aria-label="一次画几张">${[1, 2, 3, 4].map(k => { const off = e === 'pixai' && (k === 2 || k === 3); return `<button type="button" data-action="count" data-count="${k}" aria-pressed="${k === count}" aria-label="一次画 ${k} 张"${off ? ' disabled title="PixAI 一次只能出 1 张或 4 张"' : ''}>${k}</button>`; }).join('')}<small>张</small></div>${btn('generate', busy ? '正在画……' : (q.free === false ? icon('alert') : icon('paint')) + (count > 1 ? `画 ${count} 张` : '生成') + (q.free === false ? (e === 'gpt' ? '（要花钱）' : '（会扣 Anlas）') : ''), 'primary', busy || !keyed || comfy?.missing ? 'disabled' : '')}</div>`);
+        <div class="savebar"><div class="draw-count" role="group" aria-label="一次画几张">${[1, 2, 3, 4].map(k => { const off = e === 'pixai' && (k === 2 || k === 3); return `<button type="button" data-action="count" data-count="${k}" aria-pressed="${k === count}" aria-label="一次画 ${k} 张"${off ? ' disabled title="PixAI 一次只能出 1 张或 4 张"' : ''}>${k}</button>`; }).join('')}<small>张</small></div>${btn('generate', busy ? '正在画……' : (q.free === false ? icon('alert') : icon('paint')) + (count > 1 ? `画 ${count} 张` : '生成') + (q.free === false ? (e === 'gpt' ? '（要花钱）' : '（会扣 Anlas）') : '') + (inflight ? `（队里 ${inflight} 张）` : ''), 'primary', busy || !keyed || comfy?.missing ? 'disabled' : '')}</div>`);
     // A new picture goes on top of the column: show it.
     if (newest) { newest = false; const side = v.root.querySelector('.canvas-side'); if (side) side.scrollTop = 0; }
     meters();
@@ -619,7 +619,7 @@ export function drawApp(ctx) {
     randomText = ''; randomChars = null;
     seed = Number.isInteger(request.seed) ? request.seed : -1;
     const routes = api.getState().routes;
-    characters = (request.characters || []).map(c => ({name: routes.find(r => r.appearance?.trim() === c.prompt?.trim())?.name || '角色', prompt: c.prompt, ...(c.negative ? {negative: c.negative} : {}), position: c.position ?? -1}));
+    characters = (request.characters || []).map(c => ({name: routes.find(r => [r.appearance, r.appearanceNl].some(x => x?.trim() && x.trim() === c.prompt?.trim()))?.name || '角色', prompt: c.prompt, ...(c.negative ? {negative: c.negative} : {}), position: c.position ?? -1}));
     if (eng() === 'gpt' && request.roleRefs?.some(Boolean)) refs.useRoleRefs(request.roleRefs).catch(() => {});
     tab = 'prompt';
     render();
@@ -955,7 +955,9 @@ export function drawApp(ctx) {
    * kept with the picture, for 变体 and 增强.
    */
   async function drawMany(request, n = 1, allowPaid = false) {
-    busy = true;
+    // PixAI 反代 (API mode) keeps its own queue and 同时画 limit: 生成 stays pressable, each click joins the queue.
+    const multi = eng() === 'pixai' && state().pixai.mode === 'api';
+    if (multi) inflight += n; else busy = true;
     render();
     const fixed = Number.isInteger(request.params?.seed) && request.params.seed >= 0;
     const {focus, source, comesBack, ...asked} = request;
@@ -965,11 +967,11 @@ export function drawApp(ctx) {
       label: request.label + (n > 1 ? ` · ${i + 1}/${n}` : '')}).then(async made => {
       await keepPicture(comesBack ? {...made, params: {...made.params, ...comesBack}} : made, {focus, source, request});
       if (n > 1 && i < n - 1) render();
-    }));
+    }).finally(() => { if (multi) inflight = Math.max(0, inflight - 1); }));
     const failed = (await Promise.allSettled(jobs)).find(s => s.status === 'rejected' && !s.reason?.cancelled);
     if (failed) ctx.notify(failed.reason.message);
     if (allowPaid && eng() === 'nai') refreshSubscription(true);
-    busy = false;
+    if (!multi) busy = false;
     render();
     if (eng() === 'pixai') refreshPixai();
   }
@@ -1267,7 +1269,7 @@ export function drawApp(ctx) {
     for (const name of names) {
       const r = routes.find(x => x.name === name);
       if (!r || characters.some(c => c.name === r.name)) continue;
-      characters.push({name: r.name, prompt: r.appearance || '', ...(r.negative ? {negative: r.negative} : {}), position: -1});
+      characters.push({name: r.name, prompt: lookOf(api.getState(), r), ...(r.negative ? {negative: r.negative} : {}), position: -1});
       added.push(r.name);
     }
     return added;
@@ -1283,7 +1285,7 @@ export function drawApp(ctx) {
       const b = e.target.closest('[data-pick]');
       if (!b) return;
       const r = routes.find(x => x.id === b.dataset.pick);
-      characters.push({name: r.name, prompt: r.appearance || '', ...(r.negative ? {negative: r.negative} : {}), position: -1});
+      characters.push({name: r.name, prompt: lookOf(api.getState(), r), ...(r.negative ? {negative: r.negative} : {}), position: -1});
       d.close();
       render();
     });

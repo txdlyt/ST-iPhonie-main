@@ -15,7 +15,7 @@ import {storyScope, mapStory} from './core/story-scope.js';
 // automatically. Older records ({url, seed, …}) read as a single version.
 import {storyReply} from './core/outgoing.js';
 import {OUTFIT_KEY, normalizeBook, outfitsBefore, currentOutfits, recordOutfits, forgetOutfit} from './core/outfits.js';
-import {drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
+import {naturalLooks, lookOf, drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
 import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
@@ -404,9 +404,11 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const here = x => !x.cards?.length || x.cards.some(k => k === key || k === save || (!!key && k.split('#')[0] === key));
     for (const tag of parsePictures(message?.mes || '')) for (const r of tag.spec?.register || []) {
       const route = settings().routes.find(x => sameExact(x.name, r.name) && here(x));
-      if (route?.appearance?.trim() || added.includes(r.name)) continue;
+      if (route?.appearance?.trim() || route?.appearanceNl?.trim() || added.includes(r.name)) continue;
+      // The model wrote it the way the preset in use asks: tags, or natural language.
+      const field = naturalLooks(settings()) ? 'appearanceNl' : 'appearance';
       try {
-        backend.saveRoute(route ? {...route, appearance: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', appearance: r.appearance});
+        backend.saveRoute(route ? {...route, [field]: r.appearance} : {name: r.name, engine: 'fish', voice: '', model: '', language: '', [field]: r.appearance});
         added.push(r.name);
       } catch { /* an unusable name is skipped */ }
     }
@@ -844,7 +846,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const n = budgetNumbers(s);
     if (!n) return first;
     // The looks of the people already in 角色 come out of the same room.
-    const looks = s.routes.filter(r => r.appearance?.trim() && cast.some(c => sameName(c, r.name))).reduce((sum, r) => sum + countField(count, r.appearance), 0);
+    const looks = s.routes.filter(r => lookOf(s, r) && cast.some(c => sameName(c, r.name))).reduce((sum, r) => sum + countField(count, lookOf(s, r)), 0);
     const left = Math.max(0, n.left - looks);
     let result = first, used = countField(count, first.prompt), messages = prompt;
     for (let round = 0; prompt && round < 2 && used < left * 0.75; round++) {
