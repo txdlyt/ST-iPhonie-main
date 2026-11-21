@@ -106,7 +106,7 @@ export const DEFAULT_DRAW_ENTRIES = Object.freeze([
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。名字只用正文里写明的真名（姓名牌、旁白、别人叫的名字）：别人对 TA 的称呼（姐姐、哥哥、阿姨、老师、护士、小姐、先生）和身份（护士、医生、店员）都不是名字，不能拿来当名字登记；正文还没出现真名就不写这一行的「新外貌」，这个人在「角色」行里按身份写（比如 护士）。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ]);
@@ -200,7 +200,7 @@ export const V07_DRAW_ENTRIES = Object.freeze([
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。名字只用正文里写明的真名（姓名牌、旁白、别人叫的名字）：别人对 TA 的称呼（姐姐、哥哥、阿姨、老师、护士、小姐、先生）和身份（护士、医生、店员）都不是名字，不能拿来当名字登记；正文还没出现真名就不写这一行的「新外貌」，这个人在「角色」行里按身份写（比如 护士）。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ]);
@@ -270,7 +270,7 @@ export const V05_DRAW_ENTRIES = [
   ].join('\n')},
   {id: 'identity', title: '作品角色与新角色', text: [
     '明确来自已有动画、游戏、小说的角色，tag 第一个写模型认得的英文识别 tag，格式「角色名 (作品名)」，比如 hatsune miku (vocaloid)；括号不转义，作品名不缩写。拿不准是哪部作品就当原创角色，不写。',
-    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。'
+    '名单里没有、但有名字的新角色第一次入画时，在这个出图块里加一行「新外貌」：名字｜固定外貌 tag｜固定外貌的中文描述（两份都写：第一份是英文 tag，第二份是一句中文自然语言）。只写不会随场景变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征，作品角色把识别 tag 放最前；不写衣服、表情、动作。名字照正文原文，中文名不要翻译或改成拼音。名字只用正文里写明的真名（姓名牌、旁白、别人叫的名字）：别人对 TA 的称呼（姐姐、哥哥、阿姨、老师、护士、小姐、先生）和身份（护士、医生、店员）都不是名字，不能拿来当名字登记；正文还没出现真名就不写这一行的「新外貌」，这个人在「角色」行里按身份写（比如 护士）。'
   ].join('\n')},
   {id: 'size', title: '画幅', text: '「画幅」写 竖、横、方 之一：单人、站姿、特写、贴得很近的两个人用竖；多人铺开、远景、全景用横。先想好镜头再定画幅，拿不准用竖。'}
 ];
@@ -854,6 +854,8 @@ export function hashText(value) {
   return h.toString(36);
 }
 
+/** 姐姐、阿姨、护士… are how people are called or what they do, not who they are: never a name to register. */
+export const isAddressTerm = name => /^(?:[大小老]?(?:姐姐?|哥哥?|妹妹?|弟弟?|姨|阿姨|叔叔?|伯伯?|姑姑?|舅舅?|妈妈?|爸爸?|奶奶|爷爷|婆婆|公公|嫂子|姐夫)|(?:护士|医生|大夫|老师|老板|老板娘|店员|服务员|师傅|同学|女士|先生|小姐|美女|帅哥|姑娘|大妈|大爷|路人|陌生人|她|他)(?:们)?)$/.test(String(name || '').trim());
 const FIELDS = {画幅: 'size', 尺寸: 'size', 场景: 'tags', 基础: 'tags', 描述: 'nl', 角色: 'cast', 人物: 'cast', 新外貌: 'register', 登记: 'register', 位置: 'at', 负面: 'negative', 原样: 'whole', 服装: 'outfitLine'};
 const split = value => value.split(/[|｜]/).map(x => x.trim());
 /** Reads a block body; null when it has none of the field lines (an older one-line tag). */
@@ -888,7 +890,7 @@ export function parseBlock(body) {
       let appearance = '', appearanceNl = '';
       if (parts.length >= 2) { [appearance, appearanceNl] = /[\u3400-\u9fff]/.test(parts[0]) && !/[\u3400-\u9fff]/.test(parts[1]) ? [parts[1], parts[0]] : parts; }
       else if (parts.length) { if (/[\u3400-\u9fff]/.test(parts[0])) appearanceNl = parts[0]; else appearance = parts[0]; }
-      if (name && (appearance || appearanceNl)) spec.register.push({name, appearance, appearanceNl});
+      if (name && !isAddressTerm(name) && (appearance || appearanceNl)) spec.register.push({name, appearance, appearanceNl});
     }
     // 原样：是 — the tags already hold everyone's looks (柏宝绘 blocks without 角色 lines): the phone adds none of its own.
     else if (key === 'whole') spec.whole = /^(?:是|true|yes|1)/i.test(value);
