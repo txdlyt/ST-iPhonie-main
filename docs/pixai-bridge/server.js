@@ -29,6 +29,9 @@ const CONFIG = {
   // 防止 nginx / Cloudflare / 酒馆转发这些中间环节因为「一直没有任何数据」把连接切断（酒馆会报 502/504/524，第一队列就断了）。
   keepAliveStartMs: Number(env('KEEPALIVE_START_SECONDS', 5)) * 1000,
   keepAliveMs: Number(env('KEEPALIVE_SECONDS', 10)) * 1000,
+  // 返图前先压缩：PNG 转 WebP，压完比原图小一截才用（和插件的「压缩旧图」同一个规则）。PACK_IMAGES=0 关掉。
+  packImages: env('PACK_IMAGES', '1') !== '0',
+  packQuality: Number(env('PACK_QUALITY', 0.9)),
   // 找不到生图页时（比如 VPS 重启后浏览器是空白页）自动打开的地址
   pixaiUrl: env('PIXAI_URL', 'https://pixai.art/zh/generator/image'),
   // 打开生图页后自动选的模型（名字必须以此结尾）；设成空字符串则不自动选
@@ -63,6 +66,32 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '20mb' }));
 
 let browser;
+// 返图压缩：用浏览器自带的画布转 WebP（不用额外装库）。放在单独的隔离环境里，不碰 PixAI 的标签页。
+let packPage = null;
+async function packImage(file) {
+  if (!CONFIG.packImages || path.extname(file.name).toLowerCase() !== '.png') return file;
+  try {
+    if (!packPage || packPage.isClosed()) packPage = await (await (await connectBrowser()).newContext()).newPage();
+    const job = packPage.evaluate(async ({ data, quality }) => {
+      const bin = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bin], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0);
+      const out = await canvas.convertToBlob({ type: 'image/webp', quality });
+      if (out.type !== 'image/webp') return null;
+      return await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1]); r.onerror = reject; r.readAsDataURL(out); });
+    }, { data: file.data.toString('base64'), quality: CONFIG.packQuality });
+    const b64 = await Promise.race([job, new Promise((_, no) => setTimeout(() => no(new Error('压缩超时')), 30000))]);
+    const packed = b64 ? Buffer.from(b64, 'base64') : null;
+    if (!packed || packed.length > file.data.length * 0.7) return file;
+    console.log(`返图压缩：${file.name} ${(file.data.length / 1048576).toFixed(2)}MB → ${(packed.length / 1048576).toFixed(2)}MB（WebP）`);
+    return { name: file.name.replace(/\.png$/i, '.webp'), data: packed };
+  } catch (error) {
+    console.log(`返图压缩失败，原图返回：${error.message}`);
+    try { await packPage?.close(); } catch {} packPage = null;
+    return file;
+  }
+}
 let generating = false;
 // 网页在被驱动的两段：出图前的准备（填提示词、点「生成」）和图画好后的取图（点下载）。这两段里不能动网页上的设置；中间等 PixAI 画的那段可以。
 let preparing = false, collecting = false;
@@ -74,7 +103,7 @@ const isGenerating = () => generating && Date.now() - genStart < 8 * 60 * 1000;
 async function connectBrowser() {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.connectOverCDP(CONFIG.cdp);
-    for (const ctx of browser.contexts()) if (!ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); }
+    for (const ctx of browser.contexts()) if (!ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); ctx.on('response', onApiResponse); }
   }
   return browser;
 }
@@ -981,6 +1010,12 @@ async function onApiRequest(request) {
     const h = await request.allHeaders();
     const picked = {};
     for (const key of API_KEEP) if (h[key]) picked[key] = h[key];
+    for (const key of API_KEEP) if (key !== 'authorization' && h[key]) baseHeaders[key] = h[key];
+    if (new URL(url).pathname === '/v2/auth/refresh-token') {
+      const sendable = {};
+      for (const key of ['accept', 'content-type', 'x-browser-id', 'x-u3t']) if (h[key]) sendable[key] = h[key];
+      refreshTpl = { headers: sendable, body: request.postData() || undefined };
+    }
     if (!picked.authorization) {
       const u = new URL(url), tag = u.host + u.pathname;
       if (u.host.startsWith('api.') && !seenPaths.has(tag) && seenPaths.size < 20) {
@@ -997,9 +1032,55 @@ async function onApiRequest(request) {
     console.warn('读取 PixAI API 请求头失败：', error.message);
   }
 }
+
+const baseHeaders = {};
+let refreshTpl = null;
+const shapeOf = (node, depth = 0) => node && typeof node === 'object'
+  ? Object.fromEntries(Object.entries(node).slice(0, 12).map(([k, v]) => [k, depth < 2 ? shapeOf(v, depth + 1) : typeof v]))
+  : (typeof node === 'string' ? `string(${node.length})` : typeof node);
+function findToken(node, depth = 0) {
+  if (!node || depth > 4) return '';
+  if (typeof node === 'string') return /^(Bearer\s+)?eyJ[\w-]+\.[\w-]+\.[\w-]*$/.test(node) ? node : '';
+  if (typeof node === 'object') {
+    const score = key => /access/i.test(key) ? 2 : /refresh/i.test(key) ? 0 : 1;
+    const entries = Object.entries(node).sort((a, b) => score(b[0]) - score(a[0]));
+    for (const [, value] of entries) { const found = findToken(value, depth + 1); if (found) return found; }
+  }
+  return '';
+}
+function adoptToken(data, where) {
+  const token = findToken(data);
+  if (!token) { console.warn(`[抓头] ${where}：refresh-token 响应里没找到令牌，结构：${JSON.stringify(shapeOf(data))}`); return false; }
+  live.headers = { ...baseHeaders, authorization: /^Bearer\s/i.test(token) ? token : 'Bearer ' + token };
+  live.at = Date.now();
+  console.log(`已从 refresh-token 取得 API 令牌（${where}）`);
+  return true;
+}
+async function onApiResponse(response) {
+  try {
+    if (!/^https:\/\/api\.pixai\.art\/v2\/auth\/refresh-token(\?|$)/.test(response.url())) return;
+    if (!response.ok()) { console.warn(`[抓头] 页面自己的 refresh-token 返回 ${response.status()}`); return; }
+    adoptToken(await response.json(), '页面自己的请求');
+  } catch (error) {
+    console.warn('[抓头] 读取 refresh-token 响应失败：', error.message);
+  }
+}
+async function refreshTokenNow(page) {
+  if (!refreshTpl) { console.warn('[抓头] 还没抄到过页面自己的 refresh-token 请求，没法主动取令牌'); return false; }
+  const result = await page.evaluate(async tpl => {
+    try {
+      const r = await fetch('https://api.pixai.art/v2/auth/refresh-token', { method: 'POST', credentials: 'include', headers: tpl.headers, body: tpl.body });
+      return r.ok ? { data: await r.json() } : { status: r.status };
+    } catch (error) { return { error: String(error && error.message || error) }; }
+  }, refreshTpl).catch(error => ({ error: error.message }));
+  if (apiReady()) return true;
+  if (result.status || result.error) { console.warn(`[抓头] 主动取令牌失败：${result.status ? 'HTTP ' + result.status : result.error}`); return false; }
+  return adoptToken(result.data, '主动请求');
+}
+
 function watchApiHeaders(page) {
   const ctx = page?.context?.();
-  if (ctx && !ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); }
+  if (ctx && !ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); ctx.on('response', onApiResponse); }
 }
 async function nudgePage(page) {
   await page.evaluate(() => {
@@ -1157,6 +1238,7 @@ async function apiGenerate(page, prompt, count, spec = null, resume = null) {
   // 不主动刷新 PixAI 页面：只等待当前页面自然产生鉴权请求。
   // 如果仍未捕获到请求头，由上层按原有逻辑报错或回退网页模式。
   for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500);
+  if (!apiReady()) await refreshTokenNow(page);
   if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500); }
   if (!apiReady()) throw apiFail('当前 PixAI 页面尚未产生可用的 API 鉴权请求；请在已登录的生图页正常操作一次后重试（本程序不会自动刷新页面；日志里的「抓头诊断」会说明看到了什么请求）', true);
   // 插件在 API 模式下把模型、宽高、LoRA 权重都带在请求里：不碰网页、不用页面上选着的东西
@@ -1875,7 +1957,7 @@ h1 b{background:linear-gradient(90deg,#7c5cdb,#e8629a,#ffb86b,#7c5cdb);backgroun
 .mdlname b{font-size:15px;font-weight:900;line-height:1.2;background:linear-gradient(90deg,#7c5cdb,#e8629a);-webkit-background-clip:text;background-clip:text;color:transparent;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .mdlname em{font-style:normal;font-size:11px;color:var(--muted);line-height:1.2}
 .mdlname em:empty{display:none}
-.setchips{display:flex;flex-wrap:nowrap;gap:5px;overflow:hidden}
+.setchips{display:flex;flex-wrap:wrap;gap:5px}
 .setchips span{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;white-space:nowrap;border-radius:999px;background:linear-gradient(135deg,rgba(167,139,250,.16),rgba(231,166,210,.16));border:1px solid var(--line);font-size:12.5px;font-weight:700;color:var(--ink)}
 .setchips span small{font-size:11px;font-weight:600;color:var(--muted)}
 .setchips:empty{display:none}
@@ -2010,7 +2092,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <div class="curwrap"><div class="cur">
 <div class="top">
 <div class="who"><small>● 正在使用</small><div class="em" id="curEm">—</div></div>
-<div class="pts"><b id="bal">—</b><small>积分 · 单次 <span id="cost">—</span></small></div>
+<div class="pts"><b id="bal">—</b><small>积分</small></div>
 </div>
 <div class="acts">
 <button class="mini act" id="checkin" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8M8 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4-5a2.5 2.5 0 0 1 0 5"/></svg>签到</button>
@@ -2206,14 +2288,13 @@ function renderModels(j) {
 function show(j) {
   if (j && typeof j.allowLocal === 'boolean') $('localOrigin').checked = j.allowLocal;
   if (j && typeof j.balance === 'number') tween($('bal'), j.balance); else $('bal').textContent = '—';
-  $('cost').textContent = fmt(j && j.cost);
   const parts = [];
   if (j && j.ratio) parts.push('比例 ' + j.ratio);
   if (j && j.size) parts.push(j.size);
   if (j && j.count) parts.push('一次 ' + j.count + ' 张');
   setting = parts.join(' · ');
   const chips = $('setChips'); chips.textContent = '';
-  [['比例', j && j.ratio], ['尺寸', j && j.size], ['一次', j && j.count ? j.count + ' 张' : '']].forEach(function (x) {
+  [['比例', j && j.ratio], ['尺寸', j && j.size], ['一次', j && j.count ? j.count + ' 张' : ''], ['单次', j && typeof j.cost === 'number' ? fmt(j.cost) + ' 积分' : '']].forEach(function (x) {
     if (!x[1]) return;
     const c = document.createElement('span'), k = document.createElement('small');
     k.textContent = x[0]; c.appendChild(k); c.appendChild(document.createTextNode(String(x[1]))); chips.appendChild(c);
@@ -3126,7 +3207,9 @@ app.post('/ai/generate-image', async (req, res) => {
       return;
     }
     try {
-      const { file, index, size, taskId } = await batcher.take(prompt, hint, spec);
+      const taken = await batcher.take(prompt, hint, spec);
+      const { index, size, taskId } = taken;
+      const file = await packImage(taken.file); // 压缩期间保活字节照常发
 
       stopBeat(); // 之后不会再写保活字节，pad 就是最终的前导字节数
       const zip = makeZip([{

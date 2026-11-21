@@ -553,71 +553,8 @@ export class NovelAIClient {
     if (!reader) return unzipFirstImage(await response.arrayBuffer());
     const steps = body.parameters.steps;
     let held = new Uint8Array(0), final = null, failed = '', checked = false;
-    let seen = false, cut = '', total = 0, last = null, head = '';
-    const blank = byte => byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+    let seen = false, cut = '', total = 0, last = null;
     const kinds = new Map();
-    // One frame (NovelAI's own MessagePack, or an SSE event turned into the same shape): previews go to onFrame, the last picture is kept.
-    const eat = frame => {
-      const image = typeof frame?.image === 'string' ? Uint8Array.from(atob(frame.image), c => c.charCodeAt(0)) : frame?.image;
-      { const kind = String(frame?.event_type ?? (frame && typeof frame === 'object' ? 'keys:' + Object.keys(frame).slice(0, 4).join('/') : typeof frame)); kinds.set(kind, (kinds.get(kind) || 0) + 1); if (image) last = {kind, blob: new Blob([image], {type: pictureType(image)})}; }
-      if (frame?.event_type === 'error') failed = String(frame.message || 'NovelAI 没画成');
-      else if (frame?.event_type === 'intermediate' && image) onFrame({image: new Blob([image], {type: pictureType(image)}), step: Number(frame.step_ix) || 0, steps});
-      else if (frame?.event_type === 'final' && image) final = new Blob([image], {type: pictureType(image)});
-    };
-    // A relay may answer with SSE text instead of NovelAI's binary frames ("event: ..." / "data: {...}", the picture in base64 inside the JSON).
-    let sse = false, text = '', scan = 0;
-    const decoder = new TextDecoder(), notes = [];
-    const base64Of = value => {
-      if (typeof value !== 'string' || value.length < 100) return '';
-      const data = /^data:image\/[\w.+-]+;base64,/i.exec(value);
-      const body64 = data ? value.slice(data[0].length) : value;
-      return /^[A-Za-z0-9+/_-]{100}/.test(body64.slice(0, 100)) ? body64.replace(/-/g, '+').replace(/_/g, '/').replace(/\s+/g, '') : '';
-    };
-    const imageIn = (value, depth = 0) => {
-      const direct = base64Of(value); if (direct) return direct;
-      if (!value || typeof value !== 'object' || depth > 3) return '';
-      if (Array.isArray(value)) { for (const item of value.slice(0, 4)) { const found = imageIn(item, depth + 1); if (found) return found; } return ''; }
-      const first = ['image', 'b64_json', 'b64', 'base64', 'result', 'data', 'output', 'images', 'img'];
-      for (const key of [...first, ...Object.keys(value).filter(key => !first.includes(key))]) { if (key in value) { const found = imageIn(value[key], depth + 1); if (found) return found; } }
-      return '';
-    };
-    const kindOf = name => /err|fail/i.test(name) ? 'error' : /intermediate|progress|preview|partial|step/i.test(name) ? 'intermediate' : /final|complete|result|done|finish|success|end|image/i.test(name) ? 'final' : name;
-    const sseEvent = raw => {
-      let name = '', parts = [];
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line || line[0] === ':') continue;
-        const at = line.indexOf(':'), field = at < 0 ? line : line.slice(0, at);
-        const value = at < 0 ? '' : line.slice(at + 1).replace(/^ /, '');
-        if (field === 'event') name = value; else if (field === 'data') parts.push(value);
-      }
-      const data = parts.join('\n');
-      if (!name && !data) return;
-      let parsed = data; try { parsed = JSON.parse(data); } catch {}
-      const object = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
-      const named = String((object && (parsed.event_type || parsed.type || parsed.event)) || name || '');
-      const frame = object ? {...parsed} : {};
-      const picture = imageIn(parsed);
-      if (picture) frame.image = picture; else if (typeof frame.image !== 'string') delete frame.image;
-      if (object && !frame.message) frame.message = parsed.error?.message || (typeof parsed.error === 'string' ? parsed.error : '') || parsed.detail || '';
-      frame.event_type = kindOf(named);
-      // done / any event that says it failed (success:false, or an error text and no picture): the relay's own reason is the message
-      if (object && !picture && (parsed.success === false || parsed.error)) frame.event_type = 'error';
-      if (notes.length < 6 && !notes.some(note => note.startsWith(named + '['))) notes.push(`${named || '?'}[${object ? Object.keys(parsed).slice(0, 6).join(',') : typeof parsed}] ${data.length}字符${picture ? '含图' : '无图：' + data.slice(0, 80).replace(/\s+/g, ' ')}`);
-      eat(frame);
-    };
-    const feedSse = (bytes, end = false) => {
-      text += decoder.decode(bytes, {stream: !end});
-      const gap = /\r?\n\r?\n/g;
-      for (;;) {
-        gap.lastIndex = scan;
-        const hit = gap.exec(text);
-        if (!hit) { scan = Math.max(0, text.length - 3); break; }
-        const raw = text.slice(0, hit.index); text = text.slice(hit.index + hit[0].length); scan = 0;
-        sseEvent(raw);
-      }
-      if (end && text.trim()) { sseEvent(text); text = ''; }
-    };
-    const looksSse = at => [0x3a].includes(held[at]) || ['event', 'data:', 'retry', 'id:'].some(word => [...word].every((letter, i) => held[at + i] === letter.charCodeAt(0)));
     for (;;) {
       let piece;
       // iPhone cuts a stream when the page goes to the background or the network changes: "Load failed" / "network connection was lost".
@@ -625,25 +562,22 @@ export class NovelAIClient {
       const {done, value} = piece;
       if (done) break;
       seen = true; total += value.length;
-      if (!head) head = Array.from(value.subarray(0, 8), byte => byte.toString(16).padStart(2, '0')).join(' ');
-      if (sse) { feedSse(value); continue; }
       const next = new Uint8Array(held.length + value.length);
       next.set(held); next.set(value, held.length); held = next;
-      // A relay may answer the stream's address with the usual ZIP (maybe after some blank keep-alive bytes: the ZIP's offsets count them, so the whole is kept).
-      if (!checked) { let lead = 0; while (lead < held.length && blank(held[lead])) lead++; if (held.length >= lead + 5) { checked = true; if (held[lead] === 0x50 && held[lead + 1] === 0x4b) { for (;;) { const more = await reader.read(); if (more.done) break; const all = new Uint8Array(held.length + more.value.length); all.set(held); all.set(more.value, held.length); held = all; } return unzipFirstImage(held.buffer.slice(held.byteOffset, held.byteOffset + held.byteLength)); } if (looksSse(lead)) { sse = true; feedSse(held); held = new Uint8Array(0); continue; } if (lead) held = held.subarray(lead); } }
-      for (;;) {
-        if (!checked) break; // not yet known whether it begins with a ZIP or a frame: leave the data as it is
-        // Blank keep-alive bytes between frames are skipped too (a real frame's length cannot begin with one: that would be 150 MB and more).
-        let skip = 0; while (skip < held.length && blank(held[skip])) skip++; if (skip) held = held.subarray(skip);
-        if (held.length < 4) break;
+      // A relay may answer the stream's address with the usual ZIP.
+      if (!checked && held.length >= 2) { checked = true; if (held[0] === 0x50 && held[1] === 0x4b) { for (;;) { const more = await reader.read(); if (more.done) break; const all = new Uint8Array(held.length + more.value.length); all.set(held); all.set(more.value, held.length); held = all; } return unzipFirstImage(held.buffer.slice(held.byteOffset, held.byteOffset + held.byteLength)); } }
+      while (held.length >= 4) {
         const size = new DataView(held.buffer, held.byteOffset, 4).getUint32(0);
         if (held.length < 4 + size) break;
         const frame = unpack(held.subarray(4, 4 + size));
         held = held.slice(4 + size);
-        eat(frame);
+        const image = typeof frame?.image === 'string' ? Uint8Array.from(atob(frame.image), c => c.charCodeAt(0)) : frame?.image;
+        { const kind = String(frame?.event_type ?? (frame && typeof frame === 'object' ? 'keys:' + Object.keys(frame).slice(0, 4).join('/') : typeof frame)); kinds.set(kind, (kinds.get(kind) || 0) + 1); if (image) last = {kind, blob: new Blob([image], {type: pictureType(image)})}; }
+        if (frame?.event_type === 'error') failed = String(frame.message || 'NovelAI 没画成');
+        else if (frame?.event_type === 'intermediate' && image) onFrame({image: new Blob([image], {type: pictureType(image)}), step: Number(frame.step_ix) || 0, steps});
+        else if (frame?.event_type === 'final' && image) final = new Blob([image], {type: pictureType(image)});
       }
     }
-    if (sse) { try { feedSse(new Uint8Array(0), true); } catch (error) { if (!failed) failed = 'SSE 内容读不懂：' + (error?.message || error); } }
     if (final) return final;
     // A relay may name the last frame differently ("complete", "result"...): the last picture frame that is not a step preview is it.
     if (last && last.kind !== 'intermediate' && !failed) return last.blob;
@@ -653,8 +587,7 @@ export class NovelAIClient {
     // What did arrive, so that where it broke can be told: a frame cut in the middle (held bytes left) is a connection or relay that
     // gave up while the last picture was on its way; a clean end with only previews is a relay that does not send the last frame.
     const seenKinds = [...kinds].map(([k, n]) => `${k}×${n}`).join(' ') || '无';
-    const declared = held.length >= 4 ? new DataView(held.buffer, held.byteOffset, 4).getUint32(0) : 0;
-    const facts = `收到 ${total} 字节，帧：${seenKinds}${held.length ? `，最后一帧只到一半（剩 ${held.length} 字节${declared ? `，这一帧声明有 ${declared} 字节` : ''}）` : ''}，开头字节：${head || '无'}${notes.length ? `，SSE 事件：${notes.join(' ; ')}` : ''}`;
+    const facts = `收到 ${total} 字节，帧：${seenKinds}${held.length ? `，最后一帧只到一半（剩 ${held.length} 字节）` : ''}`;
     throw Object.assign(Error(failed ? 'NovelAI 没画成：' + failed : `NovelAI 的流式回应中断了，没有收到最后的图（${facts}）`), {status: 0});
   }
   /** Tags that begin with what is being typed: [{tag, count}]. NovelAI asks no Anlas for this. */

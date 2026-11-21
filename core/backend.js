@@ -1973,6 +1973,9 @@ export class TTSBackend {
      *  key identifies the job in the queue (the same key joins the job already waiting); label is shown in the line. */
     generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [], roleRefs = [], preview = false, batch = null } = {}, preparePhoto) {
         this.assertOpen();
+        // A picture asked for without a key is a job of its own. Left as undefined it shared one kept PixAI run with every other keyless
+        // picture: a second click with the same words fetched the first picture again (bridge_batch.recover) instead of drawing a new one.
+        if (key === undefined || key === null || key === '') key = crypto.randomUUID();
         if (!String(prompt || '').trim()) return Promise.reject(Error('请先写提示词'));
         const engine = this.settings.draw.engine;
         if (!this.drawReady()) return Promise.reject(Error(this.drawMissing()));
