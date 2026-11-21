@@ -496,6 +496,8 @@ export function normalizeDraw(value) {
       // 柏宝绘: the preset that plans and reads pictures its own way, with its two switches.
       // 当前服装: kept by 柏宝绘 unless switched off; by the others when switched on.
       outfits: p.logic === 'baibai' ? p.outfits !== false : p.outfits === true,
+      // 出图块用自然语言: this preset's picture blocks are written in Chinese sentences, not tags (not for 柏宝绘).
+      ...(p.logic !== 'baibai' && p.natural === true ? {natural: true} : {}),
       ...(p.logic === 'baibai' ? {logic: 'baibai', baibai: {nl: p.baibai?.nl !== false, negative: p.baibai?.negative === true, min: Math.min(DRAW_COUNT_MAX, Math.max(0, Math.round(Number(p.baibai?.min)) || 0))}} : {}),
       entries: entries.map(e => ({id: String(e.id || crypto.randomUUID()), title: text(e.title, 80), enabled: e.enabled !== false, text: text(e.text, 20000), ...entryEngines(e.engines), ...(e.injection ? {injection: {...DEFAULT_PRESET.injection, ...e.injection}} : {})}))
     };
@@ -526,6 +528,8 @@ export const styleIdFor = (draw, engine = draw.engine) => (engine === 'nai' ? ''
 // PixAI has no 画风: its look is the page settings recorded in 参数, so it adds no style prompt of its own.
 export const PIXAI_STYLE = Object.freeze({id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}});
 export const activeStyle = draw => draw.engine === 'pixai' ? PIXAI_STYLE : draw.styles.find(s => s.id === styleIdFor(draw)) || draw.styles[0];
+/** The 出图块格式 of a preset: the tag one, or the 自然语言 one when the preset says so (柏宝绘 writes its own). */
+const drawFormat = (settings, p, plan = false) => promptTemplate(settings.promptRules, 'draw-story', (plan ? 'planFormat' : 'format') + (p?.natural === true && !isBaibai(p) ? 'Nl' : ''));
 const activePreset = (draw, preset) => preset || draw.presets.find(x => x.id === draw.activePreset) || draw.presets[0];
 const countOf = p => Math.min(DRAW_COUNT_MAX, Math.max(1, Math.round(Number(p.count)) || 1));
 
@@ -575,7 +579,7 @@ export function assistantDrawGuide(settings) {
   // 柏宝绘 answers in its own JSON: the assistant writes blocks by the first ordinary preset.
   const p = draw && (isBaibai(activePreset(draw)) ? draw.presets.find(x => !isBaibai(x)) || DEFAULT_PRESET : activePreset(draw));
   if (!draw || !p) return '';
-  const engine = draw.engine || 'nai', style = activeStyle(draw) || {}, format = promptTemplate(settings.promptRules, 'draw-story', 'format');
+  const engine = draw.engine || 'nai', style = activeStyle(draw) || {}, format = drawFormat(settings, p);
   const {entries, fill} = ruleText(settings, {...p, count: 1}, format, () => '');
   return promptText(settings.promptRules, 'assistant', 'drawGuide', {'引擎': DRAW_ENGINE_NAMES[engine] || engine, '画风': style.name || '默认画风',
     '绘图规则': entries.filter(e => e.id !== 'pick').map(e => fill(e.text)).join('\n\n'), '出图格式': format, '名单': castList(settings), 'tag长度': budgetText(settings)});
@@ -608,7 +612,7 @@ export function drawPromptPlan(settings, preset, only = null) {
   if (!preset && (!draw?.enabled || draw.mode !== 'inline')) return [];
   const p = activePreset(draw, preset);
   if (!p || isBaibai(p)) return [];
-  const {entries, fill, tail} = ruleText(settings, p, promptTemplate(settings.promptRules, 'draw-story', 'format'), drawContract, only);
+  const {entries, fill, tail} = ruleText(settings, p, drawFormat(settings, p), drawContract, only);
   return entries.map((e, index) => {
     const i = e.injection || p.injection;
     return {
@@ -645,7 +649,7 @@ export function paragraphs(message, scope = {}) {
 export function planRequest(settings, {message, before = [], preset, only = null, lore = '', outfits = [], min = null} = {}) {
   const p = activePreset(settings.draw, preset);
   if (isBaibai(p)) return baibaiRequest(settings, p, {message, before, only, lore, outfits, min});
-  const {entries, fill, tail} = ruleText(settings, p, promptTemplate(settings.promptRules, 'draw-story', 'planFormat'), planContract, only);
+  const {entries, fill, tail} = ruleText(settings, p, drawFormat(settings, p, true), planContract, only);
   const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail + (p.outfits ? '\n\n' + OUTFIT_RULE : '');
   // 世界书: the entries the tavern would turn on for this story (the phone's choice of books), for era, places and looks.
   const ask = promptText(settings.promptRules, 'draw-story', 'planAsk', {'世界书': lore.trim(), '前情': before.map(m => `${m.name}：${m.text}`).join('\n') + (p.outfits ? (before.length ? '\n\n' : '') + outfitBlock(outfits) : ''),
@@ -864,6 +868,8 @@ export function parseBlock(body) {
       const [name, tags = '', ...rest] = split(value), c = {name, tags, nl: '', negative: '', position: ''};
       for (const part of rest.filter(Boolean)) {
         if (/^[A-Ea-e][1-5]$/.test(part)) c.position = part.toUpperCase();
+        // Chinese words in the third segment are a misplaced 站位 or note, not a 负面 tag: they would be sent as one.
+        else if (/[\u3400-\u9fff]/.test(part) && !/[A-Za-z]/.test(part)) continue;
         else if (/[.!?]["']?$/.test(part) || (!part.includes(',') && part.split(/\s+/).length >= 5)) c.nl = part;
         else c.negative = c.negative ? c.negative + ', ' + part : part;
       }
