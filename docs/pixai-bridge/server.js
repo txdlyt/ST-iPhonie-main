@@ -952,7 +952,7 @@ async function applyModel(page, id) {
 }
 
 /**
- * 写提示词。输入框里有 LoRA 触发词芯片时（不可编辑的节点，全选也删不掉），只替换芯片后面的文字，芯片不动；
+ * 写提示词。输入框里有 LoRA 触发词芯片时（选不中、删不掉的节点；全选删除只会删掉提示词的字），先全选删掉字，再在芯片后面写，芯片不动；
  * 没有芯片就和原来一样用 fill。
  */
 async function fillPrompt(page, editor, prompt) {
@@ -960,16 +960,12 @@ async function fillPrompt(page, editor, prompt) {
   const chips = await editor.locator(chipSel).count();
   if (!chips) { await editor.fill(prompt); return; }
   await editor.focus();
-  await editor.evaluate((root, sel) => {
-    const all = root.querySelectorAll(sel);
-    const last = all[all.length - 1];
-    const range = document.createRange();
-    range.setStartAfter(last);
-    range.setEndAfter(root.lastChild);
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }, chipSel);
+  // 网页改版后：全选 + 删除只会删掉提示词的字，芯片（选不中、删不掉）原样留着。先全部清掉，再把光标放到最后（芯片后面）写。
+  await page.keyboard.press('Control+A');
+  await sleep(100);
+  await page.keyboard.press('Backspace');
+  await sleep(150);
+  await page.keyboard.press('Control+End');
   await sleep(150);
   await page.keyboard.insertText(prompt);
   await sleep(250);
@@ -977,6 +973,8 @@ async function fillPrompt(page, editor, prompt) {
     const plain = value => String(value || '').replace(/\s+/g, '');
     const text = plain(root.innerText), want = plain(args.prompt), tail = want.slice(-40);
     const chipLen = Array.from(root.querySelectorAll(args.sel)).reduce((n, el) => n + plain(el.innerText || el.textContent).length, 0);
+    const first = root.querySelector(args.sel);
+    if (first) { const r = document.createRange(); r.setStart(root, 0); r.setEndBefore(first); if (r.toString().replace(/\s+/g, '')) return { chipsNow: -1, hasTail: false, textLen: 0, wantLen: 0, chipLen: 0, editorTail: '芯片前面还有字：' + r.toString().slice(0, 20) }; }
     return { chipsNow: root.querySelectorAll(args.sel).length, hasTail: text.includes(tail), textLen: text.length, wantLen: want.length, chipLen, editorTail: text.slice(-60) };
   }, { sel: chipSel, prompt });
   const ok = info.chipsNow === chips && info.hasTail && info.textLen <= info.wantLen + info.chipLen + 200;
@@ -1794,6 +1792,7 @@ async function readPageStatus(page, debug = false) {
 app.get('/ai/status', async (req, res) => {
   try {
     const page = await getPixAIPage({ passive: true });
+    if (req.query.fresh === '1') await nudgeBalance(page);
     const status = await readPageStatus(page, req.query.debug === '1');
     noteBalance(status.balance);
     res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
@@ -2129,7 +2128,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <button class="go act" id="login" type="button"><svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg><span id="goText">登录并切换</span></button>
 <button class="go alt act" id="loginOnly" type="button">仅登录</button>
 </div>
-<p class="hint">仅登录：就在当前窗口登录并存档，不回生图页、不重选模型比例</p>
+<p class="hint">仅登录：就在当前窗口登录并存档，不回生图页</p>
 <div class="split"></div>
 <button class="go alt wide act" id="saveCur" type="button">保存当前网页登录（推特等第三方登录）</button>
 <p class="hint">推特、谷歌这类第三方登录，先在远程浏览器（6080）里的 PixAI 页面登好，再点这个：把当前登录的账号存进列表，以后点一下就能切。</p>
@@ -2545,6 +2544,22 @@ app.post('/ai/template', async (req, res) => {
       let result;
       try { result = await job; } catch (error) { await disarmTemplate(); throw error; }
       return res.json({ ok: true, recorded: result.got, message: result.message, template: templateState() });
+    } else if (action === 'history') {
+      // 取最新一条历史任务（你在官方软件里最后一次用的），把它的参数存成一条记录：不点网页、不提交、不扣积分
+      const page = await getPixAIPage();
+      watchApiHeaders(page);
+      for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500);
+      const listed = await apiCall(page, 'GET', '/v2/user/me/tasks?first=10');
+      if (listed.status !== 200 || !Array.isArray(listed.json?.data)) return res.status(502).json({ ok: false, message: `读不到历史任务（${listed.status}）：回到生图页正常操作一次后再试` });
+      const task = listed.json.data.find(item => item?.parameters && typeof item.parameters === 'object' && item.parameters.modelId);
+      if (!task) {
+        const first = listed.json.data[0];
+        console.warn('[历史] 最新任务里没找到 parameters.modelId，任务字段：', JSON.stringify(shapeOf(first)));
+        return res.status(502).json({ ok: false, message: first ? '最新一条历史任务里没有模型参数（字段：' + Object.keys(first).join('、') + '），把反代日志里「[历史]」那行发给我' : '历史记录是空的' });
+      }
+      const body = { parameters: JSON.parse(JSON.stringify(task.parameters)) };
+      if (!rememberTemplate(JSON.stringify(body))) return res.status(502).json({ ok: false, message: '没能把这条历史任务存成记录' });
+      return res.json({ ok: true, recorded: true, message: '已读取最新一条历史记录的参数：' + templateInfo(tpls[tpls.length - 1]).summary, template: templateState() });
     } else if (action === 'cancel') await disarmTemplate();
     else if (action === 'delete') {
       const id = String(req.body?.id || '');
@@ -2552,7 +2567,7 @@ app.post('/ai/template', async (req, res) => {
       if (tplCurrent === id) tplCurrent = tpls[tpls.length - 1]?.id || '';
       await saveTemplates();
     } else if (action === 'clear') { await disarmTemplate(); tpls = []; tplCurrent = ''; await saveTemplates(); }
-    else return res.status(400).json({ ok: false, message: 'action 要是 arm / record / cancel / delete / clear' });
+    else return res.status(400).json({ ok: false, message: 'action 要是 arm / record / history / cancel / delete / clear' });
     res.json({ ok: true, template: templateState() });
   } catch (error) { res.status(502).json({ ok: false, message: error.message }); }
 });
@@ -2614,6 +2629,15 @@ app.use('/admin', (req, res, next) => {
   next();
 });
 
+// 积分数字是网页自己取回来的，反代只是读页面：页面不重新取，读多少次都是旧的。
+// 点「刷新」/ 插件同步时，先让页面像刚切回这个标签那样重新取一次（focus + visibilitychange，不刷新页面、不动设置），再读。
+let lastNudge = 0;
+async function nudgeBalance(page) {
+  if (generating || Date.now() - lastNudge < 4000) return;
+  lastNudge = Date.now();
+  await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('online')); }).catch(() => {});
+  await sleep(1800);
+}
 const adminState = async page => {
   const status = await readPageStatus(page);
   noteBalance(status.balance);
@@ -2644,6 +2668,7 @@ app.post('/admin/local-origin', async (req, res) => {
 app.post('/admin/refresh', async (_req, res) => {
   try {
     const page = await getPixAIPage({ passive: true });
+    await nudgeBalance(page);
     let note = '';
     if (generating) note = '正在出图，只刷新了积分和设置';
     else {
@@ -2738,8 +2763,8 @@ async function switchAccount(email, password) {
 
   await loginInPage(page, email, password);
 
-  // 登录后回到生图页，重新选好模型、比例
-  stage('回到生图页，选择模型和比例', 88);
+  // 登录后只回到生图页（不选模型、比例）
+  stage('回到生图页', 88);
   await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   batcher.runs.clear(); // 旧账号时缓存的批次作废
 }
@@ -2790,7 +2815,7 @@ app.post('/admin/login', async (req, res) => {
   const email = String(req.body?.email || '').trim(), password = String(req.body?.password || ''), keep = !!req.body?.keep;
   if (!email || !password) return res.status(400).json({ message: '邮箱和密码都要填' });
   if (isGenerating()) return res.status(409).json({ message: '反代正在出图，画完再换账号（卡住了就点「重试」）' });
-  // 「仅登录」：就在当前窗口登录并存档（不新开临时环境）。和「登录并切换」的区别：登录完不回生图页、不重新选模型比例，要出图时再自己打开。
+  // 「仅登录」：就在当前窗口登录并存档（不新开临时环境）。和「登录并切换」的区别：登录完不回生图页，要出图时再自己打开。
   if (keep) {
     const job = settingLock.then(async () => {
       live.headers = null;
@@ -2868,7 +2893,7 @@ async function switchToSaved(email) {
     await page.evaluate(items => { for (const i of items) { try { localStorage.setItem(i.name, i.value); } catch { /* ignore */ } } }, o.localStorage).catch(() => {});
   }
 
-  stage('打开生图页，选择模型和比例', 70);
+  stage('打开生图页', 70);
   try {
     await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   } catch (error) {
@@ -2926,7 +2951,7 @@ async function resetGeneration() {
   const old = ctx.pages().filter(p => p.url().includes('pixai.art'));
   await ctx.newPage(); // 先开个空白页，免得关掉最后一个标签后浏览器退出；openGeneratorPage 会优先复用它
   for (const p of old) await p.close({ runBeforeUnload: false }).catch(() => {});
-  stage('重新打开生图页，选择模型和比例', 55);
+  stage('重新打开生图页', 55);
   await (opening ??= openGeneratorPage().finally(() => { opening = null; }));
   batcher.runs.clear();
 }
@@ -3131,6 +3156,49 @@ app.get('/debug/dom', async (_req, res) => {
     res.json(dom);
   } catch (error) {
     res.status(503).json({ message: error.message });
+  }
+});
+
+// 调试（给「读取第一条历史记录」校准选择器用，只读）：
+//   curl http://127.0.0.1:3188/debug/history            导出左侧历史记录区的 HTML（不点任何东西）
+//   curl "http://127.0.0.1:3188/debug/history?open=1"   再点一下最上面那张缩略图，导出打开后的页面（网址、文字、HTML）；不提交、不扣积分
+app.get('/debug/history', async (req, res) => {
+  try {
+    const page = await getPixAIPage();
+    const clean = (html, n) => html.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/(<img[^>]*?)\s(?:src|srcset)="[^"]*"/g, '$1').replace(/\s+/g, ' ').slice(0, n);
+    const side = await page.evaluate(() => {
+      const visible = el => !!(el.offsetWidth || el.offsetHeight);
+      const mark = Array.from(document.querySelectorAll('a,button,div,span')).find(el => visible(el) && /^在(資料庫|资料库)中(查看全部|查看全部)\s*$/.test((el.innerText || '').trim()));
+      if (!mark) return { found: false };
+      let box = mark;
+      for (let i = 0; i < 8 && box.parentElement; i++) { box = box.parentElement; if (box.querySelectorAll('img').length >= 2) break; }
+      const imgs = Array.from(box.querySelectorAll('img')).filter(visible);
+      return { found: true, imgCount: imgs.length, firstImg: imgs[0] ? imgs[0].outerHTML.replace(/(src|srcset)="[^"]*"/g, '') : null, html: box.outerHTML };
+    });
+    if (!side.found) return res.json({ ok: false, message: '页面上没找到历史记录区（要有「在資料庫中查看全部」）' });
+    const out = { ok: true, imgCount: side.imgCount, firstImg: side.firstImg, historyHtml: clean(side.html, 12000) };
+    if (req.query.open === '1') {
+      const before = page.url();
+      const handle = await page.evaluateHandle(() => {
+        const visible = el => !!(el.offsetWidth || el.offsetHeight);
+        const mark = Array.from(document.querySelectorAll('a,button,div,span')).find(el => visible(el) && /^在(資料庫|资料库)中查看全部\s*$/.test((el.innerText || '').trim()));
+        let box = mark;
+        for (let i = 0; i < 8 && box.parentElement; i++) { box = box.parentElement; if (box.querySelectorAll('img').length >= 2) break; }
+        return Array.from(box.querySelectorAll('img')).filter(visible).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+      });
+      await handle.asElement().click({ timeout: 8000 });
+      await sleep(2500);
+      out.urlBefore = before; out.urlAfter = page.url();
+      out.after = await page.evaluate(() => {
+        const visible = el => !!(el.offsetWidth || el.offsetHeight);
+        const dialog = Array.from(document.querySelectorAll('[role="dialog"]')).find(visible);
+        const root = dialog || document.body;
+        return { hasDialog: !!dialog, text: (root.innerText || '').replace(/\n{2,}/g, '\n').slice(0, 6000), html: root.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/(<img[^>]*?)\s(?:src|srcset)="[^"]*"/g, '$1').replace(/\s+/g, ' ').slice(0, dialog ? 30000 : 12000) };
+      });
+    }
+    res.json(out);
+  } catch (error) {
+    res.status(503).json({ ok: false, message: error.message });
   }
 });
 

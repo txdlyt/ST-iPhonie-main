@@ -1776,12 +1776,12 @@ export class TTSBackend {
         return response.json().catch(() => ({}));
     }
     /** PixAI 反代: the bridge's /ai/status (the token is sent when there is one): {count, resolution, cost, balance …}; a field the bridge cannot read is null. */
-    async pixaiStatus() {
+    async pixaiStatus({ fresh = false } = {}) {
         this.assertOpen();
         const url = this.settings.draw.pixai.url;
         if (!url) throw Error('还没有填写 PixAI 反代地址');
         this.pixai.relay = url; this.pixai.setKey(this.pixaiKey);
-        const response = await this.pixai.call('/ai/status', { method: 'GET', headers: this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {} });
+        const response = await this.pixai.call('/ai/status' + (fresh ? '?fresh=1' : ''), { method: 'GET', headers: this.pixaiKey ? { Authorization: 'Bearer ' + this.pixaiKey } : {} });
         const info = await response.json().catch(() => ({}));
         this.pixaiRemember(info);
         return info;
@@ -4350,7 +4350,7 @@ export class TTSBackend {
             saveEmbed: patch => this.saveEmbed(clone(patch)), embedReady: () => this.embedReady(), embedModels: draft => this.embedModels(clone(draft || {})),
             gptModels: () => this.gptModels(),
             pixaiHealth: () => this.pixaiHealth(),
-            pixaiStatus: () => this.pixaiStatus(),
+            pixaiStatus: opts => this.pixaiStatus(opts),
             pixaiSetCount: count => this.pixaiSetCount(count),
             pixaiSetPage: patch => this.pixaiSetPage(patch),
             pixaiReadResolutions: () => this.pixaiReadResolutions(),
