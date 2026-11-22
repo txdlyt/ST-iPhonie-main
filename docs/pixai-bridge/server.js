@@ -190,7 +190,7 @@ async function openGeneratorPage({ claim = false } = {}) {
   if (!ready) console.log('生图页已打开，但提示词输入框暂未出现');
 
   // 切换账号时才等弹窗并签到；平时（启动、重试）只处理已经弹出来的
-  if (claim) await claimDailyIfShown(page); else await dismissDailyReward(page);
+  if (claim) await claimDailyIfShown(page, 8000); else await dismissDailyReward(page); // 登录 / 切换后弹窗常常晚几秒才出来，多等一会儿
   // 只打开生图页：不再自动选模型、比例（模型、LoRA、比例由你在网页上定，或由插件出图时指定）
   return page;
 }
@@ -552,12 +552,12 @@ let dailyClaimed = false;
 async function dismissDailyReward(page) {
   dailyClaimed = false;
   try {
-    const title = page.getByText(/^\s*每日(領取|领取)\s*$/).first();
-    if (!(await title.isVisible().catch(() => false))) return false;
-    console.log('检测到「每日領取」弹窗，自动处理…');
-
+    const title = page.getByText(/^\s*每日(領取|领取|福利)\s*$/).first();
     const claim = page.getByRole('button', { name: /^(?!.*(已領取|已领取)).*(領取|领取)(今日獎勵|今日奖励)?\s*$/ }).first(); // 没勾验证时按钮叫「領取」，勾上后才变「領取今日獎勵」
     const done = page.getByRole('button', { name: /獎勵已領取|奖励已领取|明天見|明天见/ }).first();
+    // 新用户领完后标题会变成「已領取」、弹窗留着：标题没了但「獎勵已領取」按钮还在，也要接着把它关掉
+    if (!(await title.isVisible().catch(() => false)) && !(await done.isVisible().catch(() => false))) return false;
+    console.log('检测到「每日領取」弹窗，自动处理…');
 
     if (await claim.isVisible().catch(() => false)) {
       // 状态 1：还没验证，按钮灰着。状态 2：验证显示「成功!」，按钮变紫可点。没过就再点一次勾选框，最多 3 轮。
@@ -607,23 +607,34 @@ async function dismissDailyReward(page) {
         console.warn('签到验证没通过，「領取今日獎勵」一直点不了；用 6080 端口的浏览器手动点一次');
       }
     }
-    // 最终状态：按钮变成「獎勵已領取！明天見！」，弹窗里的「今日獎勵」也变成「已領取」。领完弹窗不会自己关：和手动一样，点弹窗外的空白处关掉（点不掉再按 Esc）
+    // 最终状态：按钮变成「獎勵已領取！明天見！」。领完弹窗不会自己关：和手动一样，点弹窗外的空白处关掉（点不掉再按 Esc）
     dailyClaimed = await done.isVisible().catch(() => false);
-    if (await title.isVisible().catch(() => false)) {
-      const dialog = page.locator('section[role="dialog"]').filter({ hasText: /每日(領取|领取)/ }).first();
-      const rect = await dialog.boundingBox().catch(() => null);
-      const vp = page.viewportSize() || { width: 1280, height: 800 };
-      const blank = rect
-        ? [rect.x > 40 ? rect.x / 2 : Math.min(vp.width - 10, rect.x + rect.width + 20), rect.y + rect.height / 2]
-        : [10, vp.height / 2];
-      await page.mouse.click(blank[0], blank[1]).catch(() => {});
+    // 新用户领完后标题会变成「已領取」，所以不能再用标题判断弹窗还在不在：标题、弹窗、「獎勵已領取」按钮，有一个还看得到就算没关
+    const popup = page.locator('[role="dialog"]').filter({ hasText: /每日(領取|领取|福利)|已(領取|领取)|加(贈|赠)(獎勵|奖励)/ }).first();
+    const isOpen = async () => (await title.isVisible().catch(() => false)) || (await popup.isVisible().catch(() => false)) || (await done.isVisible().catch(() => false));
+    const closeBtn = popup.getByRole('button', { name: /^\s*(關閉|关闭)\s*$/ }).first();
+    if ((await isOpen()) && (await closeBtn.isVisible().catch(() => false))) { // 有「關閉」按钮就先点它
+      await closeBtn.click({ timeout: 3000 }).catch(() => {});
       await sleep(600);
     }
-    if (await title.isVisible().catch(() => false)) {
-      await page.keyboard.press('Escape').catch(() => {});
-      await sleep(500);
+    const vp = page.viewportSize() || { width: 1280, height: 800 };
+    for (let i = 0; i < 4 && (await isOpen()); i++) {
+      // 弹窗卡片的位置 → 点它外面的空白处（左边、上边、右边、屏幕角落轮流试）
+      const card = page.locator('section[role="dialog"], [role="dialog"]').filter({ hasText: /每日(領取|领取|福利)|已(領取|领取)/ }).first();
+      const rect = await card.boundingBox().catch(() => null);
+      const spots = [];
+      if (rect) {
+        if (rect.x > 40) spots.push([rect.x / 2, rect.y + rect.height / 2]);
+        if (rect.y > 40) spots.push([rect.x + rect.width / 2, rect.y / 2]);
+        if (rect.x + rect.width < vp.width - 40) spots.push([(rect.x + rect.width + vp.width) / 2, rect.y + rect.height / 2]);
+      }
+      spots.push([10, 10], [vp.width - 10, vp.height - 10]);
+      const [bx, by] = spots[i % spots.length];
+      await page.mouse.click(bx, by).catch(() => {});
+      await sleep(700);
+      if (i >= 1 && (await isOpen())) { await page.keyboard.press('Escape').catch(() => {}); await sleep(500); }
     }
-    const closed = await title.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true, () => false);
+    const closed = !(await isOpen());
     console.log(closed ? '签到弹窗已处理' : '签到弹窗没能关掉，请人工处理');
     return closed;
   } catch (error) {
@@ -636,14 +647,19 @@ async function dismissDailyReward(page) {
  * 登录 / 切换账号后打开生图页：「每日領取」弹窗会自己弹出来（有时晚几秒）。只多等 wait 毫秒，弹了就签到，没弹就算了。
  * 只在这几个时刻检测，不会在平时一直盯着页面。
  */
+// 每日领取弹窗现在开着吗：标题「每日領取」在，或领完后的「獎勵已領取」按钮还在（新用户领完标题会变成「已領取」）
+async function dailyOpen(page) {
+  const title = page.getByText(/^\s*每日(領取|领取|福利)\s*$/).first();
+  if (await title.isVisible().catch(() => false)) return true;
+  return await page.getByRole('button', { name: /獎勵已領取|奖励已领取|明天見|明天见/ }).first().isVisible().catch(() => false);
+}
 async function claimDailyIfShown(page, wait = 1500) { // 打开生图页时顺手看一眼：有弹窗就签，没有就立刻往下走（不再干等）
-  const title = page.getByText(/^\s*每日(領取|领取)\s*$/).first();
   const until = Date.now() + wait;
-  while (Date.now() < until && !(await title.isVisible().catch(() => false))) await sleep(500);
-  if (!(await title.isVisible().catch(() => false))) return false;
+  while (Date.now() < until && !(await dailyOpen(page))) await sleep(500);
+  if (!(await dailyOpen(page))) return false;
   for (let i = 1; i <= RETRY.tries; i++) {
     await dismissDailyReward(page);
-    if (dailyClaimed || !(await title.isVisible().catch(() => false))) break;
+    if (!(await dailyOpen(page))) break;
     if (i < RETRY.tries) await sleep(RETRY.gap);
   }
   if (dailyClaimed) { console.log('已自动签到'); const st = await readPageStatus(page).catch(() => null); if (st) noteBalance(st.balance); }
@@ -901,7 +917,7 @@ async function dismissPopups(page, { keepDaily = true } = {}) {
     const dialog = page.locator('.fixed [role="dialog"]:visible, .fixed [role="alertdialog"]:visible').last();
     if (!(await dialog.count())) break;
     const text = (await dialog.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    if (keepDaily && /每日(領取|领取)/.test(text)) break;
+    if (keepDaily && /每日(領取|领取|福利)/.test(text)) break;
     const gone = () => dialog.waitFor({ state: 'hidden', timeout: 1500 }).then(() => true, () => false);
     await page.mouse.click(5, 5).catch(() => {});
     let ok = await gone();
@@ -1078,8 +1094,42 @@ async function refreshTokenNow(page) {
 
 function watchApiHeaders(page) {
   const ctx = page?.context?.();
-  if (ctx && !ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); ctx.on('response', onApiResponse); }
+  if (ctx && !ctxWatched.has(ctx)) { ctxWatched.add(ctx); ctx.on('request', onApiRequest); ctx.on('response', onApiResponse); ctx.on('response', logDailyApi); }
 }
+// 诊断：记下页面和签到 / 每日领取有关的接口（只记接口名和返回的字段结构，不记令牌和邮箱），用来找「今天领没领过」的字段
+const DAILY_RE = /daily|claim|check-?in|reward|sign-?in|bonus|quota|credit/i;
+let dailyDiagCount = 0, meDiagDone = false;
+function dailyShape(v, depth = 0) {
+  if (Array.isArray(v)) return '[' + (v.length ? dailyShape(v[0], depth + 1) : '') + ']';
+  if (v && typeof v === 'object') {
+    if (depth >= 3) return '{…}';
+    return '{' + Object.entries(v).map(([k, x]) => k + ':' + (DAILY_RE.test(k) && (x === null || typeof x !== 'object') ? JSON.stringify(x).slice(0, 60) : dailyShape(x, depth + 1))).join(', ') + '}';
+  }
+  return v === null ? 'null' : typeof v;
+}
+const diagSeen = new Set();
+async function logDailyApi(response) {
+  try {
+    const url = response.url();
+    if (!/\/\/api\.pixai\.art\//.test(url) || diagSeen.size >= 150) return;
+    const u = new URL(url), req = response.request();
+    if (/\/v1\/media\//.test(u.pathname)) return; // 图片
+    let tag = u.pathname.replace(/\d{6,}/g, ':id');
+    if (/\/graphql/i.test(u.pathname)) {
+      const body = req.method() === 'POST' ? json(req.postData() || '', null) : null;
+      const op = (body && (body.operationName || String(body.query || '').slice(0, 60))) || u.searchParams.get('operationName') || String(u.searchParams.get('query') || '').slice(0, 60);
+      tag += ' ' + (op || '?');
+    }
+    const key = req.method() + ' ' + tag;
+    if (diagSeen.has(key)) return; // 每种接口只记一次
+    const text = await response.text().catch(() => '');
+    const data = json(text, null);
+    if (data === null) return; // 不是 JSON 的不记
+    diagSeen.add(key);
+    console.log(`[签到接口诊断] ${key} → ${response.status()} ${dailyShape(data).slice(0, 1200)}`);
+  } catch { /* 诊断而已，出错不管 */ }
+}
+
 async function nudgePage(page) {
   await page.evaluate(() => {
     window.dispatchEvent(new Event('focus'));
@@ -1652,6 +1702,65 @@ const toNumber = v => {
 };
 
 // 读取页面上当前的出图设置和积分。只读，不点任何东西，生成过程中也能调用；读不到的字段返回 null，不猜。
+// 「設定」面板：按结构通用地读，不按名字写死——换到哪个模型，有什么就读到什么（没有的不出现，免费的 extra 为 null，加积分的 extra 是数字）。
+// 结构来自真实页面：开关行 = input[role=switch] + 名字 + 可选「+N 點數」；底圖 = 标题是「底圖」的 section（有 0/1 计数）；進階設定折叠时里面的东西不在页面里。
+let advancedCache = { model: '', at: 0, items: null };
+async function readPanel(page, { expand = false, model = '' } = {}) {
+  const advOpen = () => page.evaluate(() => { const h = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || '')); return h ? h.getAttribute('aria-expanded') === 'true' : null; }).catch(() => null);
+  const clickAdv = () => page.evaluate(() => { const h = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || '')); if (h) h.click(); return !!h; }).catch(() => false);
+  let opened = false;
+  if (expand && (await advOpen()) === false) { opened = await clickAdv(); if (opened) await sleep(900); }
+  let panel;
+  try {
+    panel = await page.evaluate(() => {
+      const num = v => { const n = Number(String(v ?? '').replace(/,/g, '')); return String(v ?? '').trim() !== '' && Number.isFinite(n) ? n : null; };
+      const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const extraOf = el => { const m = /[+＋]\s*([\d,]+)\s*(?:點數|点数|points?)/i.exec(txt(el)); return m ? num(m[1]) : null; };
+      if (!Array.from(document.querySelectorAll('span,div,label')).some(el => !el.children.length && /^生成速度$/.test(txt(el)))) return null; // 不在「設定」页
+      const out = { ref: { supported: false }, speed: null, tools: [], advanced: null };
+      const refSec = Array.from(document.querySelectorAll('section')).find(sec => { const h = sec.querySelector('header'); return h && /^(底圖|底图)/.test(txt(h)); });
+      if (refSec) { const m = /(\d+)\s*\/\s*(\d+)/.exec(txt(refSec.querySelector('header'))); out.ref = { supported: true, used: m ? Number(m[1]) : null, max: m ? Number(m[2]) : null }; }
+      const spLeaf = Array.from(document.querySelectorAll('span,div')).find(el => !el.children.length && /^生成速度$/.test(txt(el)));
+      const spBtn = spLeaf && spLeaf.parentElement ? spLeaf.parentElement.querySelector('button') : null;
+      if (spBtn) out.speed = { text: txt(spBtn), extra: extraOf(spBtn), wait: spBtn.querySelector('strong') ? txt(spBtn.querySelector('strong')) : null };
+      for (const input of document.querySelectorAll('input[role=switch]')) {
+        if (input.closest('section > header, h3')) continue; // 进阶设置里的开关另算
+        let row = input, n = 0;
+        while (row.parentElement && n < 7) { const up = row.parentElement; if (up.querySelectorAll('input[role=switch]').length > 1) break; row = up; n++; }
+        const name = input.getAttribute('aria-label') || '';
+        if (!name) continue;
+        const priced = Array.from(row.querySelectorAll('span')).find(el => !el.children.length && extraOf(el) !== null);
+        let group = ''; for (let a = input.parentElement, i = 0; a && i < 9 && !group; a = a.parentElement, i++) { const h = Array.from(a.children).find(c => c.tagName === 'SPAN' && /^(新增工具|提示詞工具|提示词工具)$/.test(txt(c))); if (h) group = txt(h); }
+        out.tools.push({ name, group, extra: priced ? extraOf(priced) : null, on: !!input.checked });
+      }
+      const adv = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(txt(x)));
+      if (adv && adv.getAttribute('aria-expanded') === 'true' && adv.parentElement) {
+        const items = [];
+        for (const sec of adv.parentElement.querySelectorAll('section')) {
+          const h3 = sec.querySelector('header h3'); if (!h3) continue;
+          const name = txt(h3); if (!name) continue;
+          const sw = h3.querySelector('input[role=switch]');
+          const area = sec.querySelector('textarea:not([aria-hidden])'), range = sec.querySelector('input[type=range]'), combo = sec.querySelector('[role=combobox]'), select = sec.querySelector('select'), numIn = sec.querySelector('input[type=number]');
+          if (sw) items.push({ name, kind: 'bool', value: !!sw.checked });
+          else if (area) items.push({ name, kind: 'text', value: area.value });
+          else if (range) items.push({ name, kind: 'number', value: num(range.value), min: num(range.min), max: num(range.max), step: num(range.step) });
+          else if (select) { const cur = sec.querySelector('button em'); items.push({ name, kind: 'choice', value: cur ? txt(cur) : '', options: Array.from(select.options).map(o => txt(o)).filter(Boolean) }); }
+          else if (combo) items.push({ name, kind: 'choice', value: txt(combo) });
+          else if (numIn) items.push({ name, kind: 'number', value: num(numIn.value) });
+        }
+        out.advanced = items;
+      }
+      return out;
+    });
+  } catch { panel = null; }
+  if (opened) await clickAdv();
+  if (panel) {
+    if (panel.advanced) advancedCache = { model, at: Date.now(), items: panel.advanced };
+    else if (advancedCache.items && advancedCache.model === model) panel.advanced = advancedCache.items, panel.advancedAt = advancedCache.at;
+  }
+  return panel;
+}
+
 async function readPageStatus(page, debug = false) {
   const { out, hasBalHost, hasCostHost } = await page.evaluate(debug => {
     const visible = el => !!(el.offsetWidth || el.offsetHeight);
@@ -1793,8 +1902,9 @@ app.get('/ai/status', async (req, res) => {
   try {
     const page = await getPixAIPage({ passive: true });
     if (req.query.fresh === '1') await nudgeBalance(page);
-    const status = await readPageStatus(page, req.query.debug === '1');
+    const status = withQuota(await readPageStatus(page, req.query.debug === '1'));
     noteBalance(status.balance);
+    status.panel = await readPanel(page, { expand: req.query.advanced === '1' && !generating, model: status.model?.name || '' });
     res.json({ ok: true, generating, ...status, updatedAt: new Date().toISOString() });
   } catch (error) {
     res.status(503).json({ ok: false, browsing: !!error.browsing, message: error.message });
@@ -1916,7 +2026,8 @@ h1 b{background:linear-gradient(90deg,#7c5cdb,#e8629a,#ffb86b,#7c5cdb);backgroun
 .ib svg,.go svg,.mini svg,.chip svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .ib:active,.go:active,.mini:active{transform:scale(.96)}
 .ib.warn{border-color:var(--bad);color:var(--bad)}
-.ib.spin svg{animation:spin .7s linear infinite}
+.ib svg{transform-origin:center center}
+.ib.rot svg{animation:spin .8s linear infinite}
 /* 工作区 */
 .work{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
 .pane{display:none;flex:1;min-height:0;flex-direction:column;gap:10px;overflow:auto;padding:12px;border-radius:24px;background:var(--card);border:1px solid var(--line);box-shadow:0 18px 44px var(--sh);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -2037,8 +2148,8 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 .hint{margin:6px 4px 0;font-size:12px;line-height:1.6;color:var(--muted)}
 .split{height:1px;margin:14px 0 4px;background:var(--line)}
 .shotmask{background:rgba(20,10,40,.7)}
-.shotmask{align-items:center;justify-content:center}.shotmask img{margin:auto;max-width:94vw;max-height:88dvh;border-radius:14px;border:1.5px solid var(--line);background:var(--field);transform:scale(.94);transition:transform .45s cubic-bezier(.34,1.4,.5,1)}
-.shotmask.show img{transform:none}
+.shotmask{align-items:center;justify-content:center;padding:max(8px,env(safe-area-inset-top)) 8px max(8px,env(safe-area-inset-bottom));overflow:hidden;touch-action:none;overscroll-behavior:contain}
+.shotmask img{display:block;width:100%;height:100%;object-fit:contain;border-radius:10px;transform-origin:0 0;user-select:none;-webkit-user-select:none;-webkit-user-drag:none;will-change:transform}
 @keyframes rise{from{opacity:0;transform:translateY(16px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes paneIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
 @keyframes itemIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
@@ -2079,7 +2190,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 <div class="logo">Px</div>
 <div class="ttl-area"><h1><b>PixAI 反代</b></h1><div class="sub"><span class="pill" id="state"><span class="dot"></span><span id="stateText">空闲</span></span></div></div>
 <div class="tools">
-<button class="ib" id="refresh" title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+<button class="ib" id="refresh" title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v5h-5"/></svg></button>
 <button class="ib" id="shot" title="页面截图" aria-label="页面截图"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.5"/></svg></button>
 <button class="ib" id="keyBtn" title="反代密钥" aria-label="反代密钥"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L21 2M16 7l3 3"/></svg></button>
 </div>
@@ -2320,7 +2431,13 @@ async function refresh(quiet, deep) {
     if (!quiet) say('已刷新' + (j.message ? ' · ' + j.message : '') + (setting ? ' · 网页当前：' + setting : ''), 'ok');
   } catch (e) { if (!quiet) say('读取失败：' + e.message, 'bad'); }
 }
-$('refresh').onclick = async () => { await refresh(false, true); };
+$('refresh').onclick = async () => {
+  const b = $('refresh'); if (b.classList.contains('rot')) return;
+  b.classList.add('rot');
+  const t0 = Date.now();
+  try { await refresh(false, true); }
+  finally { const left = 800 - ((Date.now() - t0) % 800); setTimeout(() => { b.classList.remove('rot'); }, left); } // 转满整圈再停，不在半路突然停
+};
 $('keyBtn').onclick = () => openKey(true);
 $('localOrigin').onchange = async function () {
   const box = this, want = box.checked;
@@ -2336,15 +2453,51 @@ $('token').onkeydown = e => { if (e.key === 'Enter') $('save').onclick(); };
 $('password').onkeydown = e => { if (e.key === 'Enter') doLogin(false); };
 $('email').onkeydown = e => { if (e.key === 'Enter') $('password').focus(); };
 
-const closeShot = () => { $('modal').classList.remove('show'); const u = $('img').src; if (u) setTimeout(() => { URL.revokeObjectURL(u); $('img').removeAttribute('src'); }, 320); };
-$('modal').onclick = closeShot;
+const closeShot = () => { $('modal').classList.remove('show'); setTimeout(zReset, 320); const u = $('img').src; if (u) setTimeout(() => { URL.revokeObjectURL(u); $('img').removeAttribute('src'); }, 320); };
+// 截图缩放：双指放大 / 拖动 / 双击放大或还原，只动图片，不会缩放整个网页；没放大时轻点关闭
+const zm = { k: 1, x: 0, y: 0, ptr: new Map(), moved: false, last: 0, d0: 0, k0: 1 };
+const zApply = () => { $('img').style.transform = 'translate(' + zm.x + 'px,' + zm.y + 'px) scale(' + zm.k + ')'; };
+const zReset = () => { zm.k = 1; zm.x = 0; zm.y = 0; zm.ptr.clear(); zApply(); };
+const zClamp = () => {
+  const r = $('modal').getBoundingClientRect(), lim = (w, k) => Math.max(0, (w * k - w) / 1);
+  zm.x = Math.min(0, Math.max(-lim(r.width, zm.k), zm.x)); zm.y = Math.min(0, Math.max(-lim(r.height, zm.k), zm.y));
+  if (zm.k === 1) { zm.x = 0; zm.y = 0; }
+};
+const zAt = (cx, cy, nk) => { // 以手指位置为中心缩放
+  const r = $('modal').getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
+  nk = Math.min(6, Math.max(1, nk));
+  zm.x = px - (px - zm.x) * (nk / zm.k); zm.y = py - (py - zm.y) * (nk / zm.k); zm.k = nk; zClamp(); zApply();
+};
+const zDist = () => { const a = [...zm.ptr.values()]; return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); };
+$('modal').addEventListener('pointerdown', e => {
+  $('modal').setPointerCapture(e.pointerId); zm.ptr.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
+  if (zm.ptr.size === 1) zm.moved = false; else { zm.d0 = zDist(); zm.k0 = zm.k; zm.moved = true; }
+});
+$('modal').addEventListener('pointermove', e => {
+  const p = zm.ptr.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+  if (zm.ptr.size >= 2) { const a = [...zm.ptr.values()]; zAt((a[0].x + a[1].x) / 2, (a[0].y + a[1].y) / 2, zm.k0 * zDist() / (zm.d0 || 1)); return; }
+  if (Math.hypot(e.clientX - p.sx, e.clientY - p.sy) > 8) zm.moved = true;
+  if (zm.k > 1) { zm.x += dx; zm.y += dy; zClamp(); zApply(); }
+});
+const zUp = e => {
+  const p = zm.ptr.get(e.pointerId); zm.ptr.delete(e.pointerId); if (!p || zm.moved) return;
+  const now = Date.now();
+  if (now - zm.last < 320) { zm.last = 0; if (zm.k > 1) zReset(); else zAt(e.clientX, e.clientY, 2.5); return; }
+  zm.last = now;
+  setTimeout(() => { if (zm.last === now && zm.k === 1) closeShot(); }, 330); // 等一下，确认不是双击再关
+};
+$('modal').addEventListener('pointerup', zUp);
+$('modal').addEventListener('pointercancel', e => zm.ptr.delete(e.pointerId));
+$('modal').addEventListener('wheel', e => { e.preventDefault(); zAt(e.clientX, e.clientY, zm.k * (e.deltaY < 0 ? 1.2 : 1 / 1.2)); }, { passive: false });
+['gesturestart', 'gesturechange', 'gestureend'].forEach(n => $('modal').addEventListener(n, e => e.preventDefault())); // iOS Safari 的整页捏合缩放
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeShot(); openKey(false); openLogin(false); } });
 $('shot').onclick = async () => {
   say('正在截图…');
   try {
     const r = await call('/admin/screenshot');
     if (!r.ok) { const j = await r.json().catch(() => ({})); return say((j.message || '截图失败') + '（' + r.status + '）', 'bad'); }
-    $('img').src = URL.createObjectURL(await r.blob()); $('modal').classList.add('show'); say('截图已打开，点空白处关闭');
+    zReset(); $('img').src = URL.createObjectURL(await r.blob()); $('modal').classList.add('show'); say('截图已打开：双指放大、双击放大，轻点关闭');
   } catch (e) { say('截图失败：' + e.message, 'bad'); }
 };
 
@@ -2639,6 +2792,49 @@ async function recordCurrentBalance() { // 换账号之前，先把当前账号�
     persist();
   } catch { /* 读不到就用上一次记的 */ }
 }
+// 清掉旧登录状态，但留下 Cloudflare 的通行 cookie（cf_clearance）：整个清掉的话，下一次打开 PixAI 会被「验证您是人类」挡在登录窗口前面
+async function clearLoginState(ctx) {
+  const keep = (await ctx.cookies().catch(() => [])).filter(c => /^cf_clearance$/i.test(c.name));
+  await ctx.clearCookies();
+  if (keep.length) await ctx.addCookies(keep).catch(() => {});
+}
+// 问 PixAI 现在页面登录的是谁：{ user, status }。user 为 null 就是没登上（或读失败，看 status）
+async function whoAmI(page, waitMs = 15000) {
+  watchApiHeaders(page);
+  const until = Date.now() + waitMs;
+  while (!apiReady() && Date.now() < until) await sleep(500);
+  if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500); }
+  const me = await apiCall(page, 'GET', '/v2/user/me').catch(() => null);
+  return { user: me && me.status === 200 && me.json?.id ? me.json : null, status: me ? me.status : 0 };
+}
+// 把「当前账号」此刻的登录状态重新存一遍档。PixAI 的刷新令牌用一次就换新的，存档不跟着更新，下次载入的就是失效的旧令牌。
+// 只在确认网页上登录着的就是这个账号时才覆盖，免得拿登出的状态把好存档冲掉。
+async function refreshCurrentArchive(why = '') {
+  try {
+    const cur = accounts.current && findAcc(accounts.current);
+    if (!cur || !cur.savedAt) return false;
+    const ctx = (await connectBrowser()).contexts()[0];
+    const page = ctx.pages().find(p => p.url().includes('/generator/image'));
+    if (!page) return false;
+    watchApiHeaders(page);
+    if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500); }
+    if (!apiReady()) return false;
+    const me = await apiCall(page, 'GET', '/v2/user/me').catch(() => null);
+    const user = me && me.status === 200 && me.json?.id ? me.json : null;
+    if (!user) return false; // 网页其实没登录
+    if (cur.uid && cur.uid !== String(user.id)) return false; // 网页上是另一个账号
+    if (!cur.uid && String(cur.email).includes('@') && user.email && !sameEmail(user.email, cur.email)) return false;
+    if (!cur.uid) cur.uid = String(user.id);
+    await saveLoginState(cur.email); cur.savedAt = Date.now();
+    persist();
+    if (why) console.log(`已更新 ${cur.label || cur.email} 的登录存档（${why}）`);
+    return true;
+  } catch (error) { console.warn('更新登录存档失败：', error.message); return false; }
+}
+setInterval(() => { // 每 10 分钟把当前账号的存档续一次；出图或在换账号时不动
+  if (generating || adminJobs > 0) return;
+  settingLock = holdLock(settingLock.then(() => refreshCurrentArchive()));
+}, 10 * 60 * 1000);
 async function saveLoginState(email) {
   const ctx = (await connectBrowser()).contexts()[0];
   const state = await ctx.storageState();
@@ -2653,17 +2849,18 @@ app.use('/admin', (req, res, next) => {
   next();
 });
 
-// 积分数字是网页自己取回来的，反代只是读页面：页面不重新取，读多少次都是旧的。
-// 点「刷新」/ 插件同步时，先让页面像刚切回这个标签那样重新取一次（focus + visibilitychange，不刷新页面、不动设置），再读。
-let lastNudge = 0;
+// 积分：PixAI 接口 GET /v2/user/me/quota 返回 {amount}（从真实请求记录里看到的）。点「刷新」/ 插件同步时直接问它，不再等网页自己更新数字。
+let freshQuota = { v: null, at: 0 };
 async function nudgeBalance(page) {
-  if (generating || Date.now() - lastNudge < 4000) return;
-  lastNudge = Date.now();
-  await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('online')); }).catch(() => {});
-  await sleep(1800);
+  if (!apiReady()) { watchApiHeaders(page); for (let i = 0; i < 10 && !apiReady(); i++) await sleep(500); }
+  try {
+    const r = await apiCall(page, 'GET', '/v2/user/me/quota');
+    if (r.status === 200 && Number.isFinite(Number(r.json?.amount))) freshQuota = { v: Number(r.json.amount), at: Date.now() };
+  } catch { /* 接口读不到就用网页上的数 */ }
 }
+const withQuota = status => { if (freshQuota.v !== null && Date.now() - freshQuota.at < 20000) status.balance = freshQuota.v; return status; };
 const adminState = async page => {
-  const status = await readPageStatus(page);
+  const status = withQuota(await readPageStatus(page));
   noteBalance(status.balance);
   return {
     ok: true, loggedIn: page.url().includes('/generator/image'), accounts: publicAccounts(), page: page.url(), generating, stuck: generating && !isGenerating(),
@@ -2696,6 +2893,7 @@ app.post('/admin/refresh', async (_req, res) => {
     let note = '';
     if (generating) note = '正在出图，只刷新了积分和设置';
     else {
+      note = '';
       watchApiHeaders(page);
       for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500);
       const me = await apiCall(page, 'GET', '/v2/user/me').catch(() => null);
@@ -2747,18 +2945,35 @@ app.get('/admin/progress', (_req, res) => res.json(loginProgress));
 async function loginInPage(page, email, password) {
   stage('打开登录页', 30);
   await safeGoto(page, CONFIG.loginUrl);
+  // Cloudflare 的整页验证会让登录窗口迟迟不出现：先等它自己放行，不行就明确说出来
+  const blocked = async () => /Just a moment|请稍候|請稍候|Attention Required/i.test(await page.title().catch(() => ''));
+  for (let i = 0; i < 12 && (await blocked()); i++) await sleep(2500);
+  if (await blocked()) throw new Error('被 Cloudflare 的验证页挡住了，没有出现登录窗口：用 6080 端口的浏览器手动点一下验证，再重新登录');
   const passwordBox = page.locator('input[type="password"]:visible').first();
   const emailButton = page.getByText(/使用\s*Email\s*(繼續|继续)|Continue with Email/i).first();
+  const emailShown = ms => emailButton.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
+  const pwShown = () => passwordBox.isVisible().catch(() => false);
   // 登录页：Google / Discord / Twitter / Apple 下面有「使用 Email 繼續」，点开才出现 電子郵件 + 密碼 表单
-  if (!(await passwordBox.isVisible().catch(() => false))) {
-    if (!(await emailButton.waitFor({ state: 'visible', timeout: 8000 }).then(() => true, () => false))) {
-      // 没直接出登录框：去点页面上的「登入 / 登录」
-      await page.getByText(/^\s*(登入|登录|Log\s*in|Sign\s*in)\s*$/i).first().click({ timeout: 8000 }).catch(() => {});
-      await emailButton.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  if (!(await pwShown())) {
+    let found = await emailShown(8000);
+    if (!found) {
+      // 没直接出登录框：去点页面上的「登入 / 登录」按钮（按钮、链接、文字几种都试）；还不行就回首页再点一遍
+      stage('登录页没出窗口，去点登录按钮', 40);
+      const label = /^\s*(登入|登录|登錄|Log\s*in|Login|Sign\s*in)\s*$/i;
+      for (let round = 1; round <= 2 && !found && !(await pwShown()); round++) {
+        if (round === 2) { await safeGoto(page, 'https://pixai.art/zh').catch(() => {}); await sleep(2500); }
+        for (const group of [page.getByRole('button', { name: label }), page.getByRole('link', { name: label }), page.getByText(label)]) {
+          const el = group.first();
+          if (!(await el.isVisible().catch(() => false))) continue;
+          await el.click({ timeout: 5000 }).catch(() => {});
+          found = await emailShown(6000);
+          if (found || (await pwShown())) break;
+        }
+      }
     }
     if (await emailButton.isVisible().catch(() => false)) await emailButton.click();
   }
-  await passwordBox.waitFor({ state: 'visible', timeout: 15000 });
+  await passwordBox.waitFor({ state: 'visible', timeout: 15000 }).catch(() => { throw new Error('没找到登录窗口（密码框一直没出现）：点「当前页面截图」看看页面停在哪'); });
   const emailBox = page.locator('input[type="email"]:visible, input[placeholder*="電子郵件"]:visible, input[placeholder*="电子邮件"]:visible, input[placeholder*="mail" i]:visible, input[type="text"]:visible').first();
   stage('填写邮箱和密码', 60);
   await emailBox.fill(email);
@@ -2773,6 +2988,7 @@ async function loginInPage(page, email, password) {
 }
 
 async function switchAccount(email, password) {
+  await refreshCurrentArchive('离开前续档');
   live.headers = null;
   stage('记录当前账号的积分', 5);
   await recordCurrentBalance();
@@ -2781,7 +2997,7 @@ async function switchAccount(email, password) {
 
   // 清掉旧账号的登录状态（cookie + 本地存储）
   stage('清除旧账号的登录状态', 15);
-  await ctx.clearCookies();
+  await clearLoginState(ctx);
   await page.goto('https://pixai.art/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await page.evaluate(() => { try { localStorage.clear(); sessionStorage.clear(); } catch { /* ignore */ } }).catch(() => {});
 
@@ -2842,13 +3058,14 @@ app.post('/admin/login', async (req, res) => {
   // 「仅登录」：就在当前窗口登录并存档（不新开临时环境）。和「登录并切换」的区别：登录完不回生图页，要出图时再自己打开。
   if (keep) {
     const job = settingLock.then(async () => {
+      await refreshCurrentArchive('离开前续档');
       live.headers = null;
       stage('记录当前账号的积分', 5);
       await recordCurrentBalance();
       const ctx = (await connectBrowser()).contexts()[0];
       const page = ctx.pages().find(p => p.url().includes('pixai.art')) ?? await ctx.newPage();
       stage('清除旧账号的登录状态', 15);
-      await ctx.clearCookies();
+      await clearLoginState(ctx);
       await safeGoto(page, 'https://pixai.art/').catch(() => {});
       await page.evaluate(() => { try { localStorage.clear(); sessionStorage.clear(); } catch { /* ignore */ } }).catch(() => {});
       await loginInPage(page, email, password);
@@ -2896,16 +3113,19 @@ app.post('/admin/login', async (req, res) => {
 });
 
 async function switchToSaved(email) {
-  live.headers = null; // 换账号后旧令牌作废，等页面发出新账号的请求再抄
   const state = json(await fs.readFile(accFile(email), 'utf8').catch(() => ''), null);
   if (!state) throw new Error('这个账号还没有存档，请用邮箱密码登录一次');
+  // 重登当前账号时，先把网页里最新的登录状态存回去再载入，存档就不会是过期的旧令牌；读到的存档内容用最新写入的那份
+  if (sameEmail(accounts.current, email)) { if (await refreshCurrentArchive('重登前续档')) { const fresh = json(await fs.readFile(accFile(email), 'utf8').catch(() => ''), null); if (fresh) Object.assign(state, fresh); } }
+  else await refreshCurrentArchive('离开前续档');
+  live.headers = null; // 换账号后旧令牌作废，等页面发出新账号的请求再抄
   stage('记录当前账号的积分', 8);
   await recordCurrentBalance();
   const ctx = (await connectBrowser()).contexts()[0];
   const page = ctx.pages().find(p => p.url().includes('pixai.art')) ?? await ctx.newPage();
 
   stage('清除当前登录', 25);
-  await ctx.clearCookies();
+  await clearLoginState(ctx);
   await page.goto('https://pixai.art/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await page.evaluate(() => { try { localStorage.clear(); sessionStorage.clear(); } catch { /* ignore */ } }).catch(() => {});
 
@@ -2918,8 +3138,9 @@ async function switchToSaved(email) {
   }
 
   stage('打开生图页', 70);
+  let gp;
   try {
-    await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
+    gp = await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   } catch (error) {
     if (error.login) {
       const a = findAcc(email);
@@ -2928,6 +3149,18 @@ async function switchToSaved(email) {
     }
     throw error;
   }
+  // 页面能打开不等于登上了：登录失效时生图页照样会开（只是没登录）。读一次当前用户确认
+  stage('确认登录是否成功', 85);
+  let who = await whoAmI(gp);
+  if (!who.user && (who.status === 0 || who.status >= 500)) { await sleep(2500); who = await whoAmI(gp, 3000); }
+  const acc = findAcc(email);
+  if (!who.user) {
+    if (who.status === 0 || who.status >= 500) throw new Error(`没能确认登录状态（读用户信息失败 ${who.status || '无响应'}），点「刷新」或稍后再试`);
+    if (acc) { acc.expired = true; persist(); }
+    throw new Error('存档里的登录已经失效：页面打开了，但没有登上。请用密码登录一次，之后程序会自动保持存档最新');
+  }
+  if (acc && !acc.uid) acc.uid = String(who.user.id);
+  try { await saveLoginState(email); if (acc) acc.savedAt = Date.now(); } catch { /* 存不上也不影响这次使用 */ } // 载入时令牌可能刚换过，趁现在存回去
   batcher.runs.clear();
 }
 
@@ -3002,7 +3235,7 @@ app.post('/admin/checkin', async (_req, res) => {
     if (!page) throw new Error('没有打开的生图页，先点「重试」打开页面');
     stage('检查有没有每日领取弹窗', 10);
     // 每次都重新定位弹窗和按钮（不拿旧节点）；弹窗没了就算签完；失败了清掉挡路的提示弹窗，隔一会儿再来
-    const titleNow = () => page.getByText(/^\s*每日(領取|领取)\s*$/).first();
+    const titleNow = () => ({ isVisible: () => dailyOpen(page) }); // 标题在，或领完后的「獎勵已領取」按钮还在，都算弹窗还开着
     let seen = false, before = null, still = true, claimed = false;
     for (let i = 1; i <= RETRY.tries; i++) {
       await dismissPopups(page).catch(() => {});
@@ -3137,7 +3370,7 @@ app.get('/debug/checkin', async (_req, res) => {
     const dom = await page.evaluate(() => {
       const visible = el => !!(el.offsetWidth || el.offsetHeight);
       const clean = (el, n) => el ? el.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<img[^>]*>/g, '<img/>').replace(/\s+/g, ' ').slice(0, n) : null;
-      const title = Array.from(document.querySelectorAll('*')).find(el => el.children.length === 0 && /^\s*每日(領取|领取)\s*$/.test(el.textContent || ''));
+      const title = Array.from(document.querySelectorAll('*')).find(el => el.children.length === 0 && /^\s*每日(領取|领取|福利)\s*$/.test(el.textContent || ''));
       let box = title;
       for (let i = 0; i < 8 && box?.parentElement; i++) { box = box.parentElement; if (box.matches('[role="dialog"], dialog, [data-state="open"]')) break; }
       const rect = el => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; };
@@ -3186,6 +3419,78 @@ app.get('/debug/dom', async (_req, res) => {
 // 调试（给「读取第一条历史记录」校准选择器用，只读）：
 //   curl http://127.0.0.1:3188/debug/history            导出左侧历史记录区的 HTML（不点任何东西）
 //   curl "http://127.0.0.1:3188/debug/history?open=1"   再点一下最上面那张缩略图，导出打开后的页面（网址、文字、HTML）；不提交、不扣积分
+// 调试：重载一次生图页，记下页面发出的接口请求（只记方法、路径、状态；名字像积分的再带上返回内容前 300 字），找积分是从哪个接口来的
+app.get('/debug/net', async (_req, res) => {
+  if (generating) return res.status(409).json({ message: '正在出图，稍后再试' });
+  let page;
+  try { page = await getPixAIPage({ passive: true }); } catch (e) { return res.status(503).json({ message: e.message }); }
+  const rows = [];
+  const on = async r => {
+    try {
+      const q = r.request(); const t = q.resourceType();
+      if (t !== 'xhr' && t !== 'fetch') return;
+      const u = new URL(q.url());
+      const row = { m: q.method(), host: u.host, path: u.pathname + (u.search ? u.search.slice(0, 80) : ''), status: r.status() };
+      const post = q.postData();
+      if (post) row.post = post.slice(0, 160).replace(/"(token|password|email)"\s*:\s*"[^"]*"/gi, '"$1":"***"');
+      if (/quota|credit|balance|point|wallet|coin|reward|me\b/i.test(u.pathname + (post || ''))) row.body = (await r.text().catch(() => '')).slice(0, 300);
+      rows.push(row);
+    } catch { /* 忽略 */ }
+  };
+  page.on('response', on);
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(9000);
+  } catch (e) { rows.push({ error: e.message }); }
+  page.off('response', on);
+  res.json({ count: rows.length, rows });
+});
+
+// 只读：导出当前页面「設定」面板的完整 HTML 和文字（不点任何东西）。每个模型的设置项不一样，换到别的模型再导一次就能对比
+app.get('/debug/panel', async (_req, res) => {
+  try {
+    const page = await getPixAIPage({ passive: true });
+    // 「進階設定」折叠时里面的东西不在页面里：先展开读完再收回去（只点这一个折叠头，不动任何设置）
+    const toggleAdv = () => page.evaluate(() => {
+      const leaf = Array.from(document.querySelectorAll('span,div,label,header,h3,h4')).find(el => !el.children.length && /^進階設定$/.test((el.textContent || '').trim()));
+      if (!leaf) return false;
+      (leaf.closest('button,[role=button],[aria-expanded]') || leaf.parentElement).click(); return true;
+    });
+    const wasOpen = await page.evaluate(() => /取樣步數|取样步数|反向提示詞/.test(document.body.innerText || ''));
+    let opened = false;
+    if (!wasOpen && await toggleAdv()) { opened = true; await sleep(900); }
+    const out = await page.evaluate(() => {
+      const clean = html => html.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<img[^>]*>/g, '<img/>')
+        .replace(/ (class|style|id|data-rac|data-react-aria-pressable|tabindex)="[^"]*"/g, '').replace(/\s+/g, ' ');
+      const leaf = Array.from(document.querySelectorAll('span,div,label,header')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').trim()));
+      if (!leaf) return { message: '没找到「生成速度」，网页可能不在「設定」页' };
+      let el = leaf;
+      const need = /進階設定/.test(document.body.innerText || '') ? /進階設定/ : /提示詞工具/;
+      for (let i = 0; i < 14 && el.parentElement && !need.test(el.innerText || ''); i++) el = el.parentElement;
+      // 名字后面的小字（如 +2600 點數）：列出每一个，连同它所在那一行的文字和有没有开关
+      const extras = Array.from(el.querySelectorAll('span,small,div')).filter(x => !x.children.length && /^[+＋]\s*[\d,]+\s*(點數|点数|points?)$/i.test((x.textContent || '').trim()))
+        .map(x => { let row = x; for (let i = 0; i < 4 && row.parentElement; i++) { row = row.parentElement; if (row.querySelector('[role=switch],input[type=checkbox],[aria-checked]')) break; }
+          const sw = row.querySelector('[role=switch],input[type=checkbox],[aria-checked]');
+          return { extra: x.textContent.trim(), row: (row.innerText || '').replace(/\s+/g, ' ').slice(0, 120), switchOn: sw ? (sw.getAttribute('aria-checked') ?? (sw.checked ? 'true' : 'false')) : null }; });
+      return { text: (el.innerText || '').slice(0, 6000), extras, html: clean(el.outerHTML).slice(0, 90000) };
+    });
+    if (opened) await toggleAdv();
+    out.advancedWasOpen = wasOpen;
+    res.json(out);
+  } catch (error) { res.status(503).json({ message: error.message }); }
+});
+
+// 只读：导出 /v2/user/me 的字段（看积分是不是在接口里；邮箱、令牌类字段打码）
+app.get('/debug/me', async (_req, res) => {
+  try {
+    const page = await getPixAIPage({ passive: true });
+    watchApiHeaders(page);
+    for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500);
+    const me = await apiCall(page, 'GET', '/v2/user/me');
+    const mask = (v, k) => /mail|token|phone|password|secret/i.test(k) ? '***' : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([a, b]) => [a, mask(b, a)])) : v;
+    res.json({ status: me.status, json: mask(me.json, '') });
+  } catch (e) { res.status(503).json({ message: e.message }); }
+});
 app.get('/debug/history', async (req, res) => {
   try {
     const page = await getPixAIPage();
