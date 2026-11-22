@@ -1,0 +1,173 @@
+/* Keep themed details frames clear of the controls inside them. */
+:root[data-skin] .bedtime-room details[data-bt-settings]{padding:4px 14px 12px}
+:root[data-skin] .bt-lore-list .bt-lore-entry{border-radius:0;box-shadow:none;background:transparent;padding:0 8px}
+.bt-lore-list .lore-book>summary>.sw-row{flex:1;min-width:0}
+.bt-book-head{display:flex;align-items:center;gap:10px;min-height:48px;padding-inline:4px 24px}
+.bt-book-head .row-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.bt-lore-list .bt-book-head small{display:block}
+
+/* Books stand directly on the ledge; the phone skin shows through behind them. */
+.bs-shelves{--ledge-top:#edcda5;--ledge-edge:#ab8257}
+[data-skin=fresh] .bs-shelves{--ledge-top:#dfcba6;--ledge-edge:#ae9371}
+[data-skin=aero] .bs-shelves{--ledge-top:#c9edf1;--ledge-edge:#78aab7}
+[data-theme=dark] .bs-shelves{--ledge-top:#9b7960;--ledge-edge:#644a3c}
+[data-skin=aero][data-theme=dark] .bs-shelves{--ledge-top:#6eafbb;--ledge-edge:#305965}
+.bs-shelves .bs-shelf{background:transparent;box-shadow:none;margin:0 0 16px;padding:2px 0 0;border-radius:0;overflow:visible}
+.bs-shelves .bs-shelf::before{display:none}
+.bs-shelves .bs-plank{height:6px;margin:0 2px;border-radius:1px 1px 3px 3px;background:linear-gradient(var(--ledge-top),var(--ledge-top) 35%,var(--ledge-edge));box-shadow:0 4px 5px -2px #050b103d,inset 0 1px #ffffff55}
+.bs-shelves .bs-row,.bs-shelves .bs-labels{padding-inline:9px;gap:14px}
+.bs-shelves .bs-labels{padding-top:9px}
+.bs-shelves .bs-book{padding:0;border:0;border-radius:1px 2px 2px 1px;transform:perspective(650px) rotateY(-4deg);box-shadow:1px 0 #c4c0b2,2px 0 #ece8dd,3px 1px #aaa594,4px 4px 5px #1119}
+.bs-shelves .bs-book:active,.bs-shelves .bs-book.picked{transform:translateY(-4px)}
+.bs-shelves .bs-book.picked{outline:2px solid var(--accent-btn);outline-offset:2px}
+.bs-shelves .bs-face.pic,.bs-continue .bs-mini.pic{padding:0;background:var(--card2)}
+.bs-shelves .bs-face.pic img,.bs-mini.pic img{visibility:visible;display:block;width:100%;height:100%;object-fit:contain}
+.bs-shelves .bs-face::after{background:linear-gradient(90deg,#0005,transparent 3%,#fff3 4%,transparent 7%)}
+.bs-mini{overflow:hidden}.bs-mini b{display:block;padding:5px;font:600 9px/1.4 serif;color:#272c31}
+:root[data-skin=aero] .bedtime-room details[data-bt-settings]{box-sizing:border-box;padding:8px 16px 16px}
+:root[data-skin=aero] .bt-lore-list .bt-lore-entry{padding:2px 12px;box-shadow:none}
+
+/* The fore-edge sits outside the complete front cover and rests on the ledge. */
+.bs-shelves .bs-book{width:min(var(--trim),calc(100% - var(--page-depth) - 3px));overflow:visible;border-radius:0;box-shadow:0 3px 5px #16140f55;transform:none}
+.bs-shelves .bs-book::after{inset:1px auto 0 100%;width:var(--page-depth);height:auto;border-right:1px solid #898276;background:linear-gradient(90deg,#0002,transparent 35%,#0002),repeating-linear-gradient(90deg,#efe9dc 0 1px,#d6cebd 1px 2px);transform-origin:left bottom;transform:skewY(-8deg);pointer-events:none}
+.bs-shelves .bs-book .bs-face::after{inset:0 auto 0 0;width:4%;background:linear-gradient(90deg,#16120e33,transparent)}
+.bs-shelves .bs-book:active,.bs-shelves .bs-book.picked{transform:translateY(-4px)}
+
+/* The rear corners converge toward the middle of each shelf. */
+.bs-rack { padding: 0 2px 12px; }
+.bs-rack section { position: relative; margin: 0; padding: 0; isolation: isolate; }
+.bs-rail { display: flex; align-items: flex-end; gap: 1px; padding: 17px 2px 0; touch-action: pan-y; }
+.bs-rack .bs-plank {
+  position: relative;
+  z-index: -1;
+  height: 5px;
+  margin: 0 -1px 0 -2px;
+  border-radius: 0 0 2px 2px;
+  box-shadow: inset 0 1px #fff6, 0 4px 6px -2px #19160e4d;
+}
+.bs-rack .bs-plank::before {
+  content: '';
+  position: absolute;
+  inset: -5px 0 100%;
+  background: linear-gradient(0deg,var(--ledge-top),color-mix(in srgb,var(--ledge-top) 80%,var(--ledge-edge)));
+  clip-path: polygon(6px 0, calc(100% - 6px) 0, 100% 100%, 0 100%);
+  box-shadow: inset 0 1px #fff4;
+}
+.bs-rail .bs-spine {
+  position: relative;
+  flex: 0 0 var(--slot);
+  min-width: 0;
+  height: var(--height);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--foil);
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.bs-rail .bs-spine[aria-pressed=true] { z-index: 2; }
+.bs-spine[aria-pressed=true]::after { content: ''; position: absolute; inset: 100% 0 auto; height: 9px; }
+.bs-volume {
+  --exposure: .045;
+  pointer-events: none;
+  display: block;
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: var(--thickness);
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+  transition: transform 380ms cubic-bezier(.23,.87,.24,1.08), filter 290ms;
+  filter: drop-shadow(1px 0 1px #140d0b40);
+}
+.bs-spine[aria-pressed=true] .bs-volume {
+  --exposure: 1;
+  transform: translate(calc(-50% - var(--recede) * 5px),8px) scale(1.055);
+  filter: drop-shadow(2px 3px 2px #140d0b55);
+}
+.bs-page-top, .bs-cover-side, .bs-wrap { display: block; position: absolute; box-sizing: border-box; }
+.bs-page-top, .bs-cover-side {
+  transform-origin: bottom left;
+  transition: transform 380ms cubic-bezier(.23,.87,.24,1.08);
+}
+.bs-page-top {
+  left: 0;
+  bottom: 100%;
+  width: 100%;
+  height: 9px;
+  border-inline: 1px solid var(--cloth);
+  background: repeating-linear-gradient(90deg,#ede5ce 0 1px,#f7f3e5 1px 3px,#d8cdb6 3px 4px);
+  box-shadow: inset 0 1px #b9ad92;
+  transform: matrix(1,0,calc(-1.333333 * var(--recede) * var(--exposure)),var(--exposure),0,0);
+}
+.bs-cover-side {
+  inset: 0 auto 0 100%;
+  width: 12px;
+  overflow: hidden;
+  background: var(--cloth);
+  transform: matrix(calc(var(--recede) * var(--exposure)),calc(-.75 * var(--exposure)),0,1,0,0);
+}
+.bs-spine.recedes-left .bs-cover-side {
+  left: auto;
+  right: 100%;
+  transform-origin: bottom right;
+  transform: matrix(calc(-1 * var(--recede) * var(--exposure)),calc(.75 * var(--exposure)),0,1,0,0);
+}
+.bs-cover-side::after, .bs-wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; }
+.bs-cover-side::after { background: linear-gradient(90deg,#0005,#0003); }
+.bs-wrap {
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 2px 2px 1px 1px;
+  background: var(--cloth);
+}
+.bs-wrap img, .bs-cover-side img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: center; }
+.bs-cover-side img { object-position: calc(50% - var(--thickness) / 2 - 6px) center; }
+.bs-wrap::after { background: linear-gradient(90deg,#0004,transparent 12%,#fff2 28%,transparent 55%,#0002 90%,#0004); box-shadow: inset 0 1px #fff4, inset 0 -1px #0004; }
+.bs-wrap b { writing-mode: vertical-rl; max-height: 85%; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/1.1 serif; }
+.bs-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 1px 3px 0; }
+.bs-caption[hidden] { display: none; }
+.bs-caption button { min-height: 36px; color: var(--ink); background: transparent; border: 0; box-shadow: none; }
+.bs-caption [data-read] { text-align: start; font-weight: 700; }
+.bs-caption [data-more] { width: 40px; flex: none; }
+.bs-dossier{text-align:center;margin:4px 0 16px}.bs-dossier img{display:block;max-width:90%;max-height:23dvh;object-fit:contain;margin:auto;box-shadow:2px 2px #b3ad9d,3px 4px 8px #0003}.bs-dossier h2{font:600 20px/1.4 serif;overflow-wrap:anywhere;margin:12px 0 4px}.bs-dossier small{color:var(--ink2)}.sheet-body:has(.bs-dossier) .primary{width:100%;margin:8px 0}
+@media(prefers-reduced-motion:reduce){.bs-volume,.bs-page-top,.bs-cover-side{transition:none}}
+
+.bs-options { display:grid; gap:16px; padding:2px 2px 16px; }
+.bs-options-title { margin:0; overflow-wrap:anywhere; color:var(--ink2); }
+.bs-options-tabs { display:flex; gap:4px; padding:4px; background:var(--card2); border-radius:14px; }
+.bs-options-tabs button { flex:1; min-height:38px; border:0; color:var(--ink2); background:transparent; border-radius:11px; }
+.bs-options-tabs button[aria-pressed=true] { color:var(--ink); background:var(--card); box-shadow:0 1px 4px #15191829; font-weight:700; }
+.bs-options-group { display:grid; gap:12px; padding:14px; background:var(--card); border:1px solid var(--line); border-radius:15px; }
+.bs-options-group h3 { margin:0 0 2px; font-size:1em; }
+.bs-options-group .setting-row { min-height:42px; padding:3px 0; }
+.bs-options-link { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:42px; color:var(--ink); background:var(--card2); border-radius:12px; }
+.bs-options-link svg { width:17px; height:17px; }
+
+.bs-rail .resting{margin-inline:var(--lean-start,0px) var(--lean-end,0px)}
+.resting[aria-pressed=false] .bs-volume{transform-origin:var(--lean-pivot) bottom;transform:translateX(-50%) rotate(var(--lean-angle))}
+.bs-ribbon{position:absolute;right:18px;top:54px;width:13px;height:24px;background:#b9514f;clip-path:polygon(0 0,100% 0,100% 100%,50% 76%,0 100%);z-index:3;pointer-events:none}
+.album-viewer[data-info] .reading-comic-progress{visibility:hidden}
+
+.reading-tools button{color:inherit}
+.sheet-body:has(.bs-directory-list){display:flex;flex-direction:column;overflow:hidden;gap:8px}
+.bs-directory-list{position:relative;overflow:auto;overscroll-behavior:contain;min-height:0}
+.bs-directory-list [hidden]{display:none}
+
+.bs-chat-room{display:flex;flex-direction:column;gap:10px;min-height:0}
+.bs-chat-head{display:flex;align-items:center;gap:8px}
+.bs-chat-name{flex:1;min-width:0}
+.bs-chat-name strong,.bs-chat-name small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bs-chat-name small{color:var(--ink2)}
+.bs-chat-room .reading-chat{height:min(46dvh,420px);min-height:120px;overscroll-behavior:contain;padding:10px 2px}
+.bs-chat-room .composer{margin:0;padding:8px 0 2px;background:transparent;border:0;box-shadow:none}.bs-chat-room .composer .round-button{border-radius:50%}
+.bs-chat-room .chat-bubble{user-select:none;-webkit-user-select:none}
+.bs-chat-room .round-button{display:inline-grid;place-items:center;padding:0;line-height:1}
+.bs-chat-room .round-button svg{display:block;margin:0}
+.bs-chat-photo{display:block;width:auto;max-width:100%;max-height:160px;object-fit:contain}
+.bs-chapter-search{flex-shrink:0}
+.bs-category-manager .sw-main{min-height:56px;padding:0 12px}
+.bs-category-manager .sw-more{display:grid;opacity:1;transform:none}

@@ -38,7 +38,16 @@ button[aria-busy=true]::after { content:""; display:inline-block; box-sizing:bor
 .reading-art-status button { font:inherit; color:inherit; background:transparent; border:0; text-decoration:underline }
 @media (prefers-reduced-motion:reduce) { button[aria-busy=true]::after { animation:none } }
 
-.reading-stage .reading-tools { background:var(--paper); color:inherit; border:1px solid color-mix(in srgb,currentColor 22%,transparent); border-radius:12px; gap:0; padding:2px }
+.reading-stage .reading-tools { background:#343637; color:#fff; isolation:isolate; border:1px solid color-mix(in srgb,currentColor 22%,transparent); border-radius:12px; gap:0; padding:2px }
 .reading-tools .reading-tool { display:grid; place-items:center; width:42px; height:42px; background:transparent; color:inherit; border:0; border-radius:9px; box-shadow:none; padding:0 }
 .reading-tool svg { width:18px; height:18px }
 .reading-tool:active { background:color-mix(in srgb,currentColor 12%,transparent) }
+
+.chat-send-preview{display:block;margin:0 auto 14px;max-width:100%;max-height:32dvh;object-fit:contain;border-radius:12px}
+
+[data-conversations] .sw-main { background:transparent; box-shadow:none }
+[data-conversations] .sw-row + .sw-row { border-top:0 }
+[data-conversations] .sw-row + .sw-row .conv::before { content:""; position:absolute; inset:0 14px auto 76px; height:1px; background:var(--line) }
+[data-conversations] .sw-actions { clip-path:inset(0 0 0 calc(100% - var(--sw-p,0) * 100%)) }
+.segmented.voice-modes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:0 }
+.segmented.voice-modes button { white-space:normal; min-width:0; min-height:44px; text-wrap:balance; line-height:1.25 }

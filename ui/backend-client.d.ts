@@ -1,4 +1,6 @@
 /** Public API returned by the installed ST-iPhonie panel bridge (backend API 1.0.0 plus drawing). */
+type ReadingSources = {userPersona?: boolean; persona: boolean; lore: boolean; story: boolean; history: boolean};
+
 export type Engine = 'fish' | 'mini' | 'eleven' | 'mimo' | 'doubao' | 'custom';
 /** Keys cover the voice engines and NovelAI. */
 /** llm: the key of the phone's own text model (an OpenAI-compatible API). */
@@ -141,7 +143,7 @@ export interface GeneralSettings {
     autoVoice?: boolean;
     /** 台词小窗: the latest reply's lines in a pill on the tavern page, to hear one by one (off by default). */
     voiceIsland?: boolean;
-    voiceMode?: 'inline' | 'separate';
+    voiceMode?: 'inline' | 'separate' | 'manual';
 }
 export interface Injection {
     position: InjectionPosition;
@@ -1373,8 +1375,10 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     /** A picture the chat asked to open in the drawing app, if any. */
     takeDraw(): (DrawInput & { tag?: string; seed?: number }) | null;
     /** Generates the contacts' next messages with the tavern's connected model and stores them. */
-    readingNote(options: {companion: string; reading: string; blob?: Blob | null}): Promise<string>;
-    chatReply(threadId: string, options?: {reading?: string}): Promise<ChatThread>;
+    summarizeReading(prompt:Array<{role:string;content:string}>): Promise<string>;
+    readingReply(options: {sources: ReadingSources; companion:string; reading:string; memoryText?:string; messages:Array<{from:string;text:string;photoId?:string}>; blob?:Blob|null}): Promise<string>;
+    readingNote(options: {sources?: ReadingSources; companion: string; reading: string; blob?: Blob | null}): Promise<string>;
+    chatReply(threadId: string, options?: {reading?: string; sources?: ReadingSources; pageKey?: string}): Promise<ChatThread>;
     /** Draws a contact's photo from its tags (allowPaid: even when it costs Anlas); resolves to the photo id. */
     chatDrawPhoto?(threadId: string, messageId: string, allowPaid?: boolean): Promise<string | null>;
     /** Prepares chat messages to be injected once into the next story reply. */
@@ -1481,7 +1485,7 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     /** The World Info books turned on now (global, character, chat, persona) with their entries that are on, for picking
      *  what the phone leaves out. Entry ids are "book#uid". */
     /** extra: books the phone alone reads (listed with from 只给手机 when the tavern has them off). */
-    loreBooks(options?: { extra?: string[] }): Promise<Array<{ name: string; from: string[]; entries: Array<{ id: string; title: string; keys: string[]; constant: boolean; preview: string }> }>>;
+    loreBooks(options?: { full?: boolean; extra?: string[] }): Promise<Array<{ name: string; from: string[]; entries: Array<{ id: string; title: string; keys: string[]; constant: boolean; content?: string; preview: string }> }>>;
     /** Every book the tavern has (for picking ones the phone alone reads). */
     loreNames(): Promise<string[]>;
     /** 试一句: what the phone's scan takes for a chat (as its next reply would scan it) and a line more, or for a line alone;
@@ -1507,11 +1511,12 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     bookInfo?(): { chat: string; title: string; length: number; user: string };
     bookSource?(from?: number, to?: number): { chat: string; title: string; length: number; user: string; from: number; to: number; messages: Array<{ id: number; user: boolean; name: string; steps: Array<{ kind: 'say' | 'narrate' | 'bg'; text?: string; role?: string; emotion?: string; line?: number; part?: number; url?: string; user?: boolean }> }> };
     bookWrite?(system: string, user: string, options?: { length?: number }): Promise<string>;
-    bedtimeCreate(form: {role: string; kind?: string; minutes?: number | string; wish?: string; sourceId?: string; chapter?: number | string; paragraph?: number | string}): Promise<Book>;
+    bedtimeCreate(form: {role: string; world?: boolean; plot?: 'story'|'independent'; extraBooks?: string[]; skipBooks?: string[]; skipEntries?: string[]; kind?: string; minutes?: number | string; wish?: string; sourceId?: string; chapter?: number | string; paragraph?: number | string}): Promise<Book>;
     bedtimeRoles(): Array<{name: string; persona?: string}>;
     bedtimeSource(id: string, chapter?: number): Promise<{title: string; chapter: number; chapters: string[]; paragraphs: string[]}>;
     bedtimeStatus(): {playing: boolean; busy: boolean; id: string; index: number; text: string};
-    bedtimePlay(id: string, options?: {timer?: number; song?: string}): Promise<void>;
+    bedtimeMix(options: {effects?: boolean; song?: string}): Promise<void>;
+    bedtimePlay(id: string, options?: {timer?: number; song?: string; effects?: boolean}): Promise<void>;
     bedtimeStop(): void;
     bedtimeAudio(id: string): Promise<Blob[]>;
     bookRead?(lines: BookLine[], onLine?: (index: number) => void): Promise<boolean>;
