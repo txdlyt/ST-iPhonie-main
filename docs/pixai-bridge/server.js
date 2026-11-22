@@ -1704,6 +1704,54 @@ const toNumber = v => {
 // 读取页面上当前的出图设置和积分。只读，不点任何东西，生成过程中也能调用；读不到的字段返回 null，不猜。
 // 「設定」面板：按结构通用地读，不按名字写死——换到哪个模型，有什么就读到什么（没有的不出现，免费的 extra 为 null，加积分的 extra 是数字）。
 // 结构来自真实页面：开关行 = input[role=switch] + 名字 + 可选「+N 點數」；底圖 = 标题是「底圖」的 section（有 0/1 计数）；進階設定折叠时里面的东西不在页面里。
+// 改「設定」面板：want = { tools: { 名字: true|false }, advanced: { 名字: 值 } }。名字就是 readPanel 读出来的名字；按那一块里实际有的控件类型来改，改完回读核对。
+async function applyPanel(page, want) {
+  const q = v => String(v).replace(/["\\]/g, '\\$&');
+  const notes = [];
+  for (const [name, on] of Object.entries(want.tools || {})) {
+    const input = page.locator(`input[role="switch"][aria-label="${q(name)}"]`).first();
+    if (!(await input.count())) throw new Error(`「${name}」这个模型没有`);
+    if ((await input.isChecked()) === !!on) continue;
+    await input.locator('xpath=ancestor::label[1]').click({ timeout: 8000 });
+    await sleep(500);
+    if ((await input.isChecked()) !== !!on) throw new Error(`「${name}」没有切过去`);
+  }
+  const advWant = Object.entries(want.advanced || {});
+  if (advWant.length) {
+    const head = page.locator('header[role="button"]').filter({ hasText: /進階設定|进阶设置|高级设置/ }).first();
+    if (!(await head.count())) throw new Error('这个页面没有「進階設定」');
+    const wasOpen = (await head.getAttribute('aria-expanded')) === 'true';
+    if (!wasOpen) { await head.click(); await sleep(900); }
+    try {
+      for (const [name, value] of advWant) {
+        const isSub = name.endsWith('#值'), base = isSub ? name.slice(0, -2) : name;
+        const sec = page.locator('section').filter({ has: page.locator('h3', { hasText: base }) }).last();
+        if (!(await sec.count())) throw new Error(`「${base}」这个模型没有`);
+        if (isSub) {
+          const box = sec.locator('input[type="number"]');
+          if (!(await box.count())) throw new Error(`「${base}」要先打开，才有数值可以填`);
+          await box.first().fill(String(value)); await box.first().blur(); await sleep(300); continue;
+        }
+        const sw = sec.locator('h3 input[role="switch"]'), area = sec.locator('textarea:not([aria-hidden])'), num = sec.locator('input[type="number"]'), sel = sec.locator('select'), combo = sec.locator('[role="combobox"]');
+        if (await sw.count()) {
+          if ((await sw.first().isChecked()) !== !!value) { await sw.first().locator('xpath=ancestor::label[1]').click(); await sleep(400); }
+        } else if (await area.count()) {
+          await area.first().fill(String(value)); await area.first().blur();
+        } else if (await num.count()) {
+          await num.first().fill(String(value)); await num.first().blur();
+        } else if (await sel.count()) {
+          await sel.first().selectOption({ label: String(value) }, { force: true });
+        } else if (await combo.count()) {
+          await combo.first().click(); await sleep(300);
+          await page.getByRole('option', { name: String(value), exact: true }).first().click({ timeout: 6000 });
+        } else throw new Error(`「${name}」不认识是什么控件`);
+        await sleep(300);
+      }
+    } finally { if (!wasOpen) await head.click().catch(() => {}); }
+    notes.push('进阶设置已改');
+  }
+  return notes;
+}
 let advancedCache = { model: '', at: 0, items: null };
 async function readPanel(page, { expand = false, model = '' } = {}) {
   const advOpen = () => page.evaluate(() => { const h = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || '')); return h ? h.getAttribute('aria-expanded') === 'true' : null; }).catch(() => null);
@@ -1741,7 +1789,12 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
           const name = txt(h3); if (!name) continue;
           const sw = h3.querySelector('input[role=switch]');
           const area = sec.querySelector('textarea:not([aria-hidden])'), range = sec.querySelector('input[type=range]'), combo = sec.querySelector('[role=combobox]'), select = sec.querySelector('select'), numIn = sec.querySelector('input[type=number]');
-          if (sw) items.push({ name, kind: 'bool', value: !!sw.checked });
+          if (sw) {
+            items.push({ name, kind: 'bool', value: !!sw.checked });
+            // 开着时下面会多出一个滑块（如「重新縮放 CFG」的数值）：单独列一项，名字是「原名#值」
+            const sub = sec.querySelector('input[type=range]') || sec.querySelector('input[type=number]');
+            if (sub && sw.checked) items.push({ name: name + '#值', kind: 'number', value: num((sec.querySelector('input[type=number]') || sub).value ?? sub.value) ?? num(sub.value), min: num(sub.min), max: num(sub.max), step: num(sub.step) });
+          }
           else if (area) items.push({ name, kind: 'text', value: area.value });
           else if (range) items.push({ name, kind: 'number', value: num(range.value), min: num(range.min), max: num(range.max), step: num(range.step) });
           else if (select) { const cur = sec.querySelector('button em'); items.push({ name, kind: 'choice', value: cur ? txt(cur) : '', options: Array.from(select.options).map(o => txt(o)).filter(Boolean) }); }
@@ -1752,10 +1805,29 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
       }
       return out;
     });
+    // 下拉框（如取樣方式）的选项折叠时不在页面里：展开着读时，逐个点开读一遍再关上（Escape，不选任何项）
+    if (panel && panel.advanced && expand) {
+      for (const item of panel.advanced) {
+        if (item.kind !== 'choice' || item.options) continue;
+        try {
+          const sec = page.locator('section').filter({ has: page.locator('h3', { hasText: item.name }) }).last();
+          const combo = sec.locator('[role="combobox"]').first();
+          if (!(await combo.count())) continue;
+          await combo.click({ timeout: 4000 }); await sleep(350);
+          const opts = await page.evaluate(() => Array.from(document.querySelectorAll('[role="option"]')).filter(el => (el.offsetWidth || el.offsetHeight) && el.getAttribute('aria-disabled') !== 'true' && !el.hasAttribute('data-disabled')).map(el => (el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean));
+          await page.keyboard.press('Escape'); await sleep(250);
+          if (opts.length) item.options = Array.from(new Set(opts));
+        } catch { await page.keyboard.press('Escape').catch(() => {}); }
+      }
+    }
   } catch { panel = null; }
   if (opened) await clickAdv();
   if (panel) {
-    if (panel.advanced) advancedCache = { model, at: Date.now(), items: panel.advanced };
+    if (panel.advanced) {
+      // 下拉框选项只有点开才读得到：这次没点开读的，沿用同一个模型上次读到的
+      if (advancedCache.items && advancedCache.model === model) for (const item of panel.advanced) if (item.kind === 'choice' && !item.options) { const old = advancedCache.items.find(x => x.name === item.name && x.options); if (old) item.options = old.options; }
+      advancedCache = { model, at: Date.now(), items: panel.advanced };
+    }
     else if (advancedCache.items && advancedCache.model === model) panel.advanced = advancedCache.items, panel.advancedAt = advancedCache.at;
   }
   return panel;
@@ -1942,6 +2014,14 @@ app.post('/ai/settings', async (req, res) => {
   }
   if (body.clearRef === true) want.clearRef = true;
   if (body.refStrength !== undefined) { if (!Number.isFinite(Number(body.refStrength))) return res.status(400).json({ ok: false, message: 'Strength 要是 0 到 1 的数' }); want.refStrength = Number(body.refStrength); }
+  if (body.panel !== undefined) {
+    const pn = body.panel, okName = k => typeof k === 'string' && k.length > 0 && k.length <= 60;
+    if (!pn || typeof pn !== 'object') return res.status(400).json({ ok: false, message: 'panel 格式不对' });
+    const tools = {}, advanced = {};
+    for (const [k, v] of Object.entries(pn.tools || {})) { if (!okName(k) || typeof v !== 'boolean') return res.status(400).json({ ok: false, message: '工具开关要写成 {名字: true/false}' }); tools[k] = v; }
+    for (const [k, v] of Object.entries(pn.advanced || {})) { if (!okName(k) || !(typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 3000))) return res.status(400).json({ ok: false, message: '进阶设置的值不对' }); advanced[k] = v; }
+    if (Object.keys(tools).length || Object.keys(advanced).length) want.panel = { tools, advanced };
+  }
   if (!Object.keys(want).length) return res.status(400).json({ ok: false, message: '没有要切的内容（model / count / ratio / size / swap）' });
   // 出图时动这些设置不影响返图：只有准备（填提示词、点生成）和取图这两段要等一等，其余时间直接改
   if (isGenerating() && pageDriven()) {
@@ -1966,8 +2046,10 @@ app.post('/ai/settings', async (req, res) => {
     if (want.size !== undefined) { pagePicked = true; await attempt('尺寸', () => setSize(page, want.size)); }
     // 横竖是互换：网页慢一点才变的话再点一次会换回去，所以不自动重试（tries: 1）
     if (want.swap) { pagePicked = true; await attempt('横竖', () => swapOrientation(page), { tries: 1 }); }
+    if (want.panel) await attempt('网页设定', async () => { notices.push(...await applyPanel(page, want.panel)); }, { tries: 1 });
     await sleep(want.ref || want.clearRef || want.refStrength !== undefined ? 1200 : 400); // 参考图会让网页重算积分
     const status = await readPageStatus(page);
+    status.panel = await readPanel(page, { expand: !!want.panel?.advanced && Object.keys(want.panel.advanced).length > 0, model: status.model?.name || '' }); // 改了进阶设置就顺便读回来，缓存跟着更新
     return { failed, reasons, status, notices };
   };
   const job = settingLock.then(run);

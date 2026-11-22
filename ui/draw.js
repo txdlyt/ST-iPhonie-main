@@ -379,7 +379,7 @@ export function drawApp(ctx) {
     const lines = [];
     if (state().pixai.mode === 'still') lines.push('<p class="hint" style="padding:0">静止模式：模型请在 PixAI 网页上自己选；比例、尺寸、横竖、张数和参考图在这里点就会去切网页，积分按网页当前设置算，改了就会跟着变。</p>', `<div class="px-history"><button type="button" class="chip-button" data-action="pixai-history"${pixaiHistoryBusy ? ' disabled' : ''}>${pixaiHistoryBusy ? '正在读取…' : '读取最近一条历史记录'}</button><small class="hint">读你在官方软件里最后一次用的模型、分辨率等参数，不用再开网页</small></div>`);
     else lines.push(`<p class="hint" style="padding:0">比例、尺寸和横竖点上面的按钮就会去切网页；张数点下面的 1 / 4；模型在上面点就会去切网页（LoRA / Recipe 跟着模型走）；消耗的积分按网页当前设置算，改了分辨率或张数就会不一样。</p>`);
-    return `<div class="group pad px-sync">${foot}<div class="px-grid">${modelRow}${refRow}${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${pixaiPanelHtml(i.panel)}${lines.join('')}</div>`;
+    return `<div class="group pad px-sync">${foot}<div class="px-grid">${modelRow}${refRow}${picker || cell('分辨率', resolution, r.ratio ? `画幅 ${r.ratio}` : '')}${cell('一次出几张', esc(i.countLabel || (perTask ? `${perTask} 张` : '—')))}${cell('单次消耗', pxNum(i.cost), '积分 / 次任务')}</div>${pixaiPanelHtml(i.panel, pick)}${lines.join('')}</div>`;
   }
   function naiParams(d, size) {
     const p = d.params, f = naiFeatures(p.model), medium = p.effort === 'medium', guard = d.guard, schedules = schedulesFor(p.model, p.sampler);
@@ -497,24 +497,29 @@ export function drawApp(ctx) {
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  /** The page's own 设定 panel, as read by the bridge: reference image support, speed, tools (free or +N points), and the advanced settings. Shown only; change them on the page. */
-  const pixaiPanelHtml = p => {
+  /** The page's own 设定 panel as the bridge reads it: reference image support, speed, tools (free or +N points), advanced settings. Tools and advanced values can be changed here; the bridge does it on the page and reads it back. */
+  const pixaiPanelHtml = (p, locked) => {
     if (!p || typeof p !== 'object') return '';
     const cell = (label, value, note = '') => `<div class="px-cell"><small>${esc(label)}</small><b>${value}</b>${note ? `<em>${esc(note)}</em>` : ''}</div>`;
     const price = x => Number.isFinite(x) ? `+${pxNum(x)} 积分` : '免费';
+    const dis = locked ? ' disabled' : '';
     const cells = [];
     cells.push(cell('参考图', p.ref?.supported ? '支持' : '不支持', p.ref?.supported && Number.isFinite(p.ref.max) ? `${p.ref.used ?? 0} / ${p.ref.max}` : ''));
     if (p.speed) cells.push(cell('生成速度', esc(p.speed.text.replace(/\s*\+[\d,]+\s*點數.*$/, '').replace(/^\d+x\s*/, '') || '—'), [price(p.speed.extra), p.speed.wait ? '等待 ' + p.speed.wait : ''].filter(Boolean).join(' · ')));
-    for (const t of Array.isArray(p.tools) ? p.tools : []) if (t.group !== '提示詞工具') cells.push(cell(t.name, t.on ? '开' : '关', price(t.extra)));
+    const flip = (kind, name, on) => `<button type="button" class="chip-button" data-action="pixai-panel-flip" data-kind="${kind}" data-name="${esc(name)}" data-value="${on ? 0 : 1}" aria-pressed="${!!on}"${dis}>${on ? '开' : '关'}</button>`;
+    for (const t of Array.isArray(p.tools) ? p.tools : []) if (t.group !== '提示詞工具') cells.push(cell(t.name, flip('tools', t.name, t.on), price(t.extra)));
     const adv = Array.isArray(p.advanced) ? p.advanced : [];
-    for (const a of adv) {
-      if (a.kind === 'text') continue;
-      const v = a.kind === 'bool' ? (a.value ? '开' : '关') : (a.value === null || a.value === '' || a.value === undefined ? '—' : esc(String(a.value)));
-      cells.push(cell(a.name, v));
-    }
+    const field = a => {
+      const nm = esc(a.name), base = `data-pxpanel="1" data-name="${nm}" data-kind="${a.kind}"${dis}`;
+      if (a.kind === 'bool') return flip('advanced', a.name, a.value);
+      if (a.kind === 'number') return `<input type="number" ${base} value="${a.value ?? ''}"${Number.isFinite(a.min) ? ` min="${a.min}"` : ''}${Number.isFinite(a.max) ? ` max="${a.max}"` : ''}${Number.isFinite(a.step) ? ` step="${a.step}"` : ''} style="width:100%">`;
+      if (Array.isArray(a.options) && a.options.length) return `<select ${base} style="width:100%">${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option${o === a.value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+      return `<input type="text" ${base} value="${esc(a.value ?? '')}" placeholder="读不到选项，名字要和网页上一致" style="width:100%">`;
+    };
+    for (const a of adv) if (a.kind !== 'text') cells.push(cell(a.name.replace(/#值$/, ' 数值'), field(a)));
     const neg = adv.find(a => a.kind === 'text');
-    const negHtml = neg ? `<div class="px-cell px-wide"><small>${esc(neg.name)}</small><em style="white-space:normal;word-break:break-word">${esc(String(neg.value || '（空）').slice(0, 240))}</em></div>` : '';
-    return `<div class="px-grid">${cells.join('')}${negHtml}</div><p class="hint" style="padding:0">网页「设定」页现在的样子，换模型会跟着变；这里只显示，要改请在网页上改。${adv.length ? '' : '点「立即同步」会顺便读进阶设置（步数、采样、CFG、反向提示词等）。'}</p>`;
+    const negHtml = neg ? `<div class="px-cell px-wide"><small>${esc(neg.name)}</small><textarea data-pxpanel="1" data-name="${esc(neg.name)}" data-kind="text" rows="3" style="width:100%"${dis}>${esc(String(neg.value ?? ''))}</textarea></div>` : '';
+    return `<div class="px-grid">${cells.join('')}${negHtml}</div><p class="hint" style="padding:0">网页「设定」页现在的样子，换模型会跟着变；改这里会去网页上改，改完读回来。${adv.length ? '' : '点「立即同步」会顺便读进阶设置（步数、采样、CFG、反向提示词等）。'}</p>`;
   };
   const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at, i.template?.at, !!i.template?.armed, i.hasRef, i.refStrength, i.panel]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
@@ -584,7 +589,7 @@ export function drawApp(ctx) {
     const next = fresh || (pixaiLast ? {...pixaiLast, stale: true} : null);
     const changed = refDropped || pixaiSig(next) !== pixaiSig(pixaiInfo);
     pixaiInfo = next;
-    if (changed && !ctx.doc.activeElement?.matches?.('[data-pxref-strength]')) render(); // 正在拖 Strength 时不重画，免得滑块被抢走
+    if (changed && !ctx.doc.activeElement?.matches?.('[data-pxref-strength],[data-pxpanel]')) render(); // 正在拖 Strength 时不重画，免得滑块被抢走
   }
   /** Taps on 1 or 4: the PixAI page is switched to that many per task, and what it then shows (cost with it) is read back. */
   let pixaiSetting = 0;
@@ -719,6 +724,13 @@ export function drawApp(ctx) {
   v.on('change', '[data-pxtpl-on]', el => { tplTweak(el.dataset.pxtplOn, {on: el.checked}); render(); });
   v.on('change', '[data-pxapi-on]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapiOn]: el.checked}}}); render(); });
   v.on('input', '[data-pxref-strength]', el => { el.closest('.px-ref-r').querySelector('output').textContent = Number(el.value).toFixed(2); });
+  v.on('change', '[data-pxpanel]', async el => {
+    const kind = el.dataset.kind, raw = el.value;
+    const value = kind === 'number' && raw.trim() !== '' ? Number(raw) : raw;
+    const blankOk = /seed/i.test(el.dataset.name); // 种子留空 = 随机
+    if (kind === 'number' && !(blankOk && raw.trim() === '') && (raw.trim() === '' || !Number.isFinite(value))) { ctx.notify('这一项要填数字', {error: true}); render(); return; }
+    await setPixaiPage({panel: {advanced: {[el.dataset.name]: value}}});
+  });
   v.on('change', '[data-pxref-strength]', async el => { api.saveDraw({pixai: {refStrength: Number(el.value)}}); if (state().pixai.mode === 'still') await setPixaiPage({refStrength: Number(el.value)}); });
   v.on('change', '[data-pxapi]', el => { api.saveDraw({pixai: {api: {[el.dataset.pxapi]: Number(el.value)}}}); });
   v.on('input', '[data-queue]', el => { el.previousElementSibling.querySelector('output').textContent = el.value + (el.dataset.queue === 'gap' ? ' 秒' : ' 次'); });
@@ -827,6 +839,7 @@ export function drawApp(ctx) {
         pixaiReading = false; await refreshPixai(); render(); break;
       }
       case 'pixai-model': await setPixaiPage({model: el.dataset.value}); break;
+      case 'pixai-panel-flip': { const on = el.dataset.value === '1'; await setPixaiPage({panel: {[el.dataset.kind === 'tools' ? 'tools' : 'advanced']: {[el.dataset.name]: on}}}); break; }
       case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
       case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
       case 'pixai-swap': await setPixaiPage({swap: true}); break;
