@@ -15,7 +15,7 @@ import {storyScope, mapStory} from './core/story-scope.js';
 // automatically. Older records ({url, seed, …}) read as a single version.
 import {storyReply} from './core/outgoing.js';
 import {OUTFIT_KEY, normalizeBook, outfitsBefore, currentOutfits, recordOutfits, forgetOutfit} from './core/outfits.js';
-import {lookOf, drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
+import {lookOf, naturalLooks, drawSeparate, readOutfits, wantsOutfits, noneOk, usesBaibai, tavernPicture, sizeFor, parsePictures, pictureInputs, planRequest, planLength, tagTextRequest, tagTextAnswer, insertPlanned, withoutPictures, sameExact, suggestRequest, writeRequest, promptLength, readSuggestion, budgetNumbers, fillUpRequest, sameName, sentenceCount} from './core/draw.js';
 import {tokenBudget, loadCounter, countField, tagCost, estimateTokens} from './core/tokens.js';
 import {editTags} from './host-ask.js';
 import {downloadAction} from './download.js';
@@ -197,7 +197,8 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   }
   // ---------- 当前服装 (per chat, in the chat's own data) ----------
   const outfitBook = () => normalizeBook(context()?.chatMetadata?.[OUTFIT_KEY]);
-  function outfitsNow(id) { return outfitsBefore(outfitBook(), id); }
+  const outfitNl = () => naturalLooks(settings());
+  function outfitsNow(id) { return outfitsBefore(outfitBook(), id, null, outfitNl()); }
   function saveBook(book) {
     const ctx = context();
     if (!ctx?.chatMetadata) throw Error('先在酒馆里打开一个聊天');
@@ -209,22 +210,23 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     try {
       if (!wantsOutfits(settings().draw)) return;
       const found = readOutfits(reply);
-      if (found.length) { saveBook(recordOutfits(outfitBook(), id, found)); try { outfitChanged(id, found); } catch { /* the 衣柜 not following is not worth a failed reply */ } }
+      if (!found.length && /<img\b/i.test(String(reply ?? ''))) backend.reportDiagnostic?.('当前服装', {message: '这次回复的出图块里没有「服装：名字｜衣服」行，当前服装没有更新（模型没按规则写）', reply: String(reply ?? '').slice(0, 1500)}, 'warn');
+      if (found.length) { saveBook(recordOutfits(outfitBook(), id, found, 'ai', outfitNl())); try { outfitChanged(id, found); } catch { /* the 衣柜 not following is not worth a failed reply */ } }
     } catch { /* a record that could not be kept is not worth a failed reply */ }
   }
-  const outfitsList = () => currentOutfits(outfitBook());
+  const outfitsList = () => currentOutfits(outfitBook(), outfitNl());
   /** Said by hand: it starts from the floor before the newest, so the next picture already uses it. */
   function outfitSave(name, outfit) {
     const ctx = context();
     if (!ctx?.chat?.length) throw Error('先在酒馆里打开一个聊天');
     if (!String(name).trim() || !String(outfit).trim()) throw Error('名字和衣服都要写');
-    saveBook(recordOutfits(outfitBook(), Math.max(0, ctx.chat.length - 2), [{name, outfit}], 'me'));
+    saveBook(recordOutfits(outfitBook(), Math.max(0, ctx.chat.length - 2), [{name, outfit}], 'me', outfitNl()));
     return outfitsList();
   }
   /** What someone wears from message `at` on, said by another part (the 衣柜): the same record as the planner's own. */
   function outfitAt(list, at, by = 'ai') {
     if (!context()?.chatMetadata) return false;
-    saveBook(recordOutfits(outfitBook(), Math.max(0, Number(at) || 0), list, by));
+    saveBook(recordOutfits(outfitBook(), Math.max(0, Number(at) || 0), list, by, outfitNl()));
     return true;
   }
   function outfitDelete(name) { saveBook(forgetOutfit(outfitBook(), name)); return outfitsList(); }
@@ -668,7 +670,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       '输出恰好三行，不要别的话、不要引号、不要代码块：',
       '外貌：她固定的样子，用英文 tag，逗号分隔：发型发色、眼睛、体型、肤色、固定的特征（痣、疤、耳朵等）。不写衣服、配饰、表情、动作。',
       '自然语言：同样的外貌，写成一两句中文，不用 tag：年龄和性别、发型发色、瞳色、体型、肤色、固定的特征。同样不写衣服、配饰、表情、动作，内容和上一行一致。',
-      '服装：聊天最后她身上穿戴的衣服和配饰，用英文 tag，逗号分隔。聊天里没有说，或脱了、没穿，就留空。',
+      outfitNl() ? '服装：聊天最后她身上穿戴的衣服和配饰，写成一句中文自然语言（如「白色护士服，肉色丝袜」），不用 tag。聊天里没有说，或脱了、没穿，就留空。' : '服装：聊天最后她身上穿戴的衣服和配饰，用英文 tag，逗号分隔。聊天里没有说，或脱了、没穿，就留空。',
       '只写文字里明确说了的；颜色写明了就原样用，没写的不要编。',
       '',
       cardText ? `【角色卡】\n${cardText}\n` : '',
@@ -958,5 +960,5 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     registerAppearances(context().chat[id]);
     await drawMessage(id);
   }
-  return {redrawAll, replanAndDraw, drawFor, tagText, readLook, completeLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
+  return {outfitNatural: outfitNl, redrawAll, replanAndDraw, drawFor, tagText, readLook, completeLook, drawSelection, drawMessage, prepareReply, outfitsList, outfitSave, outfitAt, outfitDelete, outfitsClear, decorate, click, autoPictures, planPictures, planLatest, voiceLatest, voiceMessage, registerAppearances, recentMessages, insertImage, suggestPrompt, writePrompt, subscriptionLabel, pictureStats, clearPictures};
 }

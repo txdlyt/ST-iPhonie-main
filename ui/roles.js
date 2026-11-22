@@ -244,7 +244,7 @@ export function rolesApp(ctx) {
         <details data-group="role-look"><summary>外貌<small class="fold-note">${esc(lookNote(r))}${r.negative?.trim() ? ' · 有固定负面' : ''}${r.ref ? ' · 有参考图' : ''}${outfitFor(r.name) ? ' · 穿着：' + esc(outfitFor(r.name).slice(0, 18)) : ''}</small></summary><div class="fold-body">${field('外貌 tag', textArea('appearance', r.appearance || '', 'class="code" rows="3" placeholder="例如 1girl, long silver hair, blue eyes, slender"'), '这个角色入画时会自动补上这些 tag，让长相保持一致。写英文 danbooru tag，逗号分隔，只写不会变的特征：1girl 或 1boy、发型发色、瞳色、体型、显眼的特征；衣服、表情、动作让模型按剧情写。已有作品里的角色，把识别 tag 放最前，比如 hatsune miku (vocaloid)。\n\n新角色第一次入画时，模型写的外貌会自动填到这里，可以随时改。')}
           ${field('外貌 自然语言', textArea('appearanceNl', r.appearanceNl || '', 'rows="3" maxlength="1500" placeholder="例如 四十二岁女性，黑色长发松散地挽在脑后，皮肤白皙，身材丰腴"'), '出图预设打开「出图块用自然语言」时，入画用这一栏；没打开就用上面的外貌 tag。两栏都写最省事，换预设不用改角色。\n\n用自然语言写，只写不会变的特征：年龄和性别、发型发色、瞳色、体型、肤色；衣服、表情、动作让模型按剧情写。哪一栏留空，就退回用另一栏。\n\n新角色第一次入画时，模型写的外貌会按当前预设的写法，自动填到对应的一栏。')}
           ${field('固定负面', textArea('negative', r.negative || '', 'class="code" rows="2" maxlength="1000" placeholder="例如 glasses, short hair, freckles"'), '这个角色每次入画都不要出现的 tag，写总被画错的地方。\n\nNovelAI V4 以后这是这个人自己的负面；V3 和 ComfyUI 没有分人的负面，会合进整张图的。多人同框时，性别和人数类的词会自动去掉，不然会把别人也压掉。GPT 生图不读负面。')}
-          ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="例如 white blouse, navy pleated skirt, red ribbon"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰的 tag；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
+          ${api.outfitsList ? field('这个聊天里现在穿的', textArea('outfitNow', outfitDraft ?? outfitFor(r.name), 'class="code" rows="2" maxlength="400" placeholder="' + (outfitNatural() ? '例如 白色衬衫，藏青色百褶裙，红色蝴蝶结' : '例如 white blouse, navy pleated skirt, red ribbon') + '"'), '出图预设打开「记住角色当前的服装」后，出图时模型会按这里接着画，换了衣服模型会更新它。这里可以手改，留空再保存就是清掉。只写衣服和配饰（出图块用自然语言的预设写中文，用 tag 的预设写 tag，两种分开记）；按聊天分开记：新聊天从头开始，回到旧聊天旧的还在。世界书里写的固定服装是起点，聊天里的换装优先。') : ''}
           <div class="actions role-try">${api.readLook ? btn('role-from-chat', icon('chat') + '从聊天读取', 'secondary') : ''}${api.completeLook ? btn('role-complete', icon('paint') + '补全另一栏', 'secondary') : ''}${api.tagImage ? btn('role-from-image', icon('image') + '从图片提取', 'secondary') + '<input type="file" accept="image/*" data-role-image hidden>' : ''}${btn('role-try', icon('paint') + '试画一张', 'secondary')}${help('用现在写的外貌和负面、在用的画风画一张半身像，看看对不对，不用先保存。图也会存进相册。要扣 Anlas 或花钱时会先问。')}</div>
           ${tried && tried.id === (r.id || 'new') ? `<div class="role-tried"><img src="${esc(tried.url)}" alt="试画的图"></div>` : ''}
           ${refField(r)}</div></details>
@@ -478,6 +478,7 @@ export function rolesApp(ctx) {
   }
   // 当前服装 (this chat's): not a part of the role; it is kept in the chat when the role is saved.
   let outfitDraft = null;
+  const outfitNatural = () => { try { return !!api.outfitNatural?.(); } catch { return false; } };
   const outfitFor = name => { try { return api.outfitsList?.().find(o => o.name === String(name || '').trim())?.outfit || ''; } catch { return ''; } };
   function keepOutfit(name) {
     if (outfitDraft === null || !api.outfitSave) return;

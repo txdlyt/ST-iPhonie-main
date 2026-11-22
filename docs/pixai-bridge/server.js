@@ -633,10 +633,10 @@ async function dismissDailyReward(page) {
 }
 
 /**
- * 登录 / 切换账号后打开生图页：「每日領取」弹窗会自己弹出来（有时晚几秒）。等最多 wait 毫秒，弹了就签到，没弹就算了。
+ * 登录 / 切换账号后打开生图页：「每日領取」弹窗会自己弹出来（有时晚几秒）。只多等 wait 毫秒，弹了就签到，没弹就算了。
  * 只在这几个时刻检测，不会在平时一直盯着页面。
  */
-async function claimDailyIfShown(page, wait = 8000) {
+async function claimDailyIfShown(page, wait = 1500) { // 打开生图页时顺手看一眼：有弹窗就签，没有就立刻往下走（不再干等）
   const title = page.getByText(/^\s*每日(領取|领取)\s*$/).first();
   const until = Date.now() + wait;
   while (Date.now() < until && !(await title.isVisible().catch(() => false))) await sleep(500);
@@ -2095,6 +2095,7 @@ input.shake{animation:shake .4s ease;border-color:var(--bad)}
 </div>
 <div class="acts">
 <button class="mini act" id="checkin" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8M8 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4-5a2.5 2.5 0 0 1 0 5"/></svg>签到</button>
+<button class="mini act" id="relogin" type="button"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 11l2 2 4-4"/></svg>重登</button>
 <button class="mini act" id="retry" type="button"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>重试</button>
 <button class="mini stop" id="stop" type="button"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="stopText">停止</span></button>
 </div>
@@ -2416,6 +2417,16 @@ $('stop').onclick = async () => {
   } catch (e) { say('停止失败：' + e.message, 'bad'); }
   refresh(true);
 };
+$('relogin').onclick = () => {
+  if (busy) return;
+  var a = accList.find(function (x) { return curEmail && x.email.toLowerCase() === String(curEmail).toLowerCase(); });
+  // 有存档就直接用存档重登（不用密码）；没存档才需要填密码
+  if (a && a.saved) { if (narrow()) showTab('run'); return runJob('/admin/switch', { email: a.email, force: true }, '正在重登…', '重登 ' + (a.label || a.email), function () { sayAction('重登没成功：', [['重试', function () { $('relogin').click(); }]]); }); }
+  if (a && String(a.email).indexOf('id:') === 0) return say('这个账号是第三方登录，还没有存档：到远程浏览器（6080）里登录，再点「账号」里的「保存当前网页登录」', 'bad');
+  $('email').value = (a && a.email) || curEmail || ''; $('password').value = '';
+  openLogin(true);
+  say('这个账号还没有存档，填密码登录一次');
+};
 $('retry').onclick = () => runJob('/admin/retry', {}, '正在重试…', '重试：放弃卡住的任务，重新打开生图页');
 function pick(a, isCur, needPwd) {
   if (busy) return;
@@ -2531,19 +2542,18 @@ async function recordTemplateByClick(page) {
   if (!got) { console.warn('反代自己点「生成」没记下设置：' + (note[0] || '请求没被拦到')); await disarmTemplate(); } // 不再留着拦截：否则之后在网页上点「生成」会被无声截掉
   return { got, message: got ? '' : note[0] || '没拦到网页的请求' };
 }
-/** 左侧历史记录区里最上面那张缩略图（区域用「在資料庫中查看全部」认出来），点开，读打开后的参数原文，再关掉。 */
+/** 左侧历史记录（「任務」标签页）里最上面那张缩略图，点一下：网页把设置换成它用的，再读回来。 */
 async function readFirstHistory(page) {
+  // 真实结构（/debug/history 导出）：历史区是「任務」标签页 [role=tabpanel][id$=-tabpanel-tasks]，缩略图是 img[data-media-display="collection"]
   const handle = await page.evaluateHandle(() => {
     const visible = el => !!(el.offsetWidth || el.offsetHeight);
-    const mark = Array.from(document.querySelectorAll('a,button,div,span')).find(el => visible(el) && /^在(資料庫|资料库)中查看全部\s*$/.test((el.innerText || '').trim()));
-    if (!mark) return null;
-    let box = mark;
-    for (let i = 0; i < 8 && box.parentElement; i++) { box = box.parentElement; if (box.querySelectorAll('img').length >= 2) break; }
+    const panel = Array.from(document.querySelectorAll('[role="tabpanel"]')).find(el => /-tabpanel-tasks$/.test(el.id || '') && visible(el));
+    if (!panel) return null;
     const rect = el => el.getBoundingClientRect();
-    return Array.from(box.querySelectorAll('img')).filter(el => visible(el) && rect(el).width > 40).sort((a, b) => rect(a).top - rect(b).top || rect(a).left - rect(b).left)[0] || null;
+    return Array.from(panel.querySelectorAll('img[data-media-display="collection"]')).filter(el => visible(el) && rect(el).width > 40).sort((a, b) => rect(a).top - rect(b).top || rect(a).left - rect(b).left)[0] || null;
   });
   const first = handle.asElement();
-  if (!first) return { ok: false, opened: false, message: '页面上没找到历史记录区的缩略图（左边要能看到历史记录和「在資料庫中查看全部」）' };
+  if (!first) return { ok: false, opened: false, message: '页面上没找到历史记录区的缩略图（左边「任務」历史里要有图）' };
   await first.click({ timeout: 8000 });
   // 点历史记录不会弹窗：还是生图界面，网页把设置换成这条记录用的（模型、比例、尺寸……）。等它换完，再用平时读设置的办法读回来
   await sleep(2500);
@@ -2925,7 +2935,7 @@ app.post('/admin/switch', async (req, res) => {
   const email = String(req.body?.email || '').trim(), acc = findAcc(email);
   if (!acc) return res.status(404).json({ message: '没有这个账号的记录' });
   if (!acc.savedAt) return res.status(400).json({ message: '这个账号还没存档，请用密码登录一次' });
-  if (sameEmail(accounts.current, acc.email)) return res.json({ ok: true, message: '已经是这个账号' });
+  if (!req.body?.force && sameEmail(accounts.current, acc.email)) return res.json({ ok: true, message: '已经是这个账号' }); // force：「重登」，当前账号也照样把存档重新载一遍
   if (isGenerating()) return res.status(409).json({ message: '反代正在出图，画完再换账号（卡住了就点「重试」）' });
   const job = settingLock.then(() => switchToSaved(acc.email));
   settingLock = holdLock(job);

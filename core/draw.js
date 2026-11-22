@@ -26,7 +26,7 @@ import {DRAW_ENGINES, DRAW_ENGINE_NAMES, defaultGpt, normalizeGpt, defaultComfy,
 import {defaultPixai, normalizePixai} from './pixai.js';
 import {escapeHTML, isPlaceholderRole} from './protocol.js';
 import {baibaiDrawPreset, baibaiMessages, baibaiBodies, baibaiOutfits, isBaibai} from './draw-baibai.js';
-import {OUTFIT_RULE, outfitBlock, outfitLines} from './outfits.js';
+import {OUTFIT_RULE, OUTFIT_RULE_NL, outfitBlock, outfitLines} from './outfits.js';
 
 const BLOCK = ['<img>', '画幅：竖 / 横 / 方', '场景：英文 tag', '角色：名字｜这一刻的 tag｜不要出现的 tag｜站位（画面里每个人单独一行，每一行都以「角色：」开头）', '新外貌：名字｜外貌 tag｜外貌的中文描述（只在名单外的新角色第一次出现时写，两份都写）', '</img>'];
 export const PIC_TAG_FORMAT = BLOCK.join('\n');
@@ -657,7 +657,7 @@ export function planRequest(settings, {message, before = [], preset, only = null
   const p = activePreset(settings.draw, preset);
   if (isBaibai(p)) return baibaiRequest(settings, p, {message, before, only, lore, outfits, min});
   const {entries, fill, tail} = ruleText(settings, p, drawFormat(settings, p, true), planContract, only);
-  const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail + (p.outfits ? '\n\n' + OUTFIT_RULE : '');
+  const system = entries.map(e => fill(e.text)).join('\n\n') + '\n\n' + tail + (p.outfits ? '\n\n' + (p.natural === true ? OUTFIT_RULE_NL : OUTFIT_RULE) : '');
   // 世界书: the entries the tavern would turn on for this story (the phone's choice of books), for era, places and looks.
   const ask = promptText(settings.promptRules, 'draw-story', 'planAsk', {'世界书': lore.trim(), '前情': before.map(m => `${m.name}：${m.text}`).join('\n') + (p.outfits ? (before.length ? '\n\n' : '') + outfitBlock(outfits) : ''),
     '正文': paragraphs(message, settings.narration).map((x, i) => `[P${i + 1}] ${x.text}`).join('\n'), '出图数量': countOf(p)});
