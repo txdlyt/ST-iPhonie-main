@@ -368,7 +368,7 @@ export function drawApp(ctx) {
     // Ratio, size tier and portrait/landscape are the page's own buttons: a tap switches the page (the bridge clicks them) and the page is read back.
     const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.stale;
     const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
-    const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}${x.vip ? ' · VIP' : ''}</small></button>`;
+    const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}${x.vip ? '<span class="px-vip">VIP</span>' : ''}</small></button>`;
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
     const models = Array.isArray(i.models) ? i.models : [], curModel = i.model?.id || '';
     const still = state().pixai.mode === 'still';
@@ -513,9 +513,11 @@ export function drawApp(ctx) {
       const mult = ((/^(\d+(?:\.\d+)?)\s*x/i.exec(p.speed.text) || [])[1] || '') + 'x';
       const label = p.speed.text.replace(/^\d+(?:\.\d+)?\s*x\s*/i, '').replace(/\s*\+[\d,]+\s*點數.*$/, '').replace(/預估.*$/, '').trim();
       const opts = Array.isArray(p.speed.options) ? p.speed.options : [];
-      const ctl = opts.length
-        ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度"${dis}>${(opts.some(o => o.name === mult) ? opts : [{name: mult, extra: p.speed.extra, wait: p.speed.wait}, ...opts]).map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc((o.label ? o.label + ' ' : '') + o.name)}${o.vip ? ' · VIP' : ''}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>`
-        : `<b>${esc(mult)}</b>`;
+      const list = opts.length ? (opts.some(o => o.name === mult) ? opts : [{name: mult, label, extra: p.speed.extra, wait: p.speed.wait}, ...opts]) : [];
+      const cur = list.find(o => o.name === mult) || {name: mult, label, extra: p.speed.extra, wait: p.speed.wait};
+      const chevron = '<svg class="px-sp-go" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+      const pick = list.length ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度" aria-label="生成速度"${dis}>${list.map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc((o.label ? o.label + ' ' : '') + o.name)}${o.vip ? ' · VIP' : ''}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>${chevron}` : '';
+      const ctl = `<div class="px-speed${list.length ? '' : ' still'}"><span class="px-sp-x">${esc(mult)}</span><span class="px-sp-t"><span class="px-sp-a">${esc(cur.label || '')}${Number.isFinite(cur.extra) ? `<span class="px-sp-p">${esc(price(cur.extra))}</span>` : ''}</span>${cur.wait ? `<span class="px-sp-b">预估等待 ${esc(cur.wait)}</span>` : ''}</span>${pick}</div>`;
       rows.push(row('生成速度', ctl));
     }
     const tools = Array.isArray(p.tools) ? p.tools : [];
@@ -562,6 +564,7 @@ export function drawApp(ctx) {
     pixaiTimer = ctx.win.setTimeout(() => { if (!v.disposed && eng() === 'pixai' && !ctx.win.document?.hidden) refreshPixai(); else pollPixai(); }, state().pixai.mode === 'still' && api.getPixaiRef() ? 4000 : 10000); // 静止模式带着参考图时读得勤一点，网页上换了模型好尽快跟上
   }
   const onPixaiVisible = () => { if (!ctx.win.document.hidden && eng() === 'pixai') refreshPixai(); };
+  let pixaiAutoAdv = '';
   async function refreshPixai(wait = 15000, fresh = false) {
     const ticket = ++pixaiEpoch;
     if (eng() !== 'pixai' || !api.drawReady()) return;
@@ -571,6 +574,9 @@ export function drawApp(ctx) {
     try { info = await Promise.race([api.pixaiStatus({fresh, advanced: fresh}), new Promise((_, no) => ctx.win.setTimeout(() => no(Error('超时')), wait))]); } catch { info = null; }
     if (v.disposed || ticket !== pixaiEpoch || eng() !== 'pixai' || state().pixai.url !== url) return;
     takePixai(info);
+    // 生成速度的选项要点开网页上的下拉才读得到：第一次读不到就自动同步一次，不用再手动点「立即同步」
+    const autoKey = info?.model?.name || '-';
+    if (!fresh && info?.panel?.speed && !(info.panel.speed.options || []).length && !info.generating && pixaiAutoAdv !== autoKey) { pixaiAutoAdv = autoKey; return refreshPixai(wait, true); }
     pollPixai();
   }
   /** The size of a recorded page setting, as the plugin's own ratio / size choice (the table says which chips it is). */
