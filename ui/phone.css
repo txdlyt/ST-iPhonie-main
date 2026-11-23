@@ -3524,3 +3524,19 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .px-ref{display:flex;gap:12px;align-items:flex-start}.px-ref img{width:72px;height:72px;object-fit:cover;border-radius:12px;flex:none}.px-ref-r{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}.px-ref-r input[type=range]{width:100%}
 
 .px-step{display:flex;align-items:center;gap:10px}.px-step b{min-width:1.6em;justify-content:center}.px-step button{min-width:36px;padding:4px 0;justify-content:center}
+
+.px-rows{border-radius:16px;background:var(--card);box-shadow:inset 0 0 0 2px var(--line);padding:2px 12px}
+.px-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:40px;padding:6px 0}
+.px-row+.px-row{border-top:1px solid var(--line)}
+.px-row>span{min-width:0;font-size:13px;font-weight:700;line-height:1.3}
+.px-row>span small{display:block;font-size:11px;font-weight:600;color:var(--ink2)}
+.px-row>b{font-size:13px;font-weight:800;flex:none}
+.px-row input[type=number],.px-row input[type=text],.px-row select{width:112px;min-width:0;padding:5px 8px;font-weight:700;font-size:14px;font-family:inherit;text-align:right;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:inherit}
+.px-row select{width:auto;max-width:58%;text-align:left}
+.px-row .switch{width:42px;height:26px}
+.px-row .switch:after{top:3px;left:3px;width:20px;height:20px}
+.px-row .switch:checked:after{transform:translateX(16px)}
+.px-row-wide{flex-direction:column;align-items:stretch;gap:4px}
+.px-row-wide textarea{width:100%;box-sizing:border-box;padding:6px 8px;font-weight:600;font-size:12px;line-height:1.4;font-family:inherit;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:inherit;resize:vertical}
+.px-head{padding:8px 0 2px;font-size:11px;font-weight:800;color:var(--ink2)}
+.px-vip{display:inline-block;margin-left:6px;padding:0 5px;border-radius:6px;background:linear-gradient(135deg,#a78bfa,#f0abfc);color:#fff;font-weight:800;font-size:9px;line-height:15px;font-family:inherit;font-style:normal;vertical-align:1px}

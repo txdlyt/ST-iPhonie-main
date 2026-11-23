@@ -368,13 +368,14 @@ export function drawApp(ctx) {
     // Ratio, size tier and portrait/landscape are the page's own buttons: a tap switches the page (the bridge clicks them) and the page is read back.
     const ratios = Array.isArray(r.ratios) ? r.ratios : [], sizes = Array.isArray(r.sizes) ? r.sizes : [], pick = !!i.syncing || !!i.stale;
     const ratioChip = x => { const [a, b] = x.ratio.split(':').map(Number), k = 18 / Math.max(a, b); return `<button type="button" data-action="pixai-ratio" data-value="${esc(x.ratio)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}><i style="width:${Math.max(5, Math.round(a * k))}px;height:${Math.max(5, Math.round(b * k))}px"></i>${esc(x.ratio)}</button>`; };
-    const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}</small></button>`;
+    const sizeChip = x => `<button type="button" data-action="pixai-size" data-value="${esc(x.size)}" aria-pressed="${!!x.on}"${pick || x.locked ? ' disabled' : ''}${x.locked ? ' title="这一档被锁住了（可能要会员）"' : ''}>${esc(x.size)}<small>${x.width}×${x.height}${x.locked ? ' 🔒' : ''}${x.vip ? ' · VIP' : ''}</small></button>`;
     const picker = ratios.length ? `<div class="px-cell px-wide"><small>分辨率${help('点比例或尺寸，会立刻去切 PixAI 网页，切完重新读回来。账号有会员时，网页多出来的尺寸档位会自动出现在这里；被锁住的灰掉不能点。横竖互换是网页自带的按钮。')}</small><b>${resolution}</b><em>${r.ratio ? `画幅 ${esc(r.ratio)}` : ''}</em><div class="size-chips px-pick">${ratios.map(ratioChip).join('')}</div>${i.canSwap ? `<button type="button" class="chip-button px-swap" data-action="pixai-swap"${pick ? ' disabled' : ''} aria-label="横竖互换">⇄ 反转</button>` : ''}${sizes.length ? `<div class="size-chips px-pick">${sizes.map(sizeChip).join('')}</div>` : ''}</div>` : '';
     const models = Array.isArray(i.models) ? i.models : [], curModel = i.model?.id || '';
     const still = state().pixai.mode === 'still';
     const modelRow = models.length || still ? `<div class="px-cell px-wide"><small>模型${help(still ? '静止模式不由插件换模型：请在 PixAI 网页上自己选，这里显示网页现在用的是哪个。' : '点一下会去切 PixAI 网页：换模型，并按这个模型的设定带上或去掉 LoRA / Recipe。要等十几秒到半分钟，期间按钮灰着。')}</small><b>${esc(i.model?.name || '读不到网页上的模型')}</b><em>${esc([...(i.model?.recipes || []).map(x => 'Recipe ' + x), ...(i.model?.loras || []).map(x => 'LoRA ' + x)].join(' · '))}</em>${still ? '' : `<div class="size-chips px-pick">${models.map(m => `<button type="button" data-action="pixai-model" data-value="${esc(m.id)}" aria-pressed="${m.id === curModel}"${pick ? ' disabled' : ''}>${esc(m.name)}</button>`).join('')}</div>`}</div>` : '';
     const webRef = still && i.hasRef === true, miao = still || (state().pixai.mode === 'direct' && /miaomiao/i.test(i.model?.name || '')), pref = api.getPixaiRef(), strength = still && Number.isFinite(i.refStrength) ? i.refStrength : state().pixai.refStrength;
-    const refRow = miao ? `<div class="px-cell px-wide"><small>参考图${help(still ? '选好图就会传到 PixAI 网页，能不能用由网页上的模型决定：不支持的模型，网页会自动切到支持的模型，或把图移除，这里都以网页为准。Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。' : 'MiaoMiao 专有：选一张图当底图，PixAI 网页会上传它并按 Strength 参考：Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。')}</small>${pref || webRef ? `<div class="px-ref">${pref ? `<img src="${esc(pref.preview)}" alt="参考图" draggable="false">` : ''}<div class="px-ref-r"><label class="tpl-lora-head"><span>${pref ? 'Strength' : '网页上已有参考图 · Strength'}</span><output>${Number(strength).toFixed(2)}</output></label><input type="range" min="0" max="1" step="0.01" value="${strength}" data-pxref-strength><div class="actions">${btn('pixai-ref-pick', '换一张', 'chip-button')}${btn('pixai-ref-clear', '移除', 'chip-button')}</div></div></div>` : `<div class="actions">${btn('pixai-ref-pick', icon('import') + '选一张参考图', 'secondary')}</div>`}</div>` : '';
+    const noRef = !!(i.panel && i.panel.ref && i.panel.ref.supported === false) && !pref && !webRef; // 网页「設定」页里没有「底圖」= 这个模型不支持参考图
+    const refRow = miao && !noRef ? `<div class="px-cell px-wide"><small>参考图${help(still ? '选好图就会传到 PixAI 网页，能不能用由网页上的模型决定：不支持的模型，网页会自动切到支持的模型，或把图移除，这里都以网页为准。Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。' : 'MiaoMiao 专有：选一张图当底图，PixAI 网页会上传它并按 Strength 参考：Strength 越低越像参考图，越高越自由发挥。图只在这次打开期间记着，刷新后要重新选。')}</small>${pref || webRef ? `<div class="px-ref">${pref ? `<img src="${esc(pref.preview)}" alt="参考图" draggable="false">` : ''}<div class="px-ref-r"><label class="tpl-lora-head"><span>${pref ? 'Strength' : '网页上已有参考图 · Strength'}</span><output>${Number(strength).toFixed(2)}</output></label><input type="range" min="0" max="1" step="0.01" value="${strength}" data-pxref-strength><div class="actions">${btn('pixai-ref-pick', '换一张', 'chip-button')}${btn('pixai-ref-clear', '移除', 'chip-button')}</div></div></div>` : `<div class="actions">${btn('pixai-ref-pick', icon('import') + '选一张参考图', 'secondary')}</div>`}</div>` : '';
     const perTask = Number.isInteger(i.count) ? i.count : null;
     const lines = [];
     if (state().pixai.mode === 'still') lines.push('<p class="hint" style="padding:0">静止模式：模型请在 PixAI 网页上自己选；比例、尺寸、横竖、张数和参考图在这里点就会去切网页，积分按网页当前设置算，改了就会跟着变。</p>', `<div class="px-history"><button type="button" class="chip-button" data-action="pixai-history"${pixaiHistoryBusy ? ' disabled' : ''}>${pixaiHistoryBusy ? '正在读取…' : '读取最近一条历史记录'}</button><small class="hint">读你在官方软件里最后一次用的模型、分辨率等参数，不用再开网页</small></div>`);
@@ -497,29 +498,50 @@ export function drawApp(ctx) {
   let pixaiInfo, pixaiLast = null, pixaiLastUrl = '', pixaiEpoch = 0, pixaiTimer = 0;
   const pxNum = n => Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
   /** What changes what is shown: the page's settings, the balance, and whether it is reachable (so a poll that finds nothing new does not redraw the app). */
-  /** The page's own 设定 panel as the bridge reads it: reference image support, speed, tools (free or +N points), advanced settings. Tools and advanced values can be changed here; the bridge does it on the page and reads it back. */
+  /** The page's own 设定 panel as the bridge reads it: reference image support, speed, every switch row (tools, watermark, prompt tools; free or +N points, VIP mark) and the advanced settings. All of it can be changed here; the bridge does it on the page and reads it back. */
   const pixaiPanelHtml = (p, locked) => {
     if (!p || typeof p !== 'object') return '';
-    const cell = (label, value, note = '') => `<div class="px-cell"><small>${esc(label)}</small><b>${value}</b>${note ? `<em>${esc(note)}</em>` : ''}</div>`;
-    const price = x => Number.isFinite(x) ? `+${pxNum(x)} 积分` : '免费';
     const dis = locked ? ' disabled' : '';
-    const cells = [];
-    cells.push(cell('参考图', p.ref?.supported ? '支持' : '不支持', p.ref?.supported && Number.isFinite(p.ref.max) ? `${p.ref.used ?? 0} / ${p.ref.max}` : ''));
-    if (p.speed) cells.push(cell('生成速度', esc(p.speed.text.replace(/\s*\+[\d,]+\s*點數.*$/, '').replace(/^\d+x\s*/, '') || '—'), [price(p.speed.extra), p.speed.wait ? '等待 ' + p.speed.wait : ''].filter(Boolean).join(' · ')));
-    const flip = (kind, name, on) => `<button type="button" class="chip-button" data-action="pixai-panel-flip" data-kind="${kind}" data-name="${esc(name)}" data-value="${on ? 0 : 1}" aria-pressed="${!!on}"${dis}>${on ? '开' : '关'}</button>`;
-    for (const t of Array.isArray(p.tools) ? p.tools : []) if (t.group !== '提示詞工具') cells.push(cell(t.name, flip('tools', t.name, t.on), price(t.extra)));
+    const vipTag = '<i class="px-vip">VIP</i>';
+    const row = (label, control, note = '', vip = false) => `<div class="px-row"><span>${esc(label)}${vip ? vipTag : ''}${note ? `<small>${esc(note)}</small>` : ''}</span>${control}</div>`;
+    const price = x => Number.isFinite(x) ? `+${pxNum(x)} 积分` : '';
+    const sw = (kind, name, on) => `<input class="switch" type="checkbox" aria-label="${esc(name)}" data-pxpanel="1" data-kind="${kind}" data-name="${esc(name)}"${on ? ' checked' : ''}${dis}>`;
+    const groupName = g => ({'新增工具': '新增工具', '提示詞工具': '提示词工具', '提示词工具': '提示词工具'})[g] || '生成选项';
+    const rows = [];
+    rows.push(row('参考图', `<b>${p.ref?.supported ? '支持' : '不支持'}</b>`, p.ref?.supported && Number.isFinite(p.ref.max) ? `${p.ref.used ?? 0} / ${p.ref.max}` : ''));
+    if (p.speed) {
+      const mult = ((/^(\d+(?:\.\d+)?)\s*x/i.exec(p.speed.text) || [])[1] || '') + 'x';
+      const label = p.speed.text.replace(/^\d+(?:\.\d+)?\s*x\s*/i, '').replace(/\s*\+[\d,]+\s*點數.*$/, '').replace(/預估.*$/, '').trim();
+      const opts = Array.isArray(p.speed.options) ? p.speed.options : [];
+      const ctl = opts.length
+        ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度"${dis}>${(opts.some(o => o.name === mult) ? opts : [{name: mult, extra: p.speed.extra, wait: p.speed.wait}, ...opts]).map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc(o.name)}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>`
+        : `<b>${esc(mult)}</b>`;
+      rows.push(row('生成速度', ctl, [label, price(p.speed.extra), p.speed.wait ? '等待 ' + p.speed.wait : ''].filter(Boolean).join(' · ')));
+    }
+    const tools = Array.isArray(p.tools) ? p.tools : [];
+    let last = '';
+    for (const g of ['', '新增工具', '提示詞工具']) {
+      const list = tools.filter(t => (t.group || '') === g || (g === '提示詞工具' && t.group === '提示词工具'));
+      if (!list.length) continue;
+      if (groupName(g) !== last) { rows.push(`<div class="px-head">${esc(groupName(g))}</div>`); last = groupName(g); }
+      for (const t of list) rows.push(row(t.name, sw('tools', t.name, t.on), [price(t.extra) || (g === '新增工具' && !t.vip ? '免费' : ''), t.note && g !== '新增工具' ? t.note : ''].filter(Boolean).join(' · '), t.vip));
+    }
     const adv = Array.isArray(p.advanced) ? p.advanced : [];
+    if (adv.length) rows.push('<div class="px-head">进阶设置</div>');
     const field = a => {
-      const nm = esc(a.name), base = `data-pxpanel="1" data-name="${nm}" data-kind="${a.kind}"${dis}`;
-      if (a.kind === 'bool') return flip('advanced', a.name, a.value);
-      if (a.kind === 'number') return `<input type="number" ${base} value="${a.value ?? ''}"${Number.isFinite(a.min) ? ` min="${a.min}"` : ''}${Number.isFinite(a.max) ? ` max="${a.max}"` : ''}${Number.isFinite(a.step) ? ` step="${a.step}"` : ''} style="width:100%">`;
-      if (Array.isArray(a.options) && a.options.length) return `<select ${base} style="width:100%">${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option${o === a.value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
-      return `<input type="text" ${base} value="${esc(a.value ?? '')}" placeholder="读不到选项，名字要和网页上一致" style="width:100%">`;
+      const base = `data-pxpanel="1" data-name="${esc(a.name)}" data-kind="${a.kind}"${dis}`;
+      if (a.kind === 'bool') return sw('bool', a.name, a.value);
+      if (a.kind === 'number') return `<input type="number" ${base} value="${a.value ?? ''}"${Number.isFinite(a.min) ? ` min="${a.min}"` : ''}${Number.isFinite(a.max) ? ` max="${a.max}"` : ''}${Number.isFinite(a.step) ? ` step="${a.step}"` : ''}>`;
+      if (Array.isArray(a.options) && a.options.length) return `<select ${base}>${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option${o === a.value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+      return `<input type="text" ${base} value="${esc(a.value ?? '')}" placeholder="名字要和网页上一致">`;
     };
-    for (const a of adv) if (a.kind !== 'text') cells.push(cell(a.name.replace(/#值$/, ' 数值'), field(a)));
+    for (const a of adv) {
+      if (a.kind === 'text') continue;
+      rows.push(row(a.name.replace(/#值$/, ' 数值'), field(a)));
+    }
     const neg = adv.find(a => a.kind === 'text');
-    const negHtml = neg ? `<div class="px-cell px-wide"><small>${esc(neg.name)}</small><textarea data-pxpanel="1" data-name="${esc(neg.name)}" data-kind="text" rows="3" style="width:100%"${dis}>${esc(String(neg.value ?? ''))}</textarea></div>` : '';
-    return `<div class="px-grid">${cells.join('')}${negHtml}</div><p class="hint" style="padding:0">网页「设定」页现在的样子，换模型会跟着变；改这里会去网页上改，改完读回来。${adv.length ? '' : '点「立即同步」会顺便读进阶设置（步数、采样、CFG、反向提示词等）。'}</p>`;
+    if (neg) rows.push(`<div class="px-row px-row-wide"><span>${esc(neg.name)}</span><textarea data-pxpanel="1" data-name="${esc(neg.name)}" data-kind="text" rows="3"${dis}>${esc(String(neg.value ?? ''))}</textarea></div>`);
+    return `<div class="px-rows">${rows.join('')}</div><p class="hint" style="padding:0">网页「设定」页现在的样子，换模型会跟着变；改这里会去网页上改，改完读回来。${adv.length ? '' : '点「立即同步」会顺便读进阶设置（步数、采样、CFG、反向提示词等）。'}</p>`;
   };
   const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at, i.template?.at, !!i.template?.armed, i.hasRef, i.refStrength, i.panel]);
   /** The page's resolution, exactly: the canvas takes its shape from it and the request carries it. */
@@ -726,6 +748,8 @@ export function drawApp(ctx) {
   v.on('input', '[data-pxref-strength]', el => { el.closest('.px-ref-r').querySelector('output').textContent = Number(el.value).toFixed(2); });
   v.on('change', '[data-pxpanel]', async el => {
     const kind = el.dataset.kind, raw = el.value;
+    if (kind === 'speed') { await setPixaiPage({panel: {speed: raw}}); return; }
+    if (el.type === 'checkbox') { await setPixaiPage({panel: {[kind === 'tools' ? 'tools' : 'advanced']: {[el.dataset.name]: el.checked}}}); return; }
     const value = kind === 'number' && raw.trim() !== '' ? Number(raw) : raw;
     const blankOk = /seed/i.test(el.dataset.name); // 种子留空 = 随机
     if (kind === 'number' && !(blankOk && raw.trim() === '') && (raw.trim() === '' || !Number.isFinite(value))) { ctx.notify('这一项要填数字', {error: true}); render(); return; }
@@ -839,7 +863,6 @@ export function drawApp(ctx) {
         pixaiReading = false; await refreshPixai(); render(); break;
       }
       case 'pixai-model': await setPixaiPage({model: el.dataset.value}); break;
-      case 'pixai-panel-flip': { const on = el.dataset.value === '1'; await setPixaiPage({panel: {[el.dataset.kind === 'tools' ? 'tools' : 'advanced']: {[el.dataset.name]: on}}}); break; }
       case 'pixai-ratio': await setPixaiPage({ratio: el.dataset.value}); break;
       case 'pixai-size': await setPixaiPage({size: el.dataset.value}); break;
       case 'pixai-swap': await setPixaiPage({swap: true}); break;

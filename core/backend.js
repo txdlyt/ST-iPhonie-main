@@ -1828,7 +1828,7 @@ export class TTSBackend {
         if (patch.swap === true) body.swap = true;
         if (patch.model !== undefined) { body.model = String(patch.model).trim(); if (!body.model) throw Error('没有选模型'); body.direct = true; } // 直控模式：反代要真的去网页上切，不能只记下来
         if (patch.ref && typeof patch.ref.image === 'string' && patch.ref.image) body.ref = { image: patch.ref.image, strength: Number.isFinite(Number(patch.ref.strength)) ? Number(patch.ref.strength) : 0.55 };
-        if (patch.panel && typeof patch.panel === 'object') body.panel = { tools: patch.panel.tools || {}, advanced: patch.panel.advanced || {} }; // 网页「设定」页：工具开关 {名字: 开关}，进阶设置 {名字: 值}
+        if (patch.panel && typeof patch.panel === 'object') body.panel = { tools: patch.panel.tools || {}, advanced: patch.panel.advanced || {}, speed: typeof patch.panel.speed === 'string' ? patch.panel.speed : undefined }; // 网页「设定」页：工具开关 {名字: 开关}，进阶设置 {名字: 值}
         if (patch.clearRef === true) body.clearRef = true;
         if (patch.refStrength !== undefined && Number.isFinite(Number(patch.refStrength))) body.refStrength = Number(patch.refStrength);
         if (!Object.keys(body).length) throw Error('没有要切换的内容');

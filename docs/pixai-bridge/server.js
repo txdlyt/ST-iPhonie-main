@@ -1704,17 +1704,101 @@ const toNumber = v => {
 // 读取页面上当前的出图设置和积分。只读，不点任何东西，生成过程中也能调用；读不到的字段返回 null，不猜。
 // 「設定」面板：按结构通用地读，不按名字写死——换到哪个模型，有什么就读到什么（没有的不出现，免费的 extra 为 null，加积分的 extra 是数字）。
 // 结构来自真实页面：开关行 = input[role=switch] + 名字 + 可选「+N 點數」；底圖 = 标题是「底圖」的 section（有 0/1 计数）；進階設定折叠时里面的东西不在页面里。
+// 「設定」面板里所有开关行（新增工具、提示詞工具、浮水印……哪个模型有什么就有什么）。在页面里跑，返回带元素的列表：
+// 名字 = 开关自己的 aria-label，没有就取这一行里第一段文字；extra = 「+N 點數」；note = 这一行里其它短标记（如「10% OFF」）；vip = 这一行里有不在按钮里的小图标（页面上会员功能带的皇冠）。
+function inPageTools() {
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const priceOf = el => { const m = /[+＋]\s*([\d,]+)\s*(?:點數|点数|points?)/i.exec(txt(el)); return m ? Number(m[1].replace(/,/g, '')) : null; };
+  const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test(txt(el)));
+  if (!leaf) return [];
+  let root = leaf; for (let i = 0; i < 14 && root.parentElement && !/提示詞工具|新增工具/.test(root.innerText || ''); i++) root = root.parentElement;
+  const sel = 'input[role=switch],input[type=checkbox],[role=switch]:not(input)';
+  const out = [], names = new Set();
+  for (const sw of root.querySelectorAll(sel)) {
+    if (sw.closest('section > header, h3')) continue;
+    let row = sw, n = 0;
+    while (row.parentElement && n < 7) { const up = row.parentElement; if (up.querySelectorAll(sel).length > 1) break; row = up; n++; }
+    const leaves = Array.from(row.querySelectorAll('span,p,div,label')).filter(el => !el.children.length && !el.closest('button') && txt(el));
+    const name = sw.getAttribute('aria-label') || (leaves.find(el => priceOf(el) === null) ? txt(leaves.find(el => priceOf(el) === null)) : '');
+    if (!name || names.has(name)) continue;
+    names.add(name);
+    const priced = leaves.find(el => priceOf(el) !== null);
+    const note = leaves.filter(el => el.tagName !== 'P' && priceOf(el) === null && txt(el) !== name && txt(el).length <= 16).map(txt).join(' ');
+    let group = ''; for (let a = sw.parentElement, i = 0; a && i < 9 && !group; a = a.parentElement, i++) { const h = Array.from(a.children).find(c => c.tagName === 'SPAN' && /^(新增工具|提示詞工具|提示词工具)$/.test(txt(c))); if (h) group = txt(h); }
+    const vip = Array.from(row.querySelectorAll('svg')).some(sv => !sv.closest('button,label'));
+    const on = sw.tagName === 'INPUT' ? !!sw.checked : sw.getAttribute('aria-checked') === 'true';
+    out.push({ name, group, extra: priced ? priceOf(priced) : null, note, vip, on, el: sw });
+  }
+  return out;
+}
+const readTools = page => page.evaluate(`(${inPageTools})().map(({ el, ...r }) => r)`);
+// 下拉框不假设它的标记（不靠 role=option）：点开前后各拍一次「页面上看得见的文字」，多出来的就是选项；挑选时点那个文字。
+const visibleTexts = page => page.evaluate(() => {
+  const out = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.children.length || !(el.offsetWidth || el.offsetHeight)) continue;
+    if (el.closest('[data-testid="typewriter-ghost"],[data-testid^="prompt-bar"],[data-onboarding-tour="prompt"]')) continue; // 输入框里轮播的示例文字，不是选项
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t && t.length <= 80) out.push(t);
+  }
+  return out;
+});
+async function openList(page, trigger) {
+  const before = new Map(); for (const t of await visibleTexts(page)) before.set(t, (before.get(t) || 0) + 1);
+  await trigger.click({ timeout: 5000 }); await sleep(450);
+  // 页面真实数据里，展开的下拉带 aria-controls 指向弹出的列表：有的话直接读那一块里的文字，比对比前后更全
+  const ctl = await trigger.getAttribute('aria-controls').catch(() => null);
+  if (ctl) {
+    const inList = await page.evaluate(id => { const box = document.getElementById(id); if (!box) return null; const out = []; for (const el of box.querySelectorAll('*')) { if (el.children.length || !(el.offsetWidth || el.offsetHeight)) continue; const t = (el.textContent || '').replace(/\s+/g, ' ').trim(); if (t && t.length <= 80) out.push(t); } return out; }, ctl).catch(() => null);
+    if (inList && inList.length) return inList;
+  }
+  const used = new Map(), options = [];
+  for (const t of await visibleTexts(page)) { used.set(t, (used.get(t) || 0) + 1); if (used.get(t) > (before.get(t) || 0)) options.push(t); }
+  return options;
+}
+async function pickFromList(page, trigger, value) {
+  await trigger.evaluate(el => el.setAttribute('data-bridge-trig', '1'));
+  try {
+    await trigger.click({ timeout: 5000 }); await sleep(450);
+    const ok = await page.evaluate(want => {
+      const hits = Array.from(document.querySelectorAll('body *')).filter(el => !el.children.length && (el.offsetWidth || el.offsetHeight) && (el.textContent || '').replace(/\s+/g, ' ').trim() === want && !el.closest('[data-bridge-trig]'));
+      const hit = hits[hits.length - 1]; if (!hit) return false;
+      hit.setAttribute('data-bridge-pick', '1'); return true;
+    }, String(value));
+    if (!ok) { await page.keyboard.press('Escape').catch(() => {}); throw new Error(`下拉里没有「${value}」`); }
+    await page.locator('[data-bridge-pick="1"]').first().click({ timeout: 5000 });
+    await sleep(350);
+  } finally {
+    await page.evaluate(() => { document.querySelectorAll('[data-bridge-pick]').forEach(e => e.removeAttribute('data-bridge-pick')); document.querySelectorAll('[data-bridge-trig]').forEach(e => e.removeAttribute('data-bridge-trig')); }).catch(() => {});
+  }
+}
 // 改「設定」面板：want = { tools: { 名字: true|false }, advanced: { 名字: 值 } }。名字就是 readPanel 读出来的名字；按那一块里实际有的控件类型来改，改完回读核对。
 async function applyPanel(page, want) {
   const q = v => String(v).replace(/["\\]/g, '\\$&');
   const notes = [];
   for (const [name, on] of Object.entries(want.tools || {})) {
-    const input = page.locator(`input[role="switch"][aria-label="${q(name)}"]`).first();
-    if (!(await input.count())) throw new Error(`「${name}」这个模型没有`);
-    if ((await input.isChecked()) === !!on) continue;
-    await input.locator('xpath=ancestor::label[1]').click({ timeout: 8000 });
+    const key = JSON.stringify(name);
+    const cur = await page.evaluate(`(() => { const t = (${inPageTools})().find(x => x.name === ${key}); return t ? t.on : null; })()`);
+    if (cur === null) throw new Error(`「${name}」这个模型没有`);
+    if (cur === !!on) continue;
+    await page.evaluate(`(() => { const t = (${inPageTools})().find(x => x.name === ${key}); (t.el.closest('label') || t.el).click(); })()`);
     await sleep(500);
-    if ((await input.isChecked()) !== !!on) throw new Error(`「${name}」没有切过去`);
+    const now = await page.evaluate(`(() => { const t = (${inPageTools})().find(x => x.name === ${key}); return t ? t.on : null; })()`);
+    if (now !== !!on) throw new Error(`「${name}」没有切过去`);
+  }
+  if (want.speed) {
+    const hit = await page.evaluate(() => {
+      const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').replace(/\s+/g, ' ').trim()));
+      const btn = leaf && leaf.parentElement ? leaf.parentElement.querySelector('button') : null;
+      if (!btn) return false; btn.setAttribute('data-bridge-speed', '1'); return true;
+    });
+    if (!hit) throw new Error('这个页面没有「生成速度」');
+    try { await pickFromList(page, page.locator('[data-bridge-speed="1"]').first(), want.speed); }
+    finally { await page.evaluate(() => document.querySelectorAll('[data-bridge-speed]').forEach(e => e.removeAttribute('data-bridge-speed'))).catch(() => {}); }
+    await sleep(400);
+    const after = await page.evaluate(() => { const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').trim())); const b = leaf && leaf.parentElement ? leaf.parentElement.querySelector('button') : null; return b ? (b.textContent || '').replace(/\s+/g, ' ') : ''; });
+    if (!after.replace(/\s+/g, '').toLowerCase().startsWith(String(want.speed).replace(/\s+/g, '').toLowerCase())) { await page.keyboard.press('Escape').catch(() => {}); throw new Error(`生成速度没有切到「${want.speed}」`); }
+    notes.push('生成速度已改');
   }
   const advWant = Object.entries(want.advanced || {});
   if (advWant.length) {
@@ -1739,11 +1823,10 @@ async function applyPanel(page, want) {
           await area.first().fill(String(value)); await area.first().blur();
         } else if (await num.count()) {
           await num.first().fill(String(value)); await num.first().blur();
+        } else if (await combo.count() || await sec.locator('button[aria-haspopup="listbox"]').count()) {
+          await pickFromList(page, (await combo.count()) ? combo.first() : sec.locator('button[aria-haspopup="listbox"]').first(), value);
         } else if (await sel.count()) {
           await sel.first().selectOption({ label: String(value) }, { force: true });
-        } else if (await combo.count()) {
-          await combo.first().click(); await sleep(300);
-          await page.getByRole('option', { name: String(value), exact: true }).first().click({ timeout: 6000 });
         } else throw new Error(`「${name}」不认识是什么控件`);
         await sleep(300);
       }
@@ -1752,7 +1835,7 @@ async function applyPanel(page, want) {
   }
   return notes;
 }
-let advancedCache = { model: '', at: 0, items: null };
+let advancedCache = { model: '', at: 0, items: null, speedOptions: null };
 async function readPanel(page, { expand = false, model = '' } = {}) {
   const advOpen = () => page.evaluate(() => { const h = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || '')); return h ? h.getAttribute('aria-expanded') === 'true' : null; }).catch(() => null);
   const clickAdv = () => page.evaluate(() => { const h = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || '')); if (h) h.click(); return !!h; }).catch(() => false);
@@ -1771,16 +1854,6 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
       const spLeaf = Array.from(document.querySelectorAll('span,div')).find(el => !el.children.length && /^生成速度$/.test(txt(el)));
       const spBtn = spLeaf && spLeaf.parentElement ? spLeaf.parentElement.querySelector('button') : null;
       if (spBtn) out.speed = { text: txt(spBtn), extra: extraOf(spBtn), wait: spBtn.querySelector('strong') ? txt(spBtn.querySelector('strong')) : null };
-      for (const input of document.querySelectorAll('input[role=switch]')) {
-        if (input.closest('section > header, h3')) continue; // 进阶设置里的开关另算
-        let row = input, n = 0;
-        while (row.parentElement && n < 7) { const up = row.parentElement; if (up.querySelectorAll('input[role=switch]').length > 1) break; row = up; n++; }
-        const name = input.getAttribute('aria-label') || '';
-        if (!name) continue;
-        const priced = Array.from(row.querySelectorAll('span')).find(el => !el.children.length && extraOf(el) !== null);
-        let group = ''; for (let a = input.parentElement, i = 0; a && i < 9 && !group; a = a.parentElement, i++) { const h = Array.from(a.children).find(c => c.tagName === 'SPAN' && /^(新增工具|提示詞工具|提示词工具)$/.test(txt(c))); if (h) group = txt(h); }
-        out.tools.push({ name, group, extra: priced ? extraOf(priced) : null, on: !!input.checked });
-      }
       const adv = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(txt(x)));
       if (adv && adv.getAttribute('aria-expanded') === 'true' && adv.parentElement) {
         const items = [];
@@ -1813,20 +1886,43 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
           const sec = page.locator('section').filter({ has: page.locator('h3', { hasText: item.name }) }).last();
           const combo = sec.locator('[role="combobox"]').first();
           if (!(await combo.count())) continue;
-          await combo.click({ timeout: 4000 }); await sleep(350);
-          const opts = await page.evaluate(() => Array.from(document.querySelectorAll('[role="option"]')).filter(el => (el.offsetWidth || el.offsetHeight) && el.getAttribute('aria-disabled') !== 'true' && !el.hasAttribute('data-disabled')).map(el => (el.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean));
+          const opts = await openList(page, combo);
           await page.keyboard.press('Escape'); await sleep(250);
-          if (opts.length) item.options = Array.from(new Set(opts));
+          const real = opts.filter(o => o !== '預設' && o !== '预设'); // 「預設」在下拉里是灰色的占位项，不当选项
+          if (real.length) item.options = Array.from(new Set(real));
         } catch { await page.keyboard.press('Escape').catch(() => {}); }
       }
     }
   } catch { panel = null; }
   if (opened) await clickAdv();
+  if (panel) panel.tools = await readTools(page).catch(() => []);
+  if (panel && panel.speed && expand) {
+    // 生成速度点开后的几档：不假设标记，点开前后对比文字；名字 = 不是价格/等待时间/倍数的那些文字，价格跟在名字后面
+    try {
+      const btn = await page.evaluate(() => { const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').trim())); const b = leaf && leaf.parentElement ? leaf.parentElement.querySelector('button') : null; if (b) b.setAttribute('data-bridge-speed', '1'); return !!b; });
+      if (btn) {
+        const texts = await openList(page, page.locator('[data-bridge-speed="1"]').first());
+        await page.keyboard.press('Escape'); await sleep(250);
+        // 真实数据里每一档在弹出里是：倍数（10x / 7.6x / 1x）、+N 點數、~N 秒 —— 档名就是倍数，点它的文字就能选
+        const opts = [];
+        for (const t of texts) {
+          if (/^\d+(\.\d+)?\s*x$/i.test(t)) { opts.push({ name: t.replace(/\s+/g, '').toLowerCase(), extra: null, wait: null }); continue; }
+          if (!opts.length) continue;
+          const m = /^[+＋]\s*([\d,]+)\s*(?:點數|点数|points?)$/i.exec(t);
+          if (m) opts[opts.length - 1].extra = Number(m[1].replace(/,/g, ''));
+          else if (/^[~≈]\s*\d+(\.\d+)?\s*(秒|分鐘|分钟|分|小時|小时|s|min)/.test(t)) opts[opts.length - 1].wait = t;
+        }
+        if (opts.length) panel.speed.options = opts;
+      }
+    } catch { await page.keyboard.press('Escape').catch(() => {}); }
+    finally { await page.evaluate(() => document.querySelectorAll('[data-bridge-speed]').forEach(e => e.removeAttribute('data-bridge-speed'))).catch(() => {}); }
+  }
   if (panel) {
+    if (panel.speed && !panel.speed.options && advancedCache.model === model && advancedCache.speedOptions) panel.speed.options = advancedCache.speedOptions;
     if (panel.advanced) {
       // 下拉框选项只有点开才读得到：这次没点开读的，沿用同一个模型上次读到的
       if (advancedCache.items && advancedCache.model === model) for (const item of panel.advanced) if (item.kind === 'choice' && !item.options) { const old = advancedCache.items.find(x => x.name === item.name && x.options); if (old) item.options = old.options; }
-      advancedCache = { model, at: Date.now(), items: panel.advanced };
+      advancedCache = { model, at: Date.now(), items: panel.advanced, speedOptions: panel.speed?.options || (advancedCache.model === model ? advancedCache.speedOptions : null) };
     }
     else if (advancedCache.items && advancedCache.model === model) panel.advanced = advancedCache.items, panel.advancedAt = advancedCache.at;
   }
@@ -1908,7 +2004,7 @@ async function readPageStatus(page, debug = false) {
     const cost = costSpan ? toNum(costSpan.textContent) : null;
 
     const lockedEl = el => !!(el.disabled || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('data-disabled'));
-    const sizeOf = el => { const m = /([A-Z]{1,3})\s*(\d+)\s*[×x]\s*(\d+)/i.exec(text(el)); return m ? { size: m[1].toUpperCase(), width: Number(m[2]), height: Number(m[3]), label: text(el), on: marked(el), locked: lockedEl(el) } : null; };
+    const sizeOf = el => { const m = /([A-Z]{1,3})\s*(\d+)\s*[×x]\s*(\d+)/i.exec(text(el)); return m ? { size: m[1].toUpperCase(), width: Number(m[2]), height: Number(m[3]), label: text(el), on: marked(el), vip: !!el.querySelector('svg'), locked: lockedEl(el) } : null; };
     const out = {
       count,
       countLabel,
@@ -2020,7 +2116,8 @@ app.post('/ai/settings', async (req, res) => {
     const tools = {}, advanced = {};
     for (const [k, v] of Object.entries(pn.tools || {})) { if (!okName(k) || typeof v !== 'boolean') return res.status(400).json({ ok: false, message: '工具开关要写成 {名字: true/false}' }); tools[k] = v; }
     for (const [k, v] of Object.entries(pn.advanced || {})) { if (!okName(k) || !(typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 3000))) return res.status(400).json({ ok: false, message: '进阶设置的值不对' }); advanced[k] = v; }
-    if (Object.keys(tools).length || Object.keys(advanced).length) want.panel = { tools, advanced };
+    const speed = typeof pn.speed === 'string' && pn.speed.length <= 40 ? pn.speed : '';
+    if (Object.keys(tools).length || Object.keys(advanced).length || speed) want.panel = { tools, advanced, speed };
   }
   if (!Object.keys(want).length) return res.status(400).json({ ok: false, message: '没有要切的内容（model / count / ratio / size / swap）' });
   // 出图时动这些设置不影响返图：只有准备（填提示词、点生成）和取图这两段要等一等，其余时间直接改
@@ -3560,6 +3657,37 @@ app.get('/debug/panel', async (_req, res) => {
     out.advancedWasOpen = wasOpen;
     res.json(out);
   } catch (error) { res.status(503).json({ message: error.message }); }
+});
+
+// 调试：点开某个下拉（如 /debug/dropdown?name=取樣方式），导出点开前后多出来的文字和那块的 HTML，再按 Escape 关上，不选任何项
+app.get('/debug/dropdown', async (req, res) => {
+  const name = String(req.query.name || '').slice(0, 60);
+  if (!name) return res.status(400).json({ message: '要带 ?name=下拉的名字，如 取樣方式' });
+  try {
+    const page = await getPixAIPage({ passive: true });
+    const head = page.locator('header[role="button"]').filter({ hasText: /進階設定|进阶设置|高级设置/ }).first();
+    const wasOpen = (await head.count()) ? (await head.getAttribute('aria-expanded')) === 'true' : true;
+    if (!wasOpen) { await head.click(); await sleep(900); }
+    try {
+      const sec = page.locator('section').filter({ has: page.locator('h3', { hasText: name }) }).last();
+      let trigger = sec.locator('[role="combobox"], button[aria-haspopup="listbox"]').first();
+      if (!(await trigger.count()) && name === '生成速度') {
+        await page.evaluate(() => { const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').trim())); const b = leaf && leaf.parentElement ? leaf.parentElement.querySelector('button') : null; if (b) b.setAttribute('data-bridge-speed', '1'); });
+        trigger = page.locator('[data-bridge-speed="1"]').first();
+      }
+      if (!(await trigger.count())) return res.status(404).json({ message: `没找到「${name}」的下拉` });
+      const options = await openList(page, trigger);
+      const html = await page.evaluate(opts => {
+        const clean = h => h.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/ (class|style|id|data-rac|tabindex)="[^"]*"/g, '').replace(/\s+/g, ' ');
+        const leaves = Array.from(document.querySelectorAll('body *')).filter(el => !el.children.length && opts.includes((el.textContent || '').replace(/\s+/g, ' ').trim()) && (el.offsetWidth || el.offsetHeight));
+        if (!leaves.length) return null;
+        let box = leaves[0]; for (let i = 0; i < 8 && box.parentElement && !leaves.every(l => box.contains(l)); i++) box = box.parentElement;
+        return clean(box.outerHTML).slice(0, 8000);
+      }, options);
+      await page.keyboard.press('Escape'); await sleep(250);
+      res.json({ name, options, html });
+    } finally { if (!wasOpen) await head.click().catch(() => {}); }
+  } catch (error) { await getPixAIPage({ passive: true }).then(p => p.keyboard.press('Escape')).catch(() => {}); res.status(503).json({ message: error.message }); }
 });
 
 // 只读：导出 /v2/user/me 的字段（看积分是不是在接口里；邮箱、令牌类字段打码）
