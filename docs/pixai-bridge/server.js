@@ -71,8 +71,10 @@ let packPage = null;
 async function packImage(file) {
   if (!CONFIG.packImages || path.extname(file.name).toLowerCase() !== '.png') return file;
   try {
-    if (!packPage || packPage.isClosed()) packPage = await (await (await connectBrowser()).newContext()).newPage();
-    const job = packPage.evaluate(async ({ data, quality }) => {
+    // 不再新开窗口（新建隔离环境在有界面的浏览器里会弹出一个 about:blank 窗口）：借用已打开的 PixAI 标签页，只在里面跑一段计算，不改页面内容。找不到就原图返回。
+    const host = (await connectBrowser()).contexts()[0]?.pages().find(p => !p.isClosed() && p.url().includes('pixai.art'));
+    if (!host) return file;
+    const job = host.evaluate(async ({ data, quality }) => {
       const bin = Uint8Array.from(atob(data), c => c.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bin], { type: 'image/png' }));
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -1079,17 +1081,60 @@ async function onApiResponse(response) {
     console.warn('[抓头] 读取 refresh-token 响应失败：', error.message);
   }
 }
+let authNote = '', lastStoredToken = '';
+/** 在页面里执行（所以必须自成一体）：把 localStorage / sessionStorage / 能读到的 cookie 里 JWT 形的值找出来，只返回名字、是否过期和值。 */
+const scanStoredTokens = () => {
+  const jwt = /eyJ[\w-]+\.eyJ[\w-]+\.[\w-]*/g, found = [];
+  const add = (where, key, text) => {
+    for (const token of String(text || '').match(jwt) || []) {
+      let exp = 0;
+      try { exp = Number(JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp) || 0; } catch {}
+      found.push({ where, key, token, exp });
+    }
+  };
+  for (const [where, store] of [['local', localStorage], ['session', sessionStorage]]) {
+    try { for (let n = 0; n < store.length; n++) { const key = store.key(n); add(where, key, store.getItem(key)); } } catch {}
+  }
+  try { for (const part of document.cookie.split(/;\s*/)) { const at = part.indexOf('='); if (at > 0) { let value = part.slice(at + 1); try { value = decodeURIComponent(value); } catch {} add('cookie', part.slice(0, at), value); } } } catch {}
+  return found;
+};
+/** 选一个能直接当 Bearer 用的：不是 refresh 令牌；有 exp 的要还剩 60 秒以上；名字带 access 的优先，其次 exp 晚的。 */
+const storedTokenOf = (found, nowSec) => found
+  .filter(f => !/refresh/i.test(f.key) && (!f.exp || f.exp > nowSec + 60))
+  .sort((a, b) => (/access/i.test(b.key) - /access/i.test(a.key)) || (b.exp - a.exp))[0] || null;
+const describeFound = (found, nowSec) => found.map(f => `${f.where}:${f.key}(${!f.exp ? '无exp' : f.exp > nowSec ? '有效' : '已过期'})`).join('、');
+
 async function refreshTokenNow(page) {
-  if (!refreshTpl) { console.warn('[抓头] 还没抄到过页面自己的 refresh-token 请求，没法主动取令牌'); return false; }
+  const notes = [], nowSec = Date.now() / 1000;
+  // 1) 页面自己存着的令牌：不发任何请求，直接读
+  try {
+    const found = await page.evaluate(scanStoredTokens);
+    const pick = storedTokenOf(found, nowSec);
+    // 上次从存储里取的令牌被拒（头被清空）了，就别再用同一个
+    if (pick && !(pick.token === lastStoredToken && !live.headers)) {
+      if (adoptToken(pick.token, `页面存储 ${pick.where}:${pick.key}`)) { lastStoredToken = pick.token; authNote = ''; return true; }
+    }
+    notes.push(found.length ? `页面存储里有 ${found.length} 个 JWT 形的值（${describeFound(found, nowSec)}），没有能用的` : '页面存储里没有令牌');
+  } catch (error) { notes.push('读页面存储失败：' + (error?.message || error)); }
+  if (apiReady()) return true;
+  // 2) 用页面的 cookie 调 refresh-token（页面自己的请求抄到过就照着发，没抄到就用抄到的 x-u3t / x-browser-id 现凑一个）
+  const have = ['x-browser-id', 'x-u3t'].filter(key => baseHeaders[key]);
+  const tpl = refreshTpl || { headers: { accept: 'application/json, text/plain, */*', ...Object.fromEntries(have.map(key => [key, baseHeaders[key]])) }, body: undefined };
   const result = await page.evaluate(async tpl => {
     try {
       const r = await fetch('https://api.pixai.art/v2/auth/refresh-token', { method: 'POST', credentials: 'include', headers: tpl.headers, body: tpl.body });
       return r.ok ? { data: await r.json() } : { status: r.status };
     } catch (error) { return { error: String(error && error.message || error) }; }
-  }, refreshTpl).catch(error => ({ error: error.message }));
+  }, tpl).catch(error => ({ error: error.message }));
   if (apiReady()) return true;
-  if (result.status || result.error) { console.warn(`[抓头] 主动取令牌失败：${result.status ? 'HTTP ' + result.status : result.error}`); return false; }
-  return adoptToken(result.data, '主动请求');
+  const how = refreshTpl ? '照页面自己的请求' : `没抄到页面的请求，现凑（带 ${have.join('、') || '无额外头'}）`;
+  if (result.status || result.error) {
+    notes.push(`refresh-token ${how}：${result.status ? 'HTTP ' + result.status + (result.status === 401 || result.status === 403 ? '（登录可能已失效）' : '') : result.error}`);
+  } else if (adoptToken(result.data, '主动请求')) { authNote = ''; return true; }
+  else notes.push(`refresh-token ${how}：返回了，但里面没找到令牌`);
+  authNote = notes.join('；');
+  console.warn('[抓头] ' + authNote);
+  return false;
 }
 
 function watchApiHeaders(page) {
@@ -1203,6 +1248,23 @@ async function disarmTemplate() {
   armed = null;
 }
 /** 等页面的下一次「生成」：拦下来（不真的提交，不扣积分），把它的设置记成一条记录。 */
+// 浏览器窗口被最小化时，网页收不到点击（点了没反应、也不报错）：动手点网页之前先看一眼，最小化就恢复。读不到就算了，不影响原来的流程。
+// 返回动手前窗口的状态（normal / minimized / maximized / fullscreen），读不到时是「读不到：原因」。
+async function ensureWindow(page) {
+  let cdp;
+  try {
+    cdp = await page.context().newCDPSession(page);
+    const { windowId, bounds } = await cdp.send('Browser.getWindowForTarget');
+    const state = bounds?.windowState || 'normal';
+    if (state === 'minimized') {
+      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      console.warn('[窗口] 浏览器窗口是最小化的，已恢复成正常');
+      await sleep(500);
+    }
+    return state;
+  } catch (error) { return '读不到：' + error.message; }
+  finally { if (cdp) await cdp.detach().catch(() => {}); }
+}
 async function armTemplate(page, seconds = 120) {
   await disarmTemplate();
   const handler = async route => {
@@ -1288,7 +1350,7 @@ async function apiGenerate(page, prompt, count, spec = null, resume = null) {
   for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500);
   if (!apiReady()) await refreshTokenNow(page);
   if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 20 && !apiReady(); i++) await sleep(500); }
-  if (!apiReady()) throw apiFail('当前 PixAI 页面尚未产生可用的 API 鉴权请求；请在已登录的生图页正常操作一次后重试（本程序不会自动刷新页面；日志里的「抓头诊断」会说明看到了什么请求）', true);
+  if (!apiReady()) throw apiFail(`当前 PixAI 页面尚未产生可用的 API 鉴权请求${authNote ? '；已尝试：' + authNote : ''}。请在已登录的生图页正常操作一次后重试（本程序不会自动刷新页面）`, true);
   // 插件在 API 模式下把模型、宽高、LoRA 权重都带在请求里：不碰网页、不用页面上选着的东西
   const fromPage = spec?.source === 'page';
   const id = fromPage ? null : spec?.model || await currentModelId(page);
@@ -1558,6 +1620,7 @@ async function generateBatch(prompt, count, spec = null, resume = null) {
         if (apiModelId && !(await modelIsRight(page, apiModelId).catch(() => false))) await applyModel(page, apiModelId);
       }
     }
+    await ensureWindow(page); // 窗口被最小化的话网页收不到点击
     await dismissDailyReward(page); // 页面刷新过会重新弹签到框，先关掉
     await dismissPopups(page).catch(() => {}); // 上一次留下的「积分不足」之类弹窗，点空白处关掉
 
@@ -1714,8 +1777,9 @@ function inPageTools() {
   let root = leaf; for (let i = 0; i < 14 && root.parentElement && !/提示詞工具|新增工具/.test(root.innerText || ''); i++) root = root.parentElement;
   const sel = 'input[role=switch],input[type=checkbox],[role=switch]:not(input)';
   const out = [], names = new Set();
+  const adv = Array.from(document.querySelectorAll('header[role=button]')).find(x => /進階設定|进阶设置|高级设置/.test(x.textContent || ''))?.parentElement; // 进阶设置里的开关归进阶设置读，不当成工具
   for (const sw of root.querySelectorAll(sel)) {
-    if (sw.closest('section > header, h3')) continue;
+    if (sw.closest('h3') || (adv && adv.contains(sw))) continue;
     let row = sw, n = 0;
     while (row.parentElement && n < 7) { const up = row.parentElement; if (up.querySelectorAll(sel).length > 1) break; row = up; n++; }
     const leaves = Array.from(row.querySelectorAll('span,p,div,label')).filter(el => !el.children.length && !el.closest('button') && txt(el));
@@ -1875,8 +1939,8 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
             if (sub && sw.checked) items.push({ name: name + '#值', kind: 'number', value: num((sec.querySelector('input[type=number]') || sub).value ?? sub.value) ?? num(sub.value), min: num(sub.min), max: num(sub.max), step: num(sub.step) });
           }
           else if (area) items.push({ name, kind: 'text', value: area.value });
-          else if (range) items.push({ name, kind: 'number', value: num(range.value), min: num(range.min), max: num(range.max), step: num(range.step) });
-          else if (select) { const cur = sec.querySelector('button em'); items.push({ name, kind: 'choice', value: cur ? txt(cur) : '', options: Array.from(select.options).map(o => txt(o)).filter(Boolean) }); }
+          else if (range) items.push({ name, kind: 'number', value: num(numIn && numIn.value !== '' ? numIn.value : range.value), min: num(range.min), max: num(range.max), step: num(range.step) }); // 真实数据里滑块的值会比数字框慢一步（偏移：滑块 0.8、数字框 0.5），以数字框为准
+          else if (select) { const cur = sec.querySelector('button[aria-haspopup="listbox"]'); items.push({ name, kind: 'choice', value: cur ? txt(cur) : '', options: Array.from(select.options).map(o => txt(o)).filter(Boolean) }); } // 当前值是按钮里的文字（真实页面：button > span > span > span），不是 em
           else if (combo) items.push({ name, kind: 'choice', value: txt(combo) });
           else if (numIn) items.push({ name, kind: 'number', value: num(numIn.value) });
         }
@@ -1939,8 +2003,9 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
   return panel;
 }
 
+let lastCostNullLog = 0;
 async function readPageStatus(page, debug = false) {
-  const { out, hasBalHost, hasCostHost } = await page.evaluate(debug => {
+  const { out, hasBalHost, hasCostHost, genDiag } = await page.evaluate(debug => {
     const visible = el => !!(el.offsetWidth || el.offsetHeight);
     const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
     const clean = (html, n) => html
@@ -1997,6 +2062,16 @@ async function readPageStatus(page, debug = false) {
     const ratioEl = pickSelected(ratios);
     const sizeEl = pickSelected(sizes);
     const sm = sizeEl ? /([A-Z]{1,3})\s*(\d+)\s*[×x]\s*(\d+)/i.exec(text(sizeEl)) : null;
+    // 放了底圖之后网页把比例/档位按钮换成「底圖」里的一行「尺寸 609 × 1280」：没有按钮时读这一行（只从截图看到，真实结构没验证，所以只按文字找）
+    let refSize = null;
+    if (!ratios.length && !sizes.length) {
+      const lab = Array.from(document.querySelectorAll('span,div,label,p')).find(el => visible(el) && !el.children.length && /^尺寸$/.test(text(el)));
+      for (let el = lab && lab.parentElement, depth = 0; el && depth < 3 && !refSize; el = el.parentElement, depth++) {
+        const leaf = Array.from(el.querySelectorAll('span,div,p,b')).find(x => !x.children.length && /^\d+\s*[×x]\s*\d+$/i.test(text(x)));
+        const m = leaf ? /(\d+)\s*[×x]\s*(\d+)/i.exec(text(leaf)) : null;
+        if (m) refSize = { width: Number(m[1]), height: Number(m[2]) };
+      }
+    }
 
     // 剩余积分：「儲值」按钮同一容器里的 number-flow 组件
     const topup = Array.from(document.querySelectorAll('button')).find(el => /^(儲值|储值|充值)$/.test(el.textContent.trim()));
@@ -2024,9 +2099,10 @@ async function readPageStatus(page, debug = false) {
         sizes: sizes.map(sizeOf).filter(Boolean),
         ratio: ratioEl ? text(ratioEl) : null,
         size: sm ? sm[1].toUpperCase() : null,
-        width: sm ? Number(sm[2]) : null,
-        height: sm ? Number(sm[3]) : null,
-        label: sizeEl ? text(sizeEl) : null
+        width: sm ? Number(sm[2]) : refSize ? refSize.width : null,
+        height: sm ? Number(sm[3]) : refSize ? refSize.height : null,
+        label: sizeEl ? text(sizeEl) : refSize ? `${refSize.width}×${refSize.height}（跟底图）` : null,
+        fromRef: !sm && !!refSize
       },
       cost,
       balance
@@ -2047,7 +2123,7 @@ async function readPageStatus(page, debug = false) {
         })
       };
     }
-    return { out, hasBalHost: !!balHost, hasCostHost: !!costHost };
+    return { out, hasBalHost: !!balHost, hasCostHost: !!costHost, genDiag: { text: genText, html: gen ? clean(gen.outerHTML, 1200) : null } };
   }, debug);
 
   // 页面里读不到数值时，用无障碍树的名字兜底
@@ -2055,6 +2131,8 @@ async function readPageStatus(page, debug = false) {
   if (out.balance === null && hasBalHost) { axBalance = await axName(page, BALANCE_HOST); out.balance = toNumber(axBalance); }
   if (out.cost === null && hasCostHost) { axCost = await axName(page, COST_HOST); out.cost = toNumber(axCost); }
   if (debug) out.raw.ax = { balance: axBalance, cost: axCost };
+  // 单次消耗读不到时，把当时生成按钮的文字和结构写进日志（最多每 30 秒一次），好看是按钮在什么状态下读不到
+  if (out.cost === null && Date.now() - lastCostNullLog > 30000) { lastCostNullLog = Date.now(); console.warn('[状态] 单次消耗读不到；生成按钮文字：' + (genDiag?.text ?? '找不到按钮') + '；按钮结构：' + (genDiag?.html ?? '无')); }
   // 模型：插件据此显示现在用的是哪个预设（读网页上实际选着的，不是反代自己记的）
   const info = await readModelInfo(page).catch(() => null);
   out.models = MODEL_PRESETS.map(({ id, name }) => ({ id, name }));
@@ -2139,6 +2217,7 @@ app.post('/ai/settings', async (req, res) => {
   const run = async () => {
     const page = await getPixAIPage();
     const failed = [], reasons = [], notices = [];
+    await ensureWindow(page);
     const hadRef = await hasRefImage(page).catch(() => false);
     const attempt = async (label, task, opts) => {
       try { await withRetry(page, label, task, opts); }
@@ -2860,6 +2939,14 @@ async function recordTemplateByClick(page) {
   const before = tpls.length ? tpls[tpls.length - 1].id : '';
   await armTemplate(page);
   const note = [];
+  // 失败时要能说出原因：点「生成」后这段时间里页面发过哪些 POST（只记路径，不记参数和头）
+  // 发往「/」的 POST 多记几样（内容类型、next-action、长度、开头 240 字），其余只记路径；不记任何头的值（令牌、cookie 都不在里面）
+  const posts = [], rootPosts = [], onRequest = request => { if (request.method() === 'POST') { try {
+    const path = new URL(request.url()).pathname; posts.push(path);
+    if (path === '/') { const h = request.headers(), body = request.postData() || ''; rootPosts.push(`类型 ${(h['content-type'] || '无').split(';')[0]}，next-action ${h['next-action'] || '无'}，长度 ${body.length}，开头「${body.slice(0, 240).replace(/\s+/g, ' ')}」`); }
+  } catch {} } };
+  page.on('request', onRequest);
+  const winState = await ensureWindow(page);
   try {
     await dismissDailyReward(page);
     await dismissPopups(page).catch(() => {});
@@ -2875,14 +2962,33 @@ async function recordTemplateByClick(page) {
     note.push(error.message);
   }
   for (let i = 0; i < 20 && armed && (tpls[tpls.length - 1]?.id || '') === before; i++) await sleep(500);
+  page.off('request', onRequest);
   const got = (tpls[tpls.length - 1]?.id || '') !== before;
+  // 没记下来：把点完「生成」之后页面上能看到的情况说出来（弹窗文字、提示、按钮状态、发过的 POST 路径）
+  let why = '';
+  if (!got) {
+    const seen = await page.evaluate(() => {
+      const visible = el => !!(el.offsetWidth || el.offsetHeight);
+      const cut = el => (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter(visible).map(cut).filter(Boolean);
+      const alerts = Array.from(document.querySelectorAll('[role="alert"], [role="status"]')).filter(visible).map(cut).filter(Boolean);
+      const btn = document.querySelector('section[class*="group/prompt-box"] button[data-react-aria-pressable="true"]');
+      return { dialogs: dialogs.slice(0, 3), alerts: alerts.slice(0, 3), button: btn ? { text: cut(btn), disabled: btn.disabled || btn.getAttribute('aria-disabled') === 'true' } : null };
+    }).catch(error => ({ error: error.message }));
+    const paths = [...new Set(posts)].slice(0, 8);
+    why = '；点之前浏览器窗口状态：' + winState + '；页面情况：' + (seen.error ? '读不到（' + seen.error + '）' :
+      (seen.dialogs.length ? '弹窗「' + seen.dialogs.join(' | ') + '」' : '没有弹窗') +
+      (seen.alerts.length ? '；提示「' + seen.alerts.join(' | ') + '」' : '') +
+      (seen.button ? '；生成按钮「' + seen.button.text + '」' + (seen.button.disabled ? '（点不了）' : '（可点）') : '；找不到生成按钮')) +
+      '；这段时间页面发过的 POST：' + (paths.length ? paths.join('、') : '一个都没有') + (rootPosts.length ? '；发往「/」的第一个请求：' + rootPosts[0] : '');
+  }
   // 记录要记住这个模型自己的参数：这时网页上选的就是它，把它的比例/档位表一起记下来
   if (got) {
     try { const rec = tpls[tpls.length - 1]; rec.resolutions = await readResolutionTable(page); await saveTemplates(); }
     catch (error) { note.push('没读到这个模型的分辨率表：' + error.message); console.warn('记录时读分辨率表失败：', error.message); }
   }
-  if (!got) { console.warn('反代自己点「生成」没记下设置：' + (note[0] || '请求没被拦到')); await disarmTemplate(); } // 不再留着拦截：否则之后在网页上点「生成」会被无声截掉
-  return { got, message: got ? '' : note[0] || '没拦到网页的请求' };
+  if (!got) { console.warn('反代自己点「生成」没记下设置：' + (note[0] || '请求没被拦到') + why); await disarmTemplate(); } // 不再留着拦截：否则之后在网页上点「生成」会被无声截掉
+  return { got, message: got ? '' : (note[0] || '没拦到网页的请求') + why };
 }
 /** 左侧历史记录（「任務」标签页）里最上面那张缩略图，点一下：网页把设置换成它用的，再读回来。 */
 async function readFirstHistory(page) {

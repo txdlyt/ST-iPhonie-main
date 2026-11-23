@@ -1,3 +1,4 @@
+import {pictureTemplate} from './output-tags.js';
 import {storyScope} from './story-scope.js';
 // Drawing settings, the LLM-facing drawing preset, and <img>…</img> picture blocks in chat text.
 //
@@ -356,11 +357,16 @@ export function normalizeMaskLook(value) {
   return {color: /^#[0-9a-f]{6}$/i.test(String(value?.color || '')) ? String(value.color) : '#ff2e6a', opacity: Number.isFinite(opacity) ? Math.min(100, Math.max(10, Math.round(opacity / 5) * 5)) : 60,
     border: !!value?.border, pattern: MASK_PATTERNS.some(([k]) => k === value?.pattern) ? value.pattern : 'solid'};
 }
+export function storyDrawSource(draw) {
+  const engine = draw.engine || 'nai';
+  if (!['nai','gpt'].includes(engine)) return '';
+  return JSON.stringify([engine,draw.connections?.[engine]?.active || 'default',engine === 'nai' ? draw.relay?.url || '' : draw.gpt?.url || '']);
+}
 export function defaultDraw() {
   return {enabled: false, auto: true, guard: true, fold: false, mode: 'separate', strip: true, engine: 'nai', gpt: defaultGpt(), comfy: defaultComfy(), pixai: defaultPixai(),
     connections: {nai: normalizeImageConnections('nai'), gpt: normalizeImageConnections('gpt')},
     queue: {gap: 3, retries: 4, cloud: {enabled: false, kind: 'room', url: '', room: ''}}, relay: {url: '', assumeOpus: false}, vibe: defaultVibe(), params: defaultDrawParams(),
-    chunks: [], chunkGroups: [], stream: false, autoDownload: false, locks: [], grid: normalizeGrid(), positionGrid: normalizePositionGrid(), maskLook: normalizeMaskLook(), styles: [structuredClone(DEFAULT_STYLE)], styleGroups: [], activeStyle: 'default', presets: [structuredClone(DEFAULT_PRESET)], activePreset: 'default'};
+    chunks: [], chunkGroups: [], selectionDraw: true, stream: false, autoDownload: false, locks: [], grid: normalizeGrid(), positionGrid: normalizePositionGrid(), maskLook: normalizeMaskLook(), styles: [structuredClone(DEFAULT_STYLE)], styleGroups: [], activeStyle: 'default', presets: [structuredClone(DEFAULT_PRESET)], activePreset: 'default'};
 }
 
 /** 画风 groups made tidy, in place. */
@@ -425,6 +431,7 @@ export function normalizeDraw(value) {
   const d = {...base, ...structuredClone(value)};
   d.enabled = !!d.enabled;
   d.auto = d.auto !== false;
+  d.selectionDraw = d.selectionDraw !== false;
   d.guard = d.guard !== false;
   d.fold = !!d.fold;
   d.strip = d.strip !== false;
@@ -530,7 +537,7 @@ export const styleIdFor = (draw, engine = draw.engine) => (engine === 'nai' ? ''
 export const PIXAI_STYLE = Object.freeze({id: 'pixai-record', name: '记录', artist: '', positive: '', negative: '', params: {}});
 export const activeStyle = draw => draw.engine === 'pixai' ? PIXAI_STYLE : draw.styles.find(s => s.id === styleIdFor(draw)) || draw.styles[0];
 /** The 出图块格式 of a preset: the tag one, or the 自然语言 one when the preset says so (柏宝绘 writes its own). */
-const drawFormat = (settings, p, plan = false) => promptTemplate(settings.promptRules, 'draw-story', (plan ? 'planFormat' : 'format') + (p?.natural === true && !isBaibai(p) ? 'Nl' : ''));
+const drawFormat = (settings, p, plan = false) => { const key = (plan ? 'planFormat' : 'format') + (p?.natural === true && !isBaibai(p) ? 'Nl' : ''); return pictureTemplate(settings, promptTemplate(settings.promptRules, 'draw-story', key), key); };
 const activePreset = (draw, preset) => preset || draw.presets.find(x => x.id === draw.activePreset) || draw.presets[0];
 /** Does the preset in use write its picture blocks in natural language? (柏宝绘 never does.) */
 export const naturalLooks = settings => { const p = settings?.draw ? activePreset(settings.draw) : null; return p?.natural === true && !isBaibai(p); };
@@ -633,8 +640,8 @@ export function drawPromptPlan(settings, preset, only = null) {
 }
 
 // ---------- Planning pictures after the reply ('separate' mode) ----------
-const TTS_BLOCK = /<tts\b[^>]*>[\s\S]*?<\/tts\s*>/gi;
-const IMG_BLOCK = /<img\b[^<>]*>[^<]*<\/img\s*>|<img\b[^<>]*\/?>/gi;
+const TTS_BLOCK = /<(?:i-tts|tts)(?=[\s/>])[^>]*>[\s\S]*?<\/(?:i-tts|tts)\s*>/gi;
+const IMG_BLOCK = /<(i-img|img)(?=[\s/>])[^<>]*>[^<]*<\/\1\s*>|<(?:i-img|img)(?=\s)(?=[^<>]*\bprompt\s*=)[^<>]*\/?>/gi;
 export {blockRanges} from './story-scope.js';
 /**
  * Story paragraphs of a reply with their end offsets; picture blocks and voice originals are left out. A paragraph
@@ -743,6 +750,15 @@ export function writeRequest(settings, {idea = '', cast = [], only = null} = {})
   const system = promptText(settings.promptRules, 'draw-prompt', 'write', {'GPT': gpt, '人物规则': peopleRules(settings, cast, only), '描述句规则': sentenceRule(settings), '长度': gpt ? '' : lengthLine(settings)});
   return [{role: 'system', content: system}, {role: 'user', content: promptText(settings.promptRules, 'draw-prompt', 'writeAsk', {'想画的': String(idea).trim()})}];
 }
+/** Makes fresh English tags from a stored description; unrelated to the viewer's 看中文. */
+export function descriptionTagsRequest(settings, description, {instructions = '', batch = false} = {}) {
+  const system = promptText(settings.promptRules, 'draw-prompt', 'describeTags', {'GPT': settings.draw?.engine === 'gpt'});
+  const format = batch
+    ? '逐件转换，按输入序号分别返回。只输出 JSON 数组，每项形如 {"item":1,"tags":"navy wool coat, brass buttons"}。'
+    : '只输出一行英文标签，不加标题、解释、中文译文或代码块。';
+  return [{role: 'system', content: [system, instructions, format].filter(Boolean).join('\n')}, {role: 'user', content: String(description ?? '').trim()}];
+}
+
 /**
  * 改提示词再画: the prompt in Chinese to read ('translate'), or rewritten the way the user asked in their own words
  * ('revise', wish: what they said; with no wish, the Chinese they wrote in it is made tags).
@@ -756,6 +772,13 @@ export function tagTextRequest(settings, text, mode = 'translate', wish = '') {
 /** The answer of tagTextRequest: without thinking, a code fence around it or 「翻译：」 in front. */
 export const tagTextAnswer = reply => String(reply ?? '').replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '').trim()
   .replace(/^```[\w-]*\n([\s\S]*?)\n```$/, '$1').replace(/^(?:翻译|中文|改好的(?:内容)?)\s*[:：]\s*\n?/, '').trim();
+export const hasEnglishTags = tags => typeof tags === 'string' && /[a-z]/i.test(tags) && !/\p{Script=Han}/u.test(tags);
+
+export function englishTagsAnswer(reply) {
+  const tags = tagTextAnswer(reply).replace(/^(?:英文(?:标签|提示词)|(?:english\s+)?(?:tags|prompt))\s*[:：]\s*/i, '').replace(/\s+/g, ' ').trim();
+  return hasEnglishTags(tags) ? tags : '';
+}
+
 /**
  * A 帮我写 / 从剧情生成 reply: the prompt line and the registered people its 人物 line names (as registered), so the
  * drawing app can add them with their looks.
@@ -817,17 +840,18 @@ export function insertPlanned(message, reply, {outfits = false, ...scope} = {}) 
   // A model that thinks out loud may write sample blocks in its thinking: only the answer counts.
   const answer = String(reply ?? '').replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
   // 柏宝绘 answers in JSON: its images become blocks here, and all the rest (placing, queue, drawing) is the phone's.
-  const bodies = baibaiBodies(answer, {outfits}) || [...answer.matchAll(/<img\b[^<>]*>([^<]*)<\/img\s*>/gi)].map(m => m[1]);
+  const baibai = baibaiBodies(answer, {outfits});
+  const bodies = baibai ? baibai.map(body => ({tag:'img', body})) : [...answer.matchAll(/<(i-img|img)(?=[\s>])[^<>]*>([^<]*)<\/\1\s*>/gi)].map(m => ({tag:m[1].toLowerCase(),body:m[2]}));
   // Cut off at the length limit: the last block, without its unfinished line, when it is the only one.
-  const open = !bodies.length && !/"images"/.test(answer) && answer.match(/<img\b[^<>]*>([^<]*)$/i);
-  if (open) bodies.push(/\n\s*$/.test(open[1]) ? open[1] : open[1].replace(/\n[^\n]*$/, ''));
-  for (const raw of bodies) {
+  const open = !bodies.length && !/"images"/.test(answer) && answer.match(/<(i-img|img)(?=[\s>])[^<>]*>([^<]*)$/i);
+  if (open) bodies.push({tag:open[1].toLowerCase(),body:/\n\s*$/.test(open[2]) ? open[2] : open[2].replace(/\n[^\n]*$/, '')});
+  for (const {tag,body:raw} of bodies) {
     const at = raw.match(/(?:^|\n)\s*位置\s*[:：]\s*P?\s*(\d+)/i);
     const body = raw.replace(/(?:^|\n)\s*位置\s*[:：][^\n]*/i, '').trim();
     const spec = parseBlock(body);
     if (!spec || !spec.tags && !spec.cast.length && !spec.nl) continue;
     const index = Math.min(paras.length, Math.max(1, Number(at?.[1]) || paras.length)) - 1;
-    blocks.push({index: blocks.length, end: paras[index]?.end ?? source.length, text: `<img>\n${body}\n</img>`});
+    blocks.push({index: blocks.length, end: paras[index]?.end ?? source.length, text: `<${tag}>\n${body}\n</${tag}>`});
   }
   let out = source;
   const places = new Map();
@@ -842,8 +866,8 @@ export const withoutPictures = message => String(message).replace(IMG_BLOCK, m =
 // ---------- <img> blocks in chat text ----------
 // Current form: the block above. Earlier forms, still read so old replies keep their pictures:
 // <img>prompt|characters</img> and <img prompt="…" characters="…">.
-const PAIRED = /<img\b([^<>]*)>([^<]*)<\/img\s*>/gi;
-const SINGLE = /<img\b([^<>]*?)\/?>/gi;
+const PAIRED = /<(?<tag>i-img|img)(?=[\s/>])(?<attrs>[^<>]*)>(?<body>[^<]*)<\/\k<tag>\s*>/gi;
+const SINGLE = /<(?:i-img|img)(?=[\s/>])([^<>]*?)\/?>/gi;
 const attribute = (source, name) => {
   const m = source.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|“([^”]*)”)`, 'i'));
   return m ? (m[1] ?? m[2] ?? m[3] ?? '').trim() : null;
@@ -911,11 +935,11 @@ export function parsePictures(message) {
   message = String(message);
   const tags = [];
   for (const m of message.matchAll(PAIRED)) {
-    if (/\bsrc\s*=/i.test(m[1])) continue;
-    const spec = parseBlock(m[2]);
-    if (spec) { tags.push({start: m.index, end: m.index + m[0].length, prompt: spec.tags, who: spec.cast.map(c => c.name).join(','), spec, body: m[2].trim()}); continue; }
-    const [body, ...who] = m[2].split(/[|｜]/);
-    tags.push({start: m.index, end: m.index + m[0].length, prompt: attribute(m[1], 'prompt') ?? body.trim(), who: attribute(m[1], 'characters') ?? who.join(',')});
+    if (/\bsrc\s*=/i.test(m.groups.attrs)) continue;
+    const spec = parseBlock(m.groups.body);
+    if (spec) { tags.push({start: m.index, end: m.index + m[0].length, prompt: spec.tags, who: spec.cast.map(c => c.name).join(','), spec, body: m.groups.body.trim()}); continue; }
+    const [body, ...who] = m.groups.body.split(/[|｜]/);
+    tags.push({start: m.index, end: m.index + m[0].length, prompt: attribute(m.groups.attrs, 'prompt') ?? body.trim(), who: attribute(m.groups.attrs, 'characters') ?? who.join(',')});
   }
   for (const m of message.matchAll(SINGLE)) {
     if (tags.some(t => t.start <= m.index && m.index < t.end) || /\bsrc\s*=/i.test(m[1])) continue;
@@ -961,12 +985,12 @@ function readLooseBody(body) {
  * Images with src are left alone, and so is an <img> that says nothing to draw.
  */
 export function assistantBlocks(message) {
-  const text = String(message), found = [], open = /<img\b(?![^<>]*\bsrc\s*=)([^<>]*?)\/?>/gi;
+  const text = String(message), found = [], open = /<(?:i-img|img)(?=[\s/>])(?![^<>]*\bsrc\s*=)([^<>]*?)\/?>/gi;
   let m;
   while ((m = open.exec(text))) {
     // 「`<img>` 开头」: words about the tag.
     if (text[m.index - 1] === '`') continue;
-    const start = m.index, after = text.slice(open.lastIndex), close = /<\/img\s*>/i.exec(after), next = after.search(/<img\b/i);
+    const start = m.index, after = text.slice(open.lastIndex), close = /<\/(?:i-img|img)\s*>/i.exec(after), next = after.search(/<(?:i-img|img)(?=[\s/>])/i);
     let end = open.lastIndex, body = '';
     if (close && (next < 0 || close.index < next)) { body = after.slice(0, close.index); end += close.index + close[0].length; open.lastIndex = end; }
     const said = attribute(m[1], 'prompt') ?? '', who = attribute(m[1], 'characters') ?? '', read = body.trim() ? readLooseBody(body) : null;

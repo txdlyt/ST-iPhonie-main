@@ -1,3 +1,4 @@
+import {mergeVoiceModels, voiceModelId} from './model-catalog.js';
 import {TextTasks} from './text-tasks.js';
 import {withProxyHeaders, noTavernProxy} from './proxy-url.js';
 import { ownBlob } from './compat.js';
@@ -31,7 +32,7 @@ import { lookPictures, lookThumb } from './looks.js';
 import { DRAWN_SOURCES, FAVORITES, ALBUM_LIMITS, albumName, albumsInOrder } from './albums.js';
 import { paintStore } from './paint-store.js';
 import { Ledger } from './ledger.js';
-import { cleanItem, cleanSet, cleanWear, WARDROBE_LIMITS } from './wardrobe.js';
+import { cleanItem, cleanSet, cleanWear, sameWardrobeDrawing, WARDROBE_LIMITS } from './wardrobe.js';
 import { FishMcp } from './fish-mcp.js';
 import {fishTavernProxy} from './fish-transport.js';
 import {fishAudioProxy} from './fish-audio.js';
@@ -45,7 +46,7 @@ import { normalizeRoute, switchRouteEngine, removeRoute, withRoles, findRoute, c
 import { cleanAddress, reachService, explainReach, detectService, scanTargets, findVoiceList, voiceIsName, API_PROBES } from './custom-detect.js';
 import { CUSTOM_DEFAULT, CUSTOM_SETS_MAX, officialSpeechService } from './custom-voice.js';
 import { arrangeRows } from './layers.js';
-import { DEFAULT_PROMPT, DEFAULT_FORMAT, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
+import { DEFAULT_PROMPT, DEFAULT_FORMAT, builtinVoiceFormat, promptPlan, validatePreset, parseDialogue, isPlaceholderRole, knownFormats } from './protocol.js';
 import { normalizeMarks, withMarks } from './voice-fx.js';
 import { TTSParameters, FISH_API, tauriTavern } from './parameters.js';
 import { KeyStore, keyTail, validateKey, parseTextKeys, joinTextKeys } from './keys.js';
@@ -138,7 +139,7 @@ const pixaiWhy = error => { try { const m = JSON.parse(error?.detail || '{}').me
 const keyCheck = engine => { if (engine !== 'nai' && engine !== 'llm' && engine !== 'gpt' && engine !== 'embed' && engine !== 'pixai' && engine !== 'github' && !SONG_KEYS.includes(engine)) engineCheck(engine); };
 // 自己的接口: a role's model names one of its sets; one that is gone (deleted on another device) is not refused,
 // its lines go to the set in use.
-const modelCheck = (engine, model) => { engineCheck(engine); if (engine === 'custom' ? model && !/^[\w-]{1,64}$/.test(model) : model && !TTSParameters.catalogs[engine].models.includes(model)) throw Error('请选择列表中的模型'); };
+const modelCheck = (engine, model) => { engineCheck(engine); if (engine === 'custom' ? model && !/^[\w-]{1,64}$/.test(model) : model && !voiceModelId(engine, model)) throw Error('请选择列表中的模型'); };
 const message = error => error instanceof TypeError ? '设置格式无效，请检查字段和条目' : error.message;
 
 /** Framework-independent operations. Host callbacks own SillyTavern persistence and rendering. */
@@ -578,6 +579,11 @@ export class TTSBackend {
             if (typeof patch[key] !== 'boolean') throw Error('开关设置无效'); next.general[key] = patch[key];
         }
         // 配音方式: the story model writes the voice tags itself ('inline'), or they are added after the reply ('separate').
+        if ('shortTags' in patch) {
+            if (typeof patch.shortTags !== 'boolean') throw Error('标签格式无效');
+            next.general.shortTags = patch.shortTags;
+            for (const preset of next.presets) preset.format = builtinVoiceFormat(preset.format, patch.shortTags);
+        }
         if ('voiceMode' in patch) {
             if (!['inline', 'separate', 'manual'].includes(patch.voiceMode)) throw Error('配音方式无效');
             next.general.voiceMode = patch.voiceMode;
@@ -1972,7 +1978,7 @@ export class TTSBackend {
     }
     /** Generates one image and keeps it in the album. Requests wait in the NovelAI queue (see draw-queue.js).
      *  key identifies the job in the queue (the same key joins the job already waiting); label is shown in the line. */
-    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', base = null, refs = [], roleRefs = [], preview = false, batch = null } = {}, preparePhoto) {
+    generateImage({ prompt, negative = '', characters = [], params, allowPaid = false, name = '', key, label = '', valid = null, base = null, refs = [], roleRefs = [], preview = false, batch = null } = {}, preparePhoto) {
         this.assertOpen();
         // A picture asked for without a key is a job of its own. Left as undefined it shared one kept PixAI run with every other keyless
         // picture: a second click with the same words fetched the first picture again (bridge_batch.recover) instead of drawing a new one.
@@ -2002,8 +2008,10 @@ export class TTSBackend {
             const picture = {prompt, negative, characters: clone(characters), quote, comfy, batch: pixaiBatch, refs: gptRefs, roleRefs: engine === 'gpt' && !gptRefs.length && Array.isArray(roleRefs) ? clone(roleRefs) : []};
             const job = this.drawQueue.add({ key, lane: engine, label: label || String(prompt).slice(0, 40), free: !!(pixaiBatch && pixaiBatch.index > 0 && pixaiBatch.size > 1), task: async signal => {
                 this.assertOpen();
+                if (valid && !valid()) throw Object.assign(Error('正文配图已取消'), {cancelled:true});
                 this.emit('draw', { phase: 'generating' });
                 const own = picture.roleRefs.length ? await this.roleReferences(picture.roleRefs, picture.characters) : null;
+                if (valid && !valid()) throw Object.assign(Error('正文配图已取消'), {cancelled:true});
                 let made;
                 const attempt = () => this.drawWithEngine(engine, { ...picture, ...(own ? { refs: own.refs, characters: own.characters, roles: true } : {}), signal });
                 try {
@@ -2050,11 +2058,15 @@ export class TTSBackend {
         const stream = preview && this.settings.draw.stream;
         const job = this.drawQueue.add({ key, label: label || String(prompt).slice(0, 40), task: async signal => {
             this.assertOpen();
+            if (valid && !valid()) throw Object.assign(Error('正文配图已取消'), {cancelled:true});
             this.emit('draw', { phase: 'generating' });
             // References and 局部重绘 go without vibes, as in NovelAI's own app.
             if (quote.vibes.used.length && !request.refs && request.body.action !== 'infill') Object.assign(request.body.parameters, await this.vibeFields(quote.vibes.used, request.params.model, signal));
             this.novelai.relay = this.settings.draw.relay.url;
-            const send = () => stream ? this.novelai.generateStream(request.body, signal, frame => this.emit('draw', { steps: frame.steps > 1 ? `${Math.min(frame.step + 1, frame.steps)}/${frame.steps} 步` : '', preview: frame.image })) : this.novelai.generate(request.body, signal);
+            const send = () => {
+                if (valid && !valid()) throw Object.assign(Error('正文配图已取消'), {cancelled:true});
+                return stream ? this.novelai.generateStream(request.body, signal, frame => this.emit('draw', { steps: frame.steps > 1 ? `${Math.min(frame.step + 1, frame.steps)}/${frame.steps} 步` : '', preview: frame.image })) : this.novelai.generate(request.body, signal);
+            };
             let blob;
             try { blob = await send(); }
             catch (error) {
@@ -2126,7 +2138,7 @@ export class TTSBackend {
     // ---------- Chat ----------
     // Voice messages and calls on the phone are read by the plugin and shown as bubbles, never as text: they keep the built-in
     // format, whatever the 配音预设 asks of the story (a format made for a beautified card has no place in a chat bubble).
-    voiceFormat() { return DEFAULT_FORMAT; }
+    voiceFormat() { return builtinVoiceFormat(DEFAULT_FORMAT,this.settings.general.shortTags); }
     saveChatPreset(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('聊天预设格式无效');
         const next = this.getState(), preset = validateChatPreset(normalizeChatPreset({ ...clone(value), id: value.id || crypto.randomUUID() }));
@@ -2523,6 +2535,12 @@ export class TTSBackend {
         return json;
     }
     /** Which platforms the backend holds a login for: {qq: true, …} (the Cookies stay with the backend). */
+    async goMusicQrSources(sourceId) {
+        this.assertOpen();
+        const data = goData(await this.goPrivate(goUrl(this.goSource(sourceId).base, 'system/qr_login/sources')));
+        if (!Array.isArray(data)) throw Error('音源没有返回扫码方式');
+        return data.map(row => typeof row === 'string' ? row : row?.source).filter(key => typeof key === 'string');
+    }
     async goMusicLogins(sourceId) {
         this.assertOpen();
         return goLogins(await this.goPrivate(goUrl(this.goSource(sourceId).base, 'system/cookies')));
@@ -2541,7 +2559,8 @@ export class TTSBackend {
     async goMusicQr(sourceId, way) {
         this.assertOpen();
         const s = this.goSource(sourceId);
-        if (!GO_LOGINS.some(l => l.qr.includes(way))) throw Error('这个平台不能扫码登录');
+        const supported = way === 'soda' ? (await this.goMusicQrSources(sourceId).catch(() => [])).includes(way) : GO_LOGINS.some(l => l.qr.includes(way));
+        if (!supported) throw Error('这个平台不能扫码登录');
         return goQrSession(goData(await this.goPrivate(goUrl(s.base, `system/qr_login/${way}`), { method: 'POST' })));
     }
     /** Where a 扫码登录 is ({status, message}); on success the backend has kept the login itself. */
@@ -3590,16 +3609,46 @@ export class TTSBackend {
     async saveWardrobeItem(item) {
         this.assertOpen();
         const old = item?.id ? await this.apps.get(item.id) : null;
-        const doc = cleanItem({ ...(old || this.spaceTag()), ...item, ...(old ? { at: old.at, space: old.space, save: old.save } : {}), updatedAt: Date.now() });
-        if (!old && (await this.wardrobe(doc.owner)).items.length >= WARDROBE_LIMITS.items) throw Error(`一个人的衣柜最多放 ${WARDROBE_LIMITS.items} 件`);
+        if (old) return this.appsMutate('wardrobe', () => this.apps.change(old.id, row => {
+            if (row.kind !== 'wardrobe-item') throw Error('这件单品已经不在衣柜里');
+            const doc = cleanItem({...row, ...item, id:row.id, at:row.at, space:row.space, save:row.save, updatedAt:Date.now()});
+            if (!sameWardrobeDrawing(doc, row)) delete row.naiTags;
+            if (!doc.photoId) delete row.photoId;
+            if (!doc.shared) for (const key of ['shared', 'collections', 'cut', 'age']) delete row[key];
+            Object.assign(row, doc);
+        }));
+        const doc = cleanItem({...this.spaceTag(), ...item, updatedAt:Date.now()});
+        if ((await this.wardrobe(doc.owner)).items.length >= WARDROBE_LIMITS.items) throw Error(`一个人的衣柜最多放 ${WARDROBE_LIMITS.items} 件`);
         return (await this.appsMutate('wardrobe', () => this.apps.put([doc])))[0];
+    }
+    /** Save only the drawing fields, against the clothing description that was sent to the model. */
+    async updateWardrobeDrawing(item, {naiTags, photoId}) {
+        this.assertOpen();
+        try {
+            return await this.appsMutate('wardrobe', () => this.apps.change(item.id, row => {
+                if (row.kind !== 'wardrobe-item' || !sameWardrobeDrawing(item, row) || (photoId && row.photoId !== item.photoId)) {
+                    throw Object.assign(Error('单品在出图期间已修改'), {code:'WARDROBE_CHANGED'});
+                }
+                if (naiTags) row.naiTags = naiTags.trim().slice(0, 3000);
+                if (photoId) row.photoId = photoId;
+                row.updatedAt = Date.now();
+            }));
+        } catch (error) {
+            if (error.code === 'MISSING' || error.code === 'WARDROBE_CHANGED') return null;
+            throw error;
+        }
     }
     /** An outfit kept (存成一套). */
     async saveWardrobeSet(set) {
         this.assertOpen();
-        const old = set?.id ? await this.apps.get(set.id) : null;
-        const doc = cleanSet({ ...(old || this.spaceTag()), ...set, ...(old ? { at: old.at, space: old.space, save: old.save } : {}), updatedAt: Date.now() });
-        if (!old && (await this.wardrobe(doc.owner)).sets.length >= WARDROBE_LIMITS.sets) throw Error(`一个人最多存 ${WARDROBE_LIMITS.sets} 套`);
+        if (set?.id) return this.appsMutate('wardrobe', () => this.apps.change(set.id, row => {
+            if (row.kind !== 'wardrobe-set') throw Error('这套搭配已经不在了');
+            const saved = cleanSet({...row, ...set, id:row.id, owner:row.owner, at:row.at, space:row.space, save:row.save, updatedAt:Date.now()});
+            Object.assign(row, saved);
+            if (!saved.photoId) delete row.photoId;
+        }));
+        const doc = cleanSet({...this.spaceTag(), ...set, updatedAt:Date.now()});
+        if ((await this.wardrobe(doc.owner)).sets.length >= WARDROBE_LIMITS.sets) throw Error(`一个人最多存 ${WARDROBE_LIMITS.sets} 套`);
         return (await this.appsMutate('wardrobe', () => this.apps.put([doc])))[0];
     }
     /** Clothes or outfits taken out (their photos stay in the album). */
@@ -3607,8 +3656,11 @@ export class TTSBackend {
         this.assertOpen();
         const list = [...new Set((ids || []).map(String).filter(id => /^wardrobe:(?:item|set):/.test(id)))];
         if (!list.length) return false;
-        await this.appsMutate('wardrobe', () => this.apps.removeMany(list));
-        this.noteGone('wardrobe', list);
+        await this.appsMutate('wardrobe', async () => {
+            const rows = await Promise.all(list.map(id => this.apps.get(id)));
+            await this.apps.removeMany(list);
+            this.noteGone('wardrobe', list, Math.max(0, ...rows.map(row => row?.updatedAt || 0)));
+        });
         return true;
     }
     /** What someone wears now: put on from the phone (told to the next story reply, once) or changed by the story. One a
@@ -3780,23 +3832,8 @@ export class TTSBackend {
      * A 好友申请 answered (from someone the user deleted or blocked). Accepted: friends again and out of the 黑名单, the
      * 申请 put in the chat; turned down: the 申请 go, and the story is told (refused) while they stay apart.
      */
-    async answerFriendRequest(threadId, accept) {
-        this.assertOpen();
-        const thread = await this.chats.get(threadId);
-        const cut = thread?.friend?.by === 'me', blocked = !!thread?.blocked;
-        if (!thread || (!cut && !blocked)) throw Error('TA 已经是你的好友了');
-        const name = thread.members[0], requests = [...(cut ? thread.friend.requests : []), ...(thread.blocked?.requests || [])].sort((a, b) => a.at - b.at);
-        if (accept) {
-            await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你通过了${name}的好友申请，现在可以开始聊天了` }, ...requests.map(r => ({ from: name, kind: 'text', text: r.text }))], { read: true });
-            const saved = await this.chats.update(threadId, { friend: null, blocked: null, befriended: Date.now() });
-            this.emit('chat', { threadId, friend: true });
-            return saved;
-        }
-        const now = Date.now();
-        await this.chats.update(threadId, { ...(cut ? { friend: { ...thread.friend, requests: [], refused: now } } : {}), ...(blocked ? { blocked: { ...thread.blocked, requests: [], refused: now } } : {}) });
-        const saved = await this.chats.append(threadId, [{ from: 'me', kind: 'system', text: `你拒绝了${name}的好友申请` }], { read: true });
-        this.emit('chat', { threadId, friend: true });
-        return saved;
+    async answerFriendRequest(threadId, accept, options) {
+        return this.chatMutate(threadId, () => this.chats.answerFriendRequest(threadId, accept, options));
     }
     /** The user's messages to someone who deleted them: sent, then refused with the usual note. */
     async appendChat(id, messages, options) {
@@ -4016,7 +4053,7 @@ export class TTSBackend {
         engineCheck(engine); modelCheck(engine, connection.model);
         const current = clone(connection); TTSParameters.normalize(engine, current);
         const catalog = clone(TTSParameters.catalogs[engine]);
-        catalog.models = catalog.models.map(id => ({ id, supported: true, reason: '' }));
+        catalog.models = engine === 'custom' ? catalog.models.map(id => ({id, supported:true, reason:''})) : mergeVoiceModels(engine, catalog.models, this.providers.modelCache?.get(engine)?.models || [], current.model);
         // Models only on Fish's own /v1/tts: without a relay they go through the tavern's proxy, which must be on.
         const native = engine === 'fish' && TTSParameters.fishBase(current) === FISH_API ? catalog.models.filter(m => TTSParameters.fishNative({ ...current, model: m.id })).map(m => m.id) : [];
         catalog.modelNote = native.length && tauriTavern() ? `${native.join('、')} 现在只在 Fish 自己的接口上，网页不能直接调用。TauriTavern 现在还没有酒馆的转发功能，要在下面的「中转」里填一个 Fish 格式的中转才能用这个模型；TauriTavern 以后加上转发，或者 Fish 把它放进网页能用的接口，就不用中转了。` : native.length ? `${native.join('、')} 现在只在 Fish 自己的接口上，网页不能直接调用，要借酒馆转发：在酒馆的 config.yaml 里把 enableCorsProxy 改成 true，然后重启酒馆（用中转的不用改）。Fish 把它放进网页能用的接口以后会自动直连。` : '';
@@ -4234,7 +4271,7 @@ export class TTSBackend {
             voiceBalance: (engine, refresh) => this.voiceBalance(engine, refresh), keyStatus: engine => this.keyStatus(engine), keyHint: engine => this.keyHint(engine), keyPool: engine => this.keyPool(engine), keyList: engine => this.keyList(engine), addKeys: (engine, value) => this.addKeys(engine, value), removeKey: (engine, index) => this.removeKey(engine, index), useKey: (engine, index) => this.useKey(engine, index), setKey: (engine, key) => this.setKey(engine, key), clearKey: engine => this.clearKey(engine),
             setStyleCover: (id, blob) => this.setStyleCover(String(id), blob), clearStyleCover: id => this.clearStyleCover(String(id)), setRecordCover: (id, blob) => this.setRecordCover(String(id), blob), clearRecordCover: id => this.clearRecordCover(String(id)),
             setRoleRef: (id, blob) => this.setRoleRef(String(id), blob), clearRoleRef: id => this.clearRoleRef(String(id)),
-            arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
+            arrangeRoles: tree => this.arrangeRoles(clone(tree)), sortRolesByCard: cards => this.sortRolesByCard(clone(cards || [])), deleteRoutes: ids => this.deleteRoutes(clone(ids || [])), mergeRoutes: ids => this.mergeRoutes(clone(ids || [])), saveDraw: patch => this.saveDraw(patch), importStylePack: data => this.importStylePack(data), saveStyle: style => this.saveStyle(style), deleteStyle: id => this.deleteStyle(id), deleteStyles: ids => this.deleteStyles(clone(ids || [])), arrangeStyles: tree => this.arrangeStyles(clone(tree)), arrangeChunks: tree => this.arrangeChunks(clone(tree)),
             imageConnectionList: engine => this.imageConnectionList(engine), saveImageConnection: (engine, patch) => this.saveImageConnection(engine, patch), selectImageConnection: (engine, id) => this.selectImageConnection(engine, id), deleteImageConnection: (engine, id) => this.deleteImageConnection(engine, id),
             drawReady: () => this.drawReady(), drawMissing: () => this.drawMissing(), paidPrompt: () => this.paidPrompt(), setPixaiRef: ref => this.setPixaiRef(clone(ref)), getPixaiRef: () => this.getPixaiRef(), comfyCatalog: url => this.comfyCatalog(url), comfyClips: options => this.comfyClips(options), comfyWorkflows: () => this.comfyWorkflows(), comfyWorkflow: name => this.comfyWorkflow(name),
             saveComfyWorkflow: patch => this.saveComfyWorkflow(patch), selectComfyWorkflow: id => this.selectComfyWorkflow(id), deleteComfyWorkflow: id => this.deleteComfyWorkflow(id),
@@ -4244,7 +4281,7 @@ export class TTSBackend {
             comfyNodeSpecs: options => this.comfyNodeSpecs(options), comfyNodeList: () => this.comfyNodeList(), editComfyNodes: change => this.editComfyNodes(clone(change || {})), prepareComfyImport: source => this.prepareComfyImport(source),
             comfySavedWorkflows: () => this.comfySavedWorkflows(), comfySavedWorkflow: name => this.comfySavedWorkflow(name), comfyRecentRuns: () => this.comfyRecentRuns(), comfyUploadPicture: file => this.comfyUploadPicture(file),
             saveDrawPreset: preset => this.saveDrawPreset(preset), deleteDrawPreset: id => this.deleteDrawPreset(id), previewDrawPrompt: preset => this.previewDrawPrompt(preset),
-            naiSubscription: refresh => this.naiSubscription(refresh), naiProbe: () => this.naiProbe(), fishCatalog: () => this.providers.fishCatalog(), fishProbe: () => { this.assertOpen(); keyCheck('fish'); return this.providers.probeFish(clone(this.settings.connections.fish)); },
+            naiSubscription: refresh => this.naiSubscription(refresh), naiProbe: () => this.naiProbe(), voiceModels: (engine, connection, refresh) => this.providers.voiceModels(engine, connection || this.settings.connections[engine], refresh), fishCatalog: () => this.providers.fishCatalog(), fishProbe: () => { this.assertOpen(); keyCheck('fish'); return this.providers.probeFish(clone(this.settings.connections.fish)); },
             listVibes: () => this.listVibes(), compactVibes: () => this.compactVibes(), importVibes: files => this.importVibes(files), updateVibe: (id, patch) => this.updateVibe(id, clone(patch || {})), deleteVibe: id => this.deleteVibe(id), deleteVibes: ids => this.deleteVibes([...(ids || [])]), exportVibes: target => this.exportVibes(clone(target || {})), embedVibes: (target, picture, name) => this.embedVibes(clone(target || {}), picture, name), importPictureVibes: (list, options) => this.importPictureVibes(clone(list || []), clone(options || {})), vibePlan: model => clone(this.vibePlan(model || this.settings.draw.params.model)), drawQuote: (params, extra) => this.drawQuote(params, extra), naiTool: input => this.naiTool(clone(input || {})),
             generateImage: input => this.generateImage(input).then(({ blob, ...result }) => result),
             drawQueue: () => this.drawQueue.list(), cancelDraw: key => this.drawQueue.cancel(key), cancelAllDraws: () => this.drawQueue.cancelAll(),
@@ -4253,7 +4290,7 @@ export class TTSBackend {
             engineSchema: (engine, connection) => this.getEngineSchema(engine, connection),
             validateConnection: (engine, connection) => { try { modelCheck(engine, connection.model); return TTSParameters.validate(engine, connection); } catch (error) { return message(error); } },
             voices: (engine, connection, query) => { engineCheck(engine); return this.providers.voices(engine, connection || this.settings.connections[engine], query); },
-            previewRequest: (engine, connection, route, line) => { const request = buildRequest(engine, connection || this.settings.connections[engine], route, line, this.providers.references); if (request.body.provider?.options?.['fish-audio']?.references) for (const ref of request.body.provider.options['fish-audio'].references) ref.audio = '[本地参考音频]'; if (request.body.audio?.voice?.startsWith?.('data:')) request.body.audio.voice = '[本地克隆样本：' + route.voice + ']'; return request; },
+            previewRequest: (engine, connection, route, line) => { const request = this.player.buildVoiceRequest(engine, connection || this.settings.connections[engine], route, line); if (request.body.provider?.options?.['fish-audio']?.references) for (const ref of request.body.provider.options['fish-audio'].references) ref.audio = '[本地参考音频]'; if (request.body.audio?.voice?.startsWith?.('data:')) request.body.audio.voice = '[本地克隆样本：' + route.voice + ']'; return request; },
             fishSubscriptionStatus: () => this.providers.fishMcp.status(), fishSubscriptionConnect: () => this.providers.fishMcp.connect(), fishSubscriptionResume: () => this.providers.fishMcp.resume(), fishSubscriptionCompleteManual: text => this.providers.fishMcp.completeManual(text), fishSubscriptionTrace: () => this.providers.fishMcp.trace(), fishSubscriptionDisconnect: () => this.providers.fishMcp.disconnect(), fishSubscriptionBalance: () => this.providers.fishMcp.balance(), fishSubscriptionCredits: refresh => this.providers.fishMcp.credits(refresh),
             status: () => this.player.snapshot(), subscribe: listener => this.subscribe(listener), levels: () => this.player.sink.levels(),
             pendingRole: () => this.player.pending, stop: () => this.player.stop(), toggle: () => this.player.toggle(), resume: () => this.player.continuePending(),
@@ -4294,7 +4331,7 @@ export class TTSBackend {
             },
             assistantMemoryRemove: (id, nodeId) => this.assistantMemoryRevise(id, book => removeNode(book, nodeId)),
             assistantMemoryForget: id => this.assistantMemoryForget(id),
-            goMusicLogins: id => this.goMusicLogins(clone(id)), goMusicSetCookie: (id, platform, cookie) => this.goMusicSetCookie(clone(id), String(platform), String(cookie ?? '')), goMusicQr: (id, way) => this.goMusicQr(clone(id), String(way)), goMusicQrCheck: (id, way, key) => this.goMusicQrCheck(clone(id), String(way), String(key)), goMusicAccountLists: (id, platform) => this.goMusicAccountLists(clone(id), String(platform)), goMusicDiscover: (id, options) => this.goMusicDiscover(clone(id), clone(options || {})),
+            goMusicQrSources: id => this.goMusicQrSources(clone(id)), goMusicLogins: id => this.goMusicLogins(clone(id)), goMusicSetCookie: (id, platform, cookie) => this.goMusicSetCookie(clone(id), String(platform), String(cookie ?? '')), goMusicQr: (id, way) => this.goMusicQr(clone(id), String(way)), goMusicQrCheck: (id, way, key) => this.goMusicQrCheck(clone(id), String(way), String(key)), goMusicAccountLists: (id, platform) => this.goMusicAccountLists(clone(id), String(platform)), goMusicDiscover: (id, options) => this.goMusicDiscover(clone(id), clone(options || {})),
             saveMusic: patch => this.saveMusic(clone(patch || {})), searchMusic: (query, sourceId, options) => this.searchMusic(query, clone(sourceId), clone(options || {})), groupSongs: (sourceId, kind, id, page, options) => this.groupSongs(sourceId, kind, String(id), Number(page) || 0, clone(options || {})),
             listHeard: () => this.listHeard(), forgetHeard: ids => this.forgetHeard([...(ids || [])]), clearHeard: () => this.clearHeard(), musicLink: (sourceId, songId, hint) => this.musicLink(clone(sourceId), songId, clone(hint || {})), musicLyric: (sourceId, songId, hint) => this.musicLyric(sourceId, songId, clone(hint || {})),
             listSongs: () => this.listSongs(), songBlob: id => this.songBlob(id), addSongs: list => this.addSongs(list), updateSong: (id, patch) => this.updateSong(id, clone(patch || {})), deleteSongs: ids => this.deleteSongs([...(ids || [])]),
@@ -4361,17 +4398,25 @@ export class TTSBackend {
             embedTest: async draft => { const [v] = await this.embed(['测试一下向量模型'], clone(draft || {})); return v.length; },
             appendChat: (id, messages, options) => { this.assertOpen(); return this.appendChat(id, clone(messages), clone(options || {})); },
             wardrobe: owner => this.wardrobe(String(owner || '')), saveWardrobeItem: item => this.saveWardrobeItem(clone(item)), saveWardrobeSet: set => this.saveWardrobeSet(clone(set)), deleteWardrobe: ids => this.deleteWardrobe([...(ids || [])]), setWardrobeWear: wear => this.setWardrobeWear(clone(wear || {})), clearWardrobeWear: owner => this.clearWardrobeWear(String(owner || '')), theaters: () => this.theaters(), saveTheater: doc => this.saveTheater(clone(doc)), deleteTheater: ids => this.deleteTheater([...(ids || [])]),
-            unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId), blockContact: name => this.blockContact(name), blockedNames: () => this.blockedNames(), unblockContact: threadId => this.unblockContact(threadId), answerFriendRequest: (threadId, accept) => this.answerFriendRequest(threadId, accept),
+            unfriend: name => this.unfriend(name), refriend: threadId => this.refriend(threadId), blockContact: name => this.blockContact(name), blockedNames: () => this.blockedNames(), unblockContact: threadId => this.unblockContact(threadId), answerFriendRequest: (threadId, accept, options) => this.answerFriendRequest(threadId, accept, clone(options || {})),
+            sendChatRecording: (id, value) => this.chatMutate(id, () => this.chats.saveRecording(id, { ...value, blob: ownBlob(value?.blob) })),
+            getChatRecording: async (id, recordingId) => {
+                const valid = this.spaceGuard();
+                if (!await this.getChatThread(id) || !valid()) return null;
+                const blob = await this.chats.getRecording(id, recordingId);
+                return valid() ? blob : null;
+            },
             deleteChatMessages: (id, ids) => this.chatMutate(id, async () => { const before = await this.chats.get(id); const thread = await this.chats.removeMessages(id, clone(ids)); this.noteGone('chats', (ids || []).map(m => `${id}/${m}`)); await this.memoryAfterDelete(id, before, thread).catch(() => {}); return thread; }),
             updateChatMessage: (id, messageId, patch) => this.chatMutate(id, () => this.chats.updateMessage(id, messageId, clone(patch || {}))),
             markThreadRead: id => this.chatMutate(id, () => this.chats.markRead(id)),
             chatShowVersion: (id, index) => this.chatShowVersion(id, index),
             speak: line => this.speak(clone(line)), retakeVoice: line => this.retakeVoice(clone(line)), voiceFormat: () => this.voiceFormat(),
         };
-        return Object.freeze({ apiVersion: BACKEND_API_VERSION, defaultPrompt: DEFAULT_PROMPT, defaultFormat: DEFAULT_FORMAT,
-            picTagFormat: PIC_TAG_FORMAT, defaultDrawRule: DEFAULT_DRAW_RULE, drawCountMax: DRAW_COUNT_MAX, defaultChatPreset: Object.freeze((({ id, ...rest }) => rest)(defaultChat().presets[0])),
+        const settings = () => this.settings;
+        return Object.freeze({ apiVersion: BACKEND_API_VERSION, defaultPrompt: DEFAULT_PROMPT, get defaultFormat() { return builtinVoiceFormat(DEFAULT_FORMAT,settings().general.shortTags); },
+            get picTagFormat() { return settings().general.shortTags ? PIC_TAG_FORMAT.replaceAll('img>', 'i-img>') : PIC_TAG_FORMAT; }, defaultDrawRule: DEFAULT_DRAW_RULE, drawCountMax: DRAW_COUNT_MAX, defaultChatPreset: Object.freeze((({ id, ...rest }) => rest)(defaultChat().presets[0])),
             // The shipped presets of each kind, without ids: for 恢复默认 in the preset app.
-            defaultVoicePreset: Object.freeze((({ id, ...rest }) => rest)(freshState().presets[0])), defaultDrawPreset: Object.freeze((({ id, ...rest }) => rest)(defaultDraw().presets[0])), baibaiDrawPreset: Object.freeze(baibaiDrawPreset()),
+            get defaultVoicePreset() { const {id, ...preset} = freshState().presets[0]; preset.format = this.defaultFormat; return Object.freeze(preset); }, defaultDrawPreset: Object.freeze((({ id, ...rest }) => rest)(defaultDraw().presets[0])), baibaiDrawPreset: Object.freeze(baibaiDrawPreset()),
             drawCatalog: Object.freeze({ models: NAI_MODELS, modelNames: NAI_MODEL_NAMES, samplers: NAI_SAMPLERS, schedules: NAI_SCHEDULES, engines: DRAW_ENGINES, engineNames: DRAW_ENGINE_NAMES, gptModels: GPT_IMAGE_MODELS, gptQualities: GPT_QUALITIES, comfyWorkflow: DEFAULT_COMFY_WORKFLOW }),
             phoneCatalog: Object.freeze({ apps: PHONE_APPS, wallpapers: PHONE_WALLPAPERS, glyphs: PHONE_GLYPHS, skins: PHONE_SKINS }),
             ...Object.fromEntries(Object.entries(methods).map(([name, fn]) => [name, (...args) => { if(name==='reportDiagnostic'&&this.closed)return; this.assertOpen(); const failed = error => { if (!['reportDiagnostic','getRequestLogs','clearRequestLogs'].includes(name)) this.reportDiagnostic('小手机操作', {operation: name, message: error?.message || String(error), stack: error?.stack}, error?.name === 'AbortError'||error?.operation==='subscription' ? 'warn' : 'error'); throw error; }; try { const result = fn(...args); return result?.catch ? result.catch(failed) : result; } catch (error) { return failed(error); } }])),

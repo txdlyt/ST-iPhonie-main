@@ -13,7 +13,7 @@ export type Theme = 'system' | 'light' | 'dark';
 export type InjectionPosition = 'in_chat' | 'in_prompt' | 'before_prompt';
 export type MessageRole = 'system' | 'user' | 'assistant';
 
-export interface VoiceBinding { voice: string; model: string; }
+export interface VoiceBinding { voice: string; model: string; /** Absolute synthesis speed. Omitted to follow the engine. */ speed?: number; }
 /** 视觉小说 (core/vn.js). speed: index of VN_SPEEDS (4 = at once); wait: index of VN_WAITS; cast: each character's 立绘 (a tavern image path). */
 export interface VnSettings {
     speed: number;
@@ -118,6 +118,7 @@ export interface Connection {
 }
 export type ConnectionPatch = Partial<Connection>;
 export interface GeneralSettings {
+    shortTags?: boolean;
     defaultLanguage: string;
     /** Voice lines in the story and voice messages in the phone chat. Off: no voice rules are sent, tagged lines show only their translation. */
     voiceEnabled: boolean;
@@ -253,6 +254,8 @@ export interface DrawPositionGrid { type: 'none' | 'thirds' | 'golden' | 'grid';
 /** How 局部重绘's paint looks while painting. */
 export interface DrawMaskLook { color: string; opacity: number; border: boolean; pattern: 'solid' | 'stripes' | 'dots' | 'crosshatch' | 'grid' | 'checker' | 'hearts'; }
 export interface DrawSettings {
+    selectionDraw?: boolean;
+    storyPaidSource?: string;
     /** 提示词片段, and their 分类 (groups as 画风 has them). */
     chunks: PromptChunk[]; chunkGroups: DrawStyleGroup[];
     /** 边画边看 in the drawing app. */
@@ -311,7 +314,7 @@ export interface VibeSettings { enabled: boolean; use: { kind: '' | 'group' | 'v
 export interface VibeSummary { id: string; name: string; thumb: string; strength: number; ie: number; image: boolean; keys: string[]; ready?: string[]; ies?: Record<string, number[]>; }
 /** The vibes a picture would use: encode = how many need encoding first (2 Anlas each), over = left out by the free-tier guard. */
 export interface VibePlan { on: boolean; model: boolean; used: Array<{ id: string; name: string; strength: number; encode: boolean }>; skipped: Array<{ name: string; why: 'missing' | 'model' | 'no-encoding' }>; over: number; encode: number; extra: number; }
-export interface DrawSettingsPatch { mode?: 'separate' | 'inline'; strip?: boolean; chunks?: PromptChunk[]; stream?: boolean; autoDownload?: boolean; locks?: string[]; grid?: DrawGrid; positionGrid?: Partial<DrawPositionGrid>; maskLook?: Partial<DrawMaskLook>; enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; pixai?: Partial<PixaiSettings>; }
+export interface DrawSettingsPatch { selectionDraw?: boolean; storyPaidSource?: string; mode?: 'separate' | 'inline'; strip?: boolean; chunks?: PromptChunk[]; stream?: boolean; autoDownload?: boolean; locks?: string[]; grid?: DrawGrid; positionGrid?: Partial<DrawPositionGrid>; maskLook?: Partial<DrawMaskLook>; enabled?: boolean; auto?: boolean; guard?: boolean; fold?: boolean; queue?: Partial<DrawQueueSettings>; params?: Partial<DrawParams>; activeStyle?: string; activePreset?: string; relay?: Partial<{ url: string; assumeOpus: boolean }>; vibe?: Partial<VibeSettings>; engine?: DrawEngine; gpt?: Partial<GptImageSettings>; comfy?: Partial<ComfySettings>; pixai?: Partial<PixaiSettings>; }
 /** gap: seconds between two NovelAI requests (0-60). retries: how often an "account busy" (429) is retried (0-10). */
 export interface DrawQueueSettings { gap: number; retries: number; cloud: CloudQueueSettings; }
 /** Shared queue service (cloud-queue/worker.js) that everyone using one NovelAI account joins with the same room code. */
@@ -438,6 +441,8 @@ export type ChatGame =
     | {type: 'chain'; mode: 'idiom' | 'story'; entries: Array<{from: string; text: string}>; open: boolean; loser: string}
     | {type: 'ttt' | 'gomoku'; them: string; first: string; moves: Array<{by: string; at: number}>; resigned: string; turn: string; winner: string; line: number[]; open: boolean};
 export interface ChatMessage {
+    recording?: {id: string; duration: number};
+    voiceDuration?: number;
     updatedAt?: number; url?: string; name?: string; size?: number; fileText?: string; suffix?: string; said?: string;
     song?: {title: string; artist: string; draft?: string};
     game?: ChatGame;
@@ -472,19 +477,19 @@ export interface MusicPlaylist { id: string; kind: 'playlist'; at: number; name:
 /** What plays now (the tavern page's player). */
 export interface MusicStatus { phase: 'idle' | 'loading' | 'playing' | 'paused' | 'error'; message: string; track: { title: string; artist: string; from: string; origin: string; id: string; source: string; songId: string } | null; position: number; duration: number; volume: number; queue: number; index: number; mode: 'order' | 'shuffle' | 'one'; from: string; lyric: string; lyricIndex: number; lyrics: { at: number; text: string }[]; }
 export type MusicTrack = Partial<MusicSong> & { title: string; artist?: string; from?: string };
-export interface WardrobeItem { id: string; kind: 'wardrobe-item'; owner: string; name: string; category: string; description: string; photoId?: string; recognized: boolean; at: number; updatedAt: number; }
+export interface WardrobeItem { shared?: boolean; collections?: string[]; cut?: string; age?: string; id: string; kind: 'wardrobe-item'; owner: string; name: string; category: string; description: string; photoId?: string; naiTags?: string; recognized: boolean; at: number; updatedAt: number; }
 export interface WardrobeSet { id: string; kind: 'wardrobe-set'; photoId?: string; owner: string; name: string; description: string; items: string[]; at: number; updatedAt: number; }
 export interface WardrobeWear { id: string; kind: 'wardrobe-wear'; owner: string; text: string; from: 'phone' | 'story'; pending: boolean; at: number; }
 /** 小剧场 (core/generator.js): a script's line (旁白 lines are narration) or a card's HTML. */
 export interface TheaterLine { role: string; text: string; translation: string; emotion: string; narration?: boolean; }
 export interface Theater { id: string; kind: 'theater'; form: 'script' | 'card' | 'custom'; title: string; lines?: TheaterLine[]; html?: string; body?: string; source: 'story' | 'card'; wish: string; at: number; space?: string; save?: string; }
 export interface GeneratorDirection { title: string; text: string; }
-export interface ChatFriendState { by: 'me' | 'them'; at: number; requests: { text: string; at: number }[]; /** when the user last turned down a 好友申请 */ refused?: number; }
+export interface ChatFriendState { by: 'me' | 'them'; at: number; requests: { text: string; at: number }[]; /** when the user last turned down a 好友申请 */ refused?: number; reason?: string; }
 export interface ChatThread {
     space?: string; save?: string; story?: boolean; openedAt?: number; label?: string; windowOf?: string; watch?: boolean;
     notice?: {text: string; by: string; at: number}; nicks?: Record<string, string>;
     post?: Array<{id: string; from: string; text: string; sentAt: number; arriveAt: number}>;
- id: string; type: 'dm' | 'group'; name: string; members: string[]; silenced?: Record<string, number>; unread: number; pinned: boolean; muted: boolean; createdAt: number; updatedAt: number; messages: ChatMessage[]; friend?: ChatFriendState; /** 黑名单: what they sent meanwhile (held, never in the chat) and their 好友申请; refused: when the user last turned one down. The list carries count instead of held. */ blocked?: {at: number; held?: {kind: string; text: string; at: number}[]; count?: number; requests: {text: string; at: number}[]; refused?: number}; /** 重新回复的版本 of the last round: what the user's message it answers is, each version's messages, which one shows. */ alts?: {after: string; versions: ChatMessage[][]; shown: number}; }
+ id: string; type: 'dm' | 'group'; name: string; members: string[]; silenced?: Record<string, number>; unread: number; pinned: boolean; muted: boolean; createdAt: number; updatedAt: number; messages: ChatMessage[]; friend?: ChatFriendState; /** 黑名单: what they sent meanwhile (held, never in the chat) and their 好友申请; refused: when the user last turned one down. The list carries count instead of held. */ blocked?: {at: number; held?: {kind: string; text: string; at: number}[]; count?: number; requests: {text: string; at: number}[]; refused?: number; reason?: string}; /** 重新回复的版本 of the last round: what the user's message it answers is, each version's messages, which one shows. */ alts?: {after: string; versions: ChatMessage[][]; shown: number}; }
 /** streak: 聊天火花, days in a row both sides wrote. */
 export interface ChatThreadSummary extends Omit<ChatThread, 'messages' | 'alts'> { count: number; last: ChatMessage | null; streak: number; }
 export type ChatMessageInput = Omit<ChatMessage, 'id' | 'at'>;
@@ -855,6 +860,7 @@ export interface BackendFacade {
     /** Puts a picture into ComfyUI's input folder; answers the name to put in the node. */
     comfyUploadPicture(file: File): Promise<string>;
     /** after: a new style (a copy) goes right below this one, in its group. */
+    importStylePack(data: unknown): number;
     saveStyle(style: Omit<DrawStyle, 'id' | 'params'> & { id?: string; after?: string; params?: Partial<DrawStyleParams> }): DrawStyle;
     deleteStyle(id: string): DrawSettings;
     /** Several at once; at least one has to stay. */
@@ -1068,6 +1074,7 @@ export interface BackendFacade {
     musicLink(sourceId: string | Partial<MusicSource>, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     musicLyric(sourceId: string, songId: string, hint?: { title?: string; artist?: string }): Promise<string>;
     /** Go Music (the user's go-music-api): which platforms it holds a login for — never the Cookies themselves. */
+    goMusicQrSources(sourceId: string | Partial<MusicSource>): Promise<string[]>;
     goMusicLogins(sourceId: string | Partial<MusicSource>): Promise<Record<string, boolean>>;
     /** A pasted Cookie sent on to the backend ('' logs that platform out there); the phone keeps nothing. */
     goMusicSetCookie(sourceId: string | Partial<MusicSource>, platform: string, cookie: string): Promise<Record<string, boolean>>;
@@ -1166,6 +1173,10 @@ export interface BackendFacade {
     /** Checks NovelAI or the relay: the drawing route (an empty request, nothing drawn, no Anlas) and the subscription. */
     /** Checks the Fish relay (or Fish itself): the speech path and the voice list; status 0 = no answer (address, CORS, HTTPS). */
     fishCatalog(): Promise<boolean>;
+    voiceModels(engine: Exclude<Engine, 'custom'>, connection?: ConnectionPatch, refresh?: boolean): Promise<{
+        models: Array<{ id: string; name: string; supported: boolean; reason: string }>;
+        source: 'official' | 'cache' | 'preset'; note: string; at?: number;
+    }>;
     fishProbe(): Promise<{ relay: boolean; base: string; openaiUrl: string; api: 'fish' | 'openai'; detected: '' | 'fish' | 'openai'; speech: { status: number; ok: boolean }; compat: { status: number; ok: boolean }; openai: { status: number; ok: boolean }; voices: { status: number; ok: boolean } }>;
     /** draw.reason: why a relay gave no answer at all; draw.via 'proxy': only the tavern's /proxy/ reaches it, and drawing goes that way. */
     naiProbe(): Promise<{ relay: boolean; draw: { ok: boolean; status: number; reason?: string; via?: 'proxy' }; subscription: { ok: true; tier: number } | { ok: false; status: number; message: string } }>;
@@ -1277,9 +1288,10 @@ export interface BackendFacade {
     /** The contacts blocked here: left out of 朋友圈 both ways. */
     blockedNames(): Promise<string[]>;
     /** 衣柜 here (this card's, with 分区): clothes and outfits, newest first, and what each owner wears ('me' or 'role:名字'). */
+    wardrobeCardKey?(): string;
     wardrobe(owner?: string): Promise<{ items: WardrobeItem[]; sets: WardrobeSet[]; wears: WardrobeWear[] }>;
     saveWardrobeItem(item: Partial<WardrobeItem> & { owner: string }): Promise<WardrobeItem>;
-    saveWardrobeSet(set: Partial<WardrobeSet> & { owner: string; description: string }): Promise<WardrobeSet>;
+    saveWardrobeSet(set: Partial<WardrobeSet> & ({id: string} | {owner: string; description: string})): Promise<WardrobeSet>;
     deleteWardrobe(ids: string[]): Promise<boolean>;
     /** 穿上 (from: 'phone', told to the next story reply once) or what the story changed (from: 'story'). */
     setWardrobeWear(wear: { owner: string; text: string; from?: 'phone' | 'story' }): Promise<WardrobeWear>;
@@ -1288,7 +1300,9 @@ export interface BackendFacade {
     saveTheater(doc: Partial<Theater>): Promise<Theater>;
     deleteTheater(ids: string[]): Promise<boolean>;
     /** A 好友申请 from someone deleted or blocked: accepted (friends again) or turned down. */
-    answerFriendRequest(threadId: string, accept: boolean): Promise<ChatThread>;
+    sendChatRecording(threadId: string, value: {id: string; duration: number; text: string; blob: Blob; quote?: ChatMessage['quote']}): Promise<ChatThread>;
+    getChatRecording(threadId: string, recordingId: string): Promise<Blob | null>;
+    answerFriendRequest(threadId: string, accept: boolean, options?: {reason?: string; expected?: {at: number; text: string; count: number}}): Promise<ChatThread>;
     deleteChatMessages(id: string, ids: string[]): Promise<ChatThread>;
     /** {state, openedBy} for a red packet or transfer, or {recall: true} to withdraw a message. */
     updateChatMessage(id: string, messageId: string, patch: { text?: string; translation?: string; state?: string; openedBy?: string; recall?: boolean; photoId?: string; imageTags?: string; imageVersions?: string[] }): Promise<ChatThread>;
@@ -1409,11 +1423,14 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     /** New 朋友圈 posts from the characters (one model request). */
     momentsRefresh(): Promise<MomentPost[]>;
     /** 衣柜 (tavern side): a piece's photo recognized by a model that sees; an outfit put together; a 试穿图 drawn (code 'PAID' with prompt until allowPaid). */
-    wardrobeRecognize(itemId: string): Promise<WardrobeItem>;
+    wardrobeInspect?(options: {photoId?: string; blob?: Blob}): Promise<Pick<WardrobeItem, 'name' | 'category' | 'description'>>;
+    wardrobeRecognizeBatch?(ids: string[]): Promise<string[]>;
+    wardrobeRecognize(itemId: string, options?: {onlyEmpty?: boolean}): Promise<WardrobeItem>;
     wardrobeSuggest(options: { owner: string; mode?: 'closet' | 'free'; wish?: string; itemIds?: string[] }): Promise<string>;
     /** 存成一套: designed freely, split into pieces that go into the 衣柜 first; the same words kept again come back with again. */
     wardrobeSaveOutfit(options: { photoId?: string; owner: string; text: string; mode?: 'closet' | 'free'; itemIds?: string[] }): Promise<{ set: WardrobeSet; added: number; again: boolean }>;
     wardrobeTryOn(options: { owner: string; text: string; allowPaid?: boolean }): Promise<string>;
+    wardrobeDrawItems?(options: {ids: string[]; allowPaid?: boolean}): Promise<{count: number; error: string}>;
     wardrobeDrawItem(options: { id: string; allowPaid?: boolean }): Promise<WardrobeItem>;
     /** Who is in the story just now, as 衣柜 owners ('me', 'role:<name>'): they stay in the row of faces when there are many. */
     wardrobePresent?(): string[];

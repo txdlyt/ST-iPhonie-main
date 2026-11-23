@@ -5,12 +5,15 @@
 
 import {promptText} from './prompt-rules.js';
 
+export const SHARED_OWNER = 'shared';
 export const WARDROBE_CATEGORIES = Object.freeze(['上衣', '下装', '外套', '连衣裙', '鞋', '配饰', '整套']);
-export const WARDROBE_LIMITS = Object.freeze({items: 600, sets: 200, name: 40, description: 300, wear: 600, wish: 300, pool: 60, pieces: 12});
+export const WARDROBE_LIMITS = Object.freeze({items: 600, sets: 200, name: 40, description: 1000, summary: 180, wear: 600, wish: 300, pool: 60, pieces: 12});
+export const WARDROBE_DRAW_MAX = 8;
+export const sameWardrobeDrawing = (a, b) => a.name === b.name && a.category === b.category && a.description === b.description;
 export const WARDROBE_KINDS = Object.freeze(['wardrobe-item', 'wardrobe-set', 'wardrobe-wear']);
 /** Whose 衣柜: the user's own ('me') or a role's, by its name. */
 export const ownerKey = name => name ? 'role:' + String(name).slice(0, 40) : 'me';
-export const ownerName = (key, user = '我') => key === 'me' ? user : String(key || '').replace(/^role:/, '');
+export const ownerName = (key, user = '我') => key === SHARED_OWNER ? '通用衣柜' : key === 'me' ? user : String(key || '').replace(/^role:/, '');
 
 const clip = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const time = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
@@ -19,13 +22,15 @@ const space = doc => ({...(doc?.space ? {space: String(doc.space).slice(0, 300)}
 
 /** A piece of clothing: from a photo (photoId, recognized or written by hand) or only words. */
 export function cleanItem(doc, now = Date.now()) {
-  const who = owner(doc?.owner);
+  const who = doc?.owner === SHARED_OWNER ? SHARED_OWNER : owner(doc?.owner);
   if (!who) throw Error('这件衣服不知道是谁的');
   const description = clip(doc?.description, WARDROBE_LIMITS.description), photoId = clip(doc?.photoId, 200);
   if (!photoId && !description) throw Error('写一下这件衣服是什么样的');
   const id = /^wardrobe:item:[\w-]{4,80}$/.test(doc?.id) ? doc.id : 'wardrobe:item:' + (globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2));
   return {id, kind: 'wardrobe-item', owner: who, name: clip(doc?.name, WARDROBE_LIMITS.name) || (description ? description.slice(0, 12) : '衣物'),
     category: WARDROBE_CATEGORIES.includes(doc?.category) ? doc.category : '', description, ...(photoId ? {photoId} : {}),
+    ...(doc.shared || who === SHARED_OWNER ? {shared:true, collections: [...new Set((Array.isArray(doc.collections)?doc.collections:[]).map(x=>clip(x,32)).filter(Boolean))].slice(0,12),
+      cut:['男装','女装','中性'].includes(doc.cut)?doc.cut:'', age:clip(doc.age,24)} : {}),
     recognized: doc?.recognized === true, at: time(doc?.at, now), updatedAt: time(doc?.updatedAt, now), ...space(doc)};
 }
 /** An outfit kept (存成一套): its words (as long as what is worn), and the pieces it was made of when there were any. */
@@ -55,20 +60,43 @@ export function recognizeRequest(image, prompts = {}) {
   return [{role: 'system', content: promptText(prompts, 'wardrobe', 'recognize', {'分类': WARDROBE_CATEGORIES.join('|')})},
     {role: 'user', content: [{type: 'text', text: '识别这张衣服的照片。'}, {type: 'image_url', image_url: {url: image}}]}];
 }
+export const WARDROBE_RECOGNITION_BATCH = 4;
+export const WARDROBE_RECOGNITION_MAX = 8;
+export function recognizeBatchRequest(images, prompts = {}) {
+  const system = promptText(prompts, 'wardrobe', 'recognize', {'分类': WARDROBE_CATEGORIES.join('|')});
+  return [{role:'system', content:system + '\n这次有多张独立照片，每张各识别一件衣物。只返回 JSON 数组，每项包含 photo（照片序号，从 1 开始）、name、category、cut、description。不要合并照片或交换序号。'},
+    {role:'user', content:images.flatMap((url, i) => [{type:'text', text:`照片 ${i + 1}`}, {type:'image_url', image_url:{url}}])}];
+}
+export function parseRecognitionBatch(text, count) {
+  const raw = String(text ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+  let rows;
+  try { rows = JSON.parse(raw.slice(raw.indexOf('['), raw.lastIndexOf(']') + 1)); } catch { return new Map(); }
+  const results = new Map(), duplicate = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const n = row?.photo;
+    if (!Number.isInteger(n) || n < 1 || n > count) continue;
+    if (results.has(n - 1)) duplicate.add(n - 1);
+    else if (typeof row.description === 'string' && row.description.trim()) results.set(n - 1, parseRecognition(JSON.stringify(row)));
+  }
+  for (const n of duplicate) results.delete(n);
+  return results;
+}
+
 /** {name, category, description} from what the model answered (a fenced or loose JSON, or plain words as the description). */
 export function parseRecognition(text) {
   const raw = String(text ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
   let obj = null;
   for (const candidate of [raw.replace(/^```(?:json)?\s*|\s*```$/g, ''), raw.match(/\{[\s\S]*\}/)?.[0]]) { try { obj = JSON.parse(candidate); break; } catch { /* next */ } }
   const description = clip(obj?.description ?? (obj ? '' : raw), WARDROBE_LIMITS.description);
-  return {name: clip(obj?.name, WARDROBE_LIMITS.name), category: WARDROBE_CATEGORIES.includes(String(obj?.category || '').trim()) ? String(obj.category).trim() : '', description};
+  const cut = ['男装', '女装', '中性'].includes(obj?.cut) ? obj.cut : '';
+  return {...(cut ? {cut} : {}), name: clip(obj?.name, WARDROBE_LIMITS.name), category: WARDROBE_CATEGORIES.includes(String(obj?.category || '').trim()) ? String(obj.category).trim() : '', description};
 }
 /**
  * Putting an outfit together: from the 衣柜 (the pieces picked, else all of them) or designed from the user's wish;
- * the scene of the story now, so it fits; the last one, not to repeat it. Answers 35–80 characters of plain words.
+ * the scene of the story now, so it fits; the last one, not to repeat it. Answers a detailed paragraph of plain words.
  */
 export function suggestRequest({wearer, mode = 'closet', wish = '', pool = [], last = '', scene = '', prompts = {}}) {
-  const values = {'穿的人': wearer, '从衣柜选': mode === 'closet', '衣物': pool.slice(0, WARDROBE_LIMITS.pool).map(x => `- ${x.name}：${x.description}`).join('\n'),
+  const values = {'穿的人': wearer, '从衣柜选': mode === 'closet', '衣物': pool.slice(0, WARDROBE_LIMITS.pool).map(x => `- ${x.name}：${clip(x.description, WARDROBE_LIMITS.summary)}`).join('\n'),
     '偏好': clip(wish, WARDROBE_LIMITS.wish), '场景': clip(scene, 600), '上一套': clip(last, 200)};
   return [{role: 'system', content: promptText(prompts, 'wardrobe', 'suggest', values)}, {role: 'user', content: promptText(prompts, 'wardrobe', 'suggestAsk', values)}];
 }

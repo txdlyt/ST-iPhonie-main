@@ -7,7 +7,7 @@ import {bubbleRequest, splitBubbleAnswer} from './core/bubble-css.js';
 import {currentDm, currentWindow, lastRound, chatWindows, LETTER_LIMITS, forwardLine, messageWords, canGroupSpeak} from './core/chats.js';
 import {exactBackground, buildChatRequest, parseChatReply, bringText, activeChatPreset, normalizeChatPreset, messageLine, scanTurns, cleanTagged,chatContacts, storyTextRule, phoneAfterRule, phoneParts, inSpace, STICKER_MOODS, contactStatus, letterRequest, letterText} from './core/chat.js';
 import {worldInfoFor, loreTry, loreOptions} from './host-lore.js';
-import {drawSeparate, pictureInputs, photoPicture, tagTextRequest, tagTextAnswer, sizeFor} from './core/draw.js';
+import {drawSeparate, pictureInputs, photoPicture, descriptionTagsRequest, englishTagsAnswer, hasEnglishTags, sizeFor} from './core/draw.js';
 import {readStoryLines, readStoryExact} from './story-exact.js';
 import {forumContext, screenName} from './core/forum.js';
 import {promptOn, promptText} from './core/prompt-rules.js';
@@ -260,34 +260,37 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     const person = members({members:[companion]}, sources.persona !== false)[0];
     const dm = sources.history && currentDm(await backend.threads(), companion);
     const refs = await bookReferences(sources, person, reading, dm ? await backend.chats.get(dm.id) : null);
-    const user = userName(), profile = sources.userPersona !== false && userPersona();
-    const prompt = [{role:'system', content:[`你是${companion}，正在和${user}一起读这本书。自然回应对方刚才的话。`, person.persona || person.card, profile && '共读者'+user+'的人设：'+profile, refs, String(memoryText || '').slice(0,12000), reading].filter(Boolean).join('\n\n')},
-      ...messages.map(m=>({role:m.from==='me'?'user':'assistant',content:String(m.text)}))];
-    if (!prompt.length || prompt.at(-1).role !== 'user') throw Error('先写下想和 TA 说的话');
-    requireChat(valid);
-    let withImages=false;
-    async function appendImage(turn,image){
-      const url=await picture(image);
-      requireChat(valid);
-      if(typeof turn.content==='string')turn.content=[{type:'text',text:turn.content}];
-      turn.content.push({type:'image_url',image_url:{url}});
-      withImages=true;
-    }
-    // Only the newest attachment in the pending user turn goes to the vision model.
-    for(let i=messages.length-1;i>=0 && messages[i].from==='me';i--){
-      if(!messages[i].photoId)continue;
-      const photo=await backend.library.getPhoto(messages[i].photoId);
-      if(!photo?.blob)throw Error('找不到消息里的图片，请重新添加附件');
-      await appendImage(prompt[i+1],photo.blob);
+    const user = userName(), preset = activeChatPreset(settings().chat);
+    if (messages.at(-1)?.from !== 'me') throw Error('先写下想和 TA 说的话');
+    const thread = {type:'dm', name:companion, members:[companion], messages:messages.map((m,i) => ({
+      id:String(i), at:m.at, from:m.from === 'me' ? 'me' : companion, kind:m.photoId ? 'photo' : 'text', text:String(m.text || ''),
+    }))};
+    const images = [];
+    // Only the newest attachment in this user turn and the current comic page are visible.
+    for (let i=messages.length-1; i>=0 && messages[i].from==='me'; i--) {
+      if (!messages[i].photoId) continue;
+      const photo = await backend.library.getPhoto(messages[i].photoId);
+      if (!photo?.blob) throw Error('找不到消息里的图片，请重新添加附件');
+      images.push({id:String(i), url:await picture(photo.blob)});
       break;
     }
-    if(blob)await appendImage(prompt.at(-1),blob);
+    if (blob) images.push({id:'page', url:await picture(blob)});
+    requireChat(valid);
+    const withImages = images.length > 0;
+    const people = [{...person, voice:false}];
+    const prompt = buildChatRequest({prompts:settings().promptRules, preset, thread, members:people,
+      user, userPersona:sources.userPersona === false ? '' : userPersona(), pictures:images,
+      memory:String(memoryText || '').slice(0,12000), voiceFormat:''});
+    prompt.splice(-1,0,{role:'system',content:[refs, reading, blob && '最后一张附图是当前漫画页。',
+      '在共读窗口按手机私聊预设发文字消息，一条消息一行。用直接发给对方的话讨论书页，省略动作旁白。'].filter(Boolean).join('\n\n')});
     const result=withImages
       ? await ask(ctx,backend,settings(),prompt,{label:'共读 · 看图',use:'chat'})
       : await backend.generateText(ctx,{use:'chat',prompt,trimNames:false,responseLength:4096});
     requireChat(valid);
-    if (!String(result || '').trim()) throw Error('没有收到回复，可以重试');
-    return String(result).trim();
+    const items = parseChatReply(cleanTagged(result, preset.cleanTags), {members:people, user, voiceFormat:''});
+    const texts = items.filter(item => item.kind === 'text').map(item => item.text);
+    if (!texts.length) throw Error('没有收到可显示的共读消息，可以重试');
+    return texts.join('\n');
   }
 
   /** Margin notes have their own request: no fabricated user message, private chat or phone side effects. */
@@ -572,14 +575,15 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     const set = patch => backend.chatMutate(threadId, () => backend.chats.updateMessage(threadId, messageId, patch));
     if (!backend.drawReady()) { await set({imageState: 'failed', imageNote: backend.drawMissing()}); return null; }
     try {
-      // The model wrote only the description (no 「｜英文 tag」, common with a long one): its words become the tags
-      // once, kept with the photo.
-      if (!m.imageTags) {
+      // A description or a previously stored Chinese reply needs English tags before the draw.
+      if (!hasEnglishTags(m.imageTags)) {
         // Drawn on its own (not asked for) only when it costs nothing: no words spent turning it into tags otherwise.
         if (!allowPaid && backend.drawQuote?.()?.free === false) throw Object.assign(Error('要花钱'), {code: 'PAID'});
         await set({imageState: 'waiting', imageNote: ''});
-        const tags = tagTextAnswer(await backend.generateText(context(), {use: 'picture', prompt: tagTextRequest(settings(), m.text, 'translate'), plainText: true, trimNames: false, responseLength: Math.min(6000, 1500 + m.text.length * 3)})).replace(/\s+/g, ' ').trim().slice(0, 6000);
-        if (!tags) throw Error('没把照片的描述写成画图用的 tag，再点一次试试');
+        const words = m.imageTags || m.text;
+        const prompt = descriptionTagsRequest(settings(), words);
+        const tags = englishTagsAnswer(await backend.generateText(context(), {use: 'picture', prompt, plainText: true, trimNames: false, responseLength: Math.min(6000, 1500 + words.length * 3)})).slice(0, 6000);
+        if (!tags) throw Error('文字模型没有返回英文绘图标签，再点一次试试');
         m.imageTags = tags;
         await set({imageTags: tags});
       }
@@ -647,7 +651,7 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     Promise.resolve().then(() => backend.chats.list()).then(list => {
       cutsLoaded = true;
       const lately = at => at > 0 && Date.now() - at < 2 * 86400000;
-      cuts = list.filter(t => t.type === 'dm' && (t.friend || t.blocked || lately(t.befriended))).map(t => ({name: t.members[0], by: t.friend?.by || '', blocked: !!t.blocked, refused: Math.max(t.friend?.refused || 0, t.blocked?.refused || 0), accepted: !t.friend && !t.blocked ? t.befriended : 0, space: t.space || '', save: t.save || ''}));
+      cuts = list.filter(t => t.type === 'dm' && (t.friend || t.blocked || lately(t.befriended))).map(t => ({name: t.members[0], by: t.friend?.by || '', blocked: !!t.blocked, refused: Math.max(t.friend?.refused || 0, t.blocked?.refused || 0), reason: (t.blocked?.refused || 0) >= (t.friend?.refused || 0) ? t.blocked?.reason : t.friend?.reason, accepted: !t.friend && !t.blocked ? t.befriended : 0, space: t.space || '', save: t.save || ''}));
       groups = list.filter(t => t.type === 'group');
     }).catch(() => {});
   }
@@ -659,13 +663,13 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     const here = backend.here?.(), user = userName(), list = cuts.filter(c => inSpace(c, here));
     if (!list.length) return [];
     const blocked = list.filter(c => c.blocked).map(c => c.name), mine = list.filter(c => c.by === 'me' && !c.blocked).map(c => c.name), theirs = list.filter(c => c.by === 'them').map(c => c.name);
-    const refused = list.filter(c => c.refused && Date.now() - c.refused < 2 * 86400000).map(c => c.name), accepted = list.filter(c => c.accepted).map(c => c.name);
+    const refused = list.filter(c => c.refused && Date.now() - c.refused < 2 * 86400000), accepted = list.filter(c => c.accepted).map(c => c.name);
     // How to ask, said only when the story can send to the phone at all (正文联动手机).
-    const how = settings().chat.proactive?.on ? `（<phone> 里单独一行写「名字：[好友申请] 验证消息」）` : '', they = names => names.length > 1 ? 'TA 们' : 'TA';
+    const how = settings().chat.proactive?.on ? `（<${settings().general?.shortTags?'iphonie':'phone'}> 里单独一行写「名字：[好友申请] 验证消息」）` : '', they = names => names.length > 1 ? 'TA 们' : 'TA';
     const text = ['【手机上的好友关系】',
       mine.length ? `${user}在手机上把${mine.join('、')}删了好友：${they(mine)}发的消息${user}收不到，只能发好友申请${how}。` : '',
       blocked.length ? `${user}在手机上把${blocked.join('、')}拉黑了：${they(blocked)}发的消息、打的电话${user}都收不到（${they(blocked)}自己知道被拉黑了），只能发好友申请${how}。` : '',
-      refused.length ? `${refused.join('、')}发来的好友申请刚被${user}拒绝了。` : '',
+      ...refused.map(c => `${c.name}发来的好友申请刚被${user}拒绝了。${c.reason ? '只有该申请人看到的拒绝留言（聊天原话）：' + JSON.stringify(c.reason.replace(/[<>]/g, ch => ch === '<' ? '＜' : '＞')) + '。' : ''}`),
       accepted.length ? `${user}刚在手机上把${accepted.join('、')}加回了好友（通过了好友申请），现在又能互发消息了。` : '',
       theirs.length ? `${theirs.join('、')}在手机上把${user}删了好友：${user}发的消息会被拒收。` : ''].filter(Boolean).join(' ');
     return [{key: 'sttts.entry.friends', text, position: 1, depth: 2, role: 0}];
@@ -698,7 +702,7 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     const s = settings(), friends = friendsPlan();
     if (!s.chat.proactive?.on || phoneAfter() || !phoneTurn()) return friends;
     refreshCuts();
-    let text = storyTextRule(activeChatPreset(s.chat), {user: userName(), names: backend.contacts().map(c => c.name), groups: groupNames(), images: !!backend.drawReady?.(), ...lifeRules()}), limits = groupLimits();
+    let text = storyTextRule(activeChatPreset(s.chat), {shortTags:s.general?.shortTags, user: userName(), names: backend.contacts().map(c => c.name), groups: groupNames(), images: !!backend.drawReady?.(), ...lifeRules()}), limits = groupLimits();
     if (text && limits) text += '\n' + limits;
     return [...(text ? [{key: 'sttts.entry.phone', text, position: 1, depth: 0, role: 0}] : []), ...friends];
   }
@@ -1234,7 +1238,11 @@ export function createChatHost({context, settings, backend, notice = () => {}, m
     if (!allowPaid && backend.drawQuote?.()?.free === false) throw paid();
     const s = settings(), feel = STICKER_MOODS.find(m => m[0] === mood) || [String(mood || '').slice(0, 20), ''], words = String(wish || '').trim();
     if (!feel[0]) throw Error('选一个表情');
-    if (words && !styleTags.has(words)) styleTags.set(words, tagTextAnswer(await backend.generateText(context(), {use: 'picture', prompt: tagTextRequest(s, words, 'translate'), plainText: true, trimNames: false, responseLength: 1500})).replace(/\s+/g, ' ').trim());
+    if (words && !styleTags.has(words)) {
+      const tags = englishTagsAnswer(await backend.generateText(context(), {use: 'picture', prompt: descriptionTagsRequest(s, words), plainText: true, trimNames: false, responseLength: 1500}));
+      if (!tags) throw Error('文字模型没有返回表情包的英文绘图标签，再试一次');
+      styleTags.set(words, tags);
+    }
     const tags = ['solo', 'chibi', 'sticker', 'upper body', 'simple background', 'white background', feel[1], styleTags.get(words) || ''].filter(Boolean).join(', ');
     const input = pictureInputs(s, photoPicture(s, {text: `${name}的表情包：${feel[0]}`, tags, owner: name, names: [name]}), '');
     const side = sizeFor(s.draw.params, 'square');
