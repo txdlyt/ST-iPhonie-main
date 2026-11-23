@@ -537,12 +537,14 @@ export function drawApp(ctx) {
       if (Array.isArray(a.options) && a.options.length) return `<select ${base}>${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option value="${esc(o)}"${o === a.value ? ' selected' : ''}>${esc(o)}${(a.vipOptions || []).includes(o) ? ' · VIP' : ''}</option>`).join('')}</select>`;
       return `<input type="text" ${base} value="${esc(a.value ?? '')}" placeholder="名字要和网页上一致">`;
     };
-    for (const a of adv) {
-      if (a.kind === 'text') continue;
+    const neg = adv.find(a => a.kind === 'text');
+    for (const a of adv) { // 照网页读到的顺序排，反向提示词在网页上排第一就排第一
+      if (a.kind === 'text') {
+        if (a === neg) rows.push(`<div class="px-row px-row-wide"><span>${esc(neg.name)}</span><textarea data-pxpanel="1" data-name="${esc(neg.name)}" data-kind="text" rows="3"${dis}>${esc(String(neg.value ?? ''))}</textarea></div>`);
+        continue;
+      }
       rows.push(row(a.name.replace(/#值$/, ' 数值'), field(a)));
     }
-    const neg = adv.find(a => a.kind === 'text');
-    if (neg) rows.push(`<div class="px-row px-row-wide"><span>${esc(neg.name)}</span><textarea data-pxpanel="1" data-name="${esc(neg.name)}" data-kind="text" rows="3"${dis}>${esc(String(neg.value ?? ''))}</textarea></div>`);
     return `<div class="px-rows">${rows.join('')}</div><p class="hint" style="padding:0">网页「设定」页现在的样子，换模型会跟着变；改这里会去网页上改，改完读回来。${adv.length ? '' : '点「立即同步」会顺便读进阶设置（步数、采样、CFG、反向提示词等）。'}</p>`;
   };
   const pixaiSig = i => i === undefined ? 'u' : !i ? 'n' : JSON.stringify([i.count, i.countLabel, i.canSwap, i.model, i.models, i.resolution?.ratios, i.resolution?.sizes, i.resolution?.width, i.resolution?.height, i.resolution?.label, i.resolution?.ratio, i.cost, i.balance, i.generating, !!i.stale, !!i.syncing, i.apiModels, i.resolutions?.at, i.template?.at, !!i.template?.armed, i.hasRef, i.refStrength, i.panel]);
