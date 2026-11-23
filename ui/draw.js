@@ -514,7 +514,7 @@ export function drawApp(ctx) {
       const label = p.speed.text.replace(/^\d+(?:\.\d+)?\s*x\s*/i, '').replace(/\s*\+[\d,]+\s*點數.*$/, '').replace(/預估.*$/, '').trim();
       const opts = Array.isArray(p.speed.options) ? p.speed.options : [];
       const ctl = opts.length
-        ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度"${dis}>${(opts.some(o => o.name === mult) ? opts : [{name: mult, extra: p.speed.extra, wait: p.speed.wait}, ...opts]).map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc(o.name)}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>`
+        ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度"${dis}>${(opts.some(o => o.name === mult) ? opts : [{name: mult, extra: p.speed.extra, wait: p.speed.wait}, ...opts]).map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc((o.label ? o.label + ' ' : '') + o.name)}${o.vip ? ' · VIP' : ''}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>`
         : `<b>${esc(mult)}</b>`;
       rows.push(row('生成速度', ctl, [label, price(p.speed.extra), p.speed.wait ? '等待 ' + p.speed.wait : ''].filter(Boolean).join(' · ')));
     }
@@ -532,7 +532,7 @@ export function drawApp(ctx) {
       const base = `data-pxpanel="1" data-name="${esc(a.name)}" data-kind="${a.kind}"${dis}`;
       if (a.kind === 'bool') return sw('bool', a.name, a.value);
       if (a.kind === 'number') return `<input type="number" ${base} value="${a.value ?? ''}"${Number.isFinite(a.min) ? ` min="${a.min}"` : ''}${Number.isFinite(a.max) ? ` max="${a.max}"` : ''}${Number.isFinite(a.step) ? ` step="${a.step}"` : ''}>`;
-      if (Array.isArray(a.options) && a.options.length) return `<select ${base}>${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option${o === a.value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+      if (Array.isArray(a.options) && a.options.length) return `<select ${base}>${(a.options.includes(a.value) || !a.value ? a.options : [a.value, ...a.options]).map(o => `<option value="${esc(o)}"${o === a.value ? ' selected' : ''}>${esc(o)}${(a.vipOptions || []).includes(o) ? ' · VIP' : ''}</option>`).join('')}</select>`;
       return `<input type="text" ${base} value="${esc(a.value ?? '')}" placeholder="名字要和网页上一致">`;
     };
     for (const a of adv) {

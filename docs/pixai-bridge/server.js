@@ -1733,27 +1733,32 @@ function inPageTools() {
 }
 const readTools = page => page.evaluate(`(${inPageTools})().map(({ el, ...r }) => r)`);
 // 下拉框不假设它的标记（不靠 role=option）：点开前后各拍一次「页面上看得见的文字」，多出来的就是选项；挑选时点那个文字。
-const visibleTexts = page => page.evaluate(() => {
+// 页面里「元素自己的文字」：取元素直接包含的文字节点，不要求元素里面没有别的元素。
+// （之前只取没有子元素的，名字后面带小图标/小标签的选项——如 Heun、極速模式、高優先權——被整个漏掉了。）vip = 这个元素里面带小图标（页面上会员选项的皇冠）。
+function inPageOwnItems(rootId) {
+  const root = rootId ? document.getElementById(rootId) : document.body;
+  if (!root) return null;
   const out = [];
-  for (const el of document.querySelectorAll('body *')) {
-    if (el.children.length || !(el.offsetWidth || el.offsetHeight)) continue;
+  for (const el of root.querySelectorAll('*')) {
+    if (!(el.offsetWidth || el.offsetHeight)) continue;
     if (el.closest('[data-testid="typewriter-ghost"],[data-testid^="prompt-bar"],[data-onboarding-tour="prompt"]')) continue; // 输入框里轮播的示例文字，不是选项
-    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (t && t.length <= 80) out.push(t);
+    const t = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
+    if (t && t.length <= 80) out.push({ t, vip: !!el.querySelector('svg') });
   }
   return out;
-});
+}
+const visibleItems = (page, rootId = '') => page.evaluate(`(${inPageOwnItems})(${JSON.stringify(rootId)})`);
 async function openList(page, trigger) {
-  const before = new Map(); for (const t of await visibleTexts(page)) before.set(t, (before.get(t) || 0) + 1);
+  const before = new Map(); for (const x of await visibleItems(page)) before.set(x.t, (before.get(x.t) || 0) + 1);
   await trigger.click({ timeout: 5000 }); await sleep(450);
-  // 页面真实数据里，展开的下拉带 aria-controls 指向弹出的列表：有的话直接读那一块里的文字，比对比前后更全
+  // 页面真实数据里，展开的下拉带 aria-controls 指向弹出的列表：有的话直接读那一块里的内容，比对比前后更全
   const ctl = await trigger.getAttribute('aria-controls').catch(() => null);
   if (ctl) {
-    const inList = await page.evaluate(id => { const box = document.getElementById(id); if (!box) return null; const out = []; for (const el of box.querySelectorAll('*')) { if (el.children.length || !(el.offsetWidth || el.offsetHeight)) continue; const t = (el.textContent || '').replace(/\s+/g, ' ').trim(); if (t && t.length <= 80) out.push(t); } return out; }, ctl).catch(() => null);
+    const inList = await visibleItems(page, ctl).catch(() => null);
     if (inList && inList.length) return inList;
   }
   const used = new Map(), options = [];
-  for (const t of await visibleTexts(page)) { used.set(t, (used.get(t) || 0) + 1); if (used.get(t) > (before.get(t) || 0)) options.push(t); }
+  for (const x of await visibleItems(page)) { used.set(x.t, (used.get(x.t) || 0) + 1); if (used.get(x.t) > (before.get(x.t) || 0)) options.push(x); }
   return options;
 }
 async function pickFromList(page, trigger, value) {
@@ -1761,7 +1766,8 @@ async function pickFromList(page, trigger, value) {
   try {
     await trigger.click({ timeout: 5000 }); await sleep(450);
     const ok = await page.evaluate(want => {
-      const hits = Array.from(document.querySelectorAll('body *')).filter(el => !el.children.length && (el.offsetWidth || el.offsetHeight) && (el.textContent || '').replace(/\s+/g, ' ').trim() === want && !el.closest('[data-bridge-trig]'));
+      const own = el => Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
+      const hits = Array.from(document.querySelectorAll('body *')).filter(el => (el.offsetWidth || el.offsetHeight) && own(el) === want && !el.closest('[data-bridge-trig]'));
       const hit = hits[hits.length - 1]; if (!hit) return false;
       hit.setAttribute('data-bridge-pick', '1'); return true;
     }, String(value));
@@ -1886,10 +1892,11 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
           const sec = page.locator('section').filter({ has: page.locator('h3', { hasText: item.name }) }).last();
           const combo = sec.locator('[role="combobox"]').first();
           if (!(await combo.count())) continue;
-          const opts = await openList(page, combo);
+          const items = await openList(page, combo);
           await page.keyboard.press('Escape'); await sleep(250);
+          const opts = items.map(x => x.t); const vipOpts = items.filter(x => x.vip).map(x => x.t);
           const real = opts.filter(o => o !== '預設' && o !== '预设'); // 「預設」在下拉里是灰色的占位项，不当选项
-          if (real.length) item.options = Array.from(new Set(real));
+          if (real.length) { item.options = Array.from(new Set(real)); const v = vipOpts.filter(o => real.includes(o)); if (v.length) item.vipOptions = v; }
         } catch { await page.keyboard.press('Escape').catch(() => {}); }
       }
     }
@@ -1901,16 +1908,19 @@ async function readPanel(page, { expand = false, model = '' } = {}) {
     try {
       const btn = await page.evaluate(() => { const leaf = Array.from(document.querySelectorAll('span,div,label')).find(el => !el.children.length && /^生成速度$/.test((el.textContent || '').trim())); const b = leaf && leaf.parentElement ? leaf.parentElement.querySelector('button') : null; if (b) b.setAttribute('data-bridge-speed', '1'); return !!b; });
       if (btn) {
-        const texts = await openList(page, page.locator('[data-bridge-speed="1"]').first());
+        const items = await openList(page, page.locator('[data-bridge-speed="1"]').first());
         await page.keyboard.press('Escape'); await sleep(250);
-        // 真实数据里每一档在弹出里是：倍数（10x / 7.6x / 1x）、+N 點數、~N 秒 —— 档名就是倍数，点它的文字就能选
+        // 真实页面：每一档是 倍数（10x / 7.6x / 1x）、名字（高優先權 / 極速模式 / 低優先權，会员档名字后带皇冠）、+N 點數、預估等待 ~N 秒。档的键是倍数，点它的文字就能选。
         const opts = [];
-        for (const t of texts) {
-          if (/^\d+(\.\d+)?\s*x$/i.test(t)) { opts.push({ name: t.replace(/\s+/g, '').toLowerCase(), extra: null, wait: null }); continue; }
+        for (const { t, vip } of items) {
+          if (/^\d+(\.\d+)?\s*x$/i.test(t)) { opts.push({ name: t.replace(/\s+/g, '').toLowerCase(), label: '', extra: null, wait: null, vip: false }); continue; }
           if (!opts.length) continue;
+          const cur = opts[opts.length - 1];
           const m = /^[+＋]\s*([\d,]+)\s*(?:點數|点数|points?)$/i.exec(t);
-          if (m) opts[opts.length - 1].extra = Number(m[1].replace(/,/g, ''));
-          else if (/^[~≈]\s*\d+(\.\d+)?\s*(秒|分鐘|分钟|分|小時|小时|s|min)/.test(t)) opts[opts.length - 1].wait = t;
+          if (m) cur.extra = Number(m[1].replace(/,/g, ''));
+          else if (/^[~≈]\s*\d+(\.\d+)?\s*(秒|分鐘|分钟|分|小時|小时|s|min)/.test(t)) cur.wait = t;
+          else if (/預估|预估|等待/.test(t)) { /* 「預估等待」前缀，时间在后面那段 */ }
+          else if (!cur.label) { cur.label = t; cur.vip = vip; }
         }
         if (opts.length) panel.speed.options = opts;
       }
@@ -3676,7 +3686,7 @@ app.get('/debug/dropdown', async (req, res) => {
         trigger = page.locator('[data-bridge-speed="1"]').first();
       }
       if (!(await trigger.count())) return res.status(404).json({ message: `没找到「${name}」的下拉` });
-      const options = await openList(page, trigger);
+      const options = (await openList(page, trigger)).map(x => x.t);
       const html = await page.evaluate(opts => {
         const clean = h => h.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/ (class|style|id|data-rac|tabindex)="[^"]*"/g, '').replace(/\s+/g, ' ');
         const leaves = Array.from(document.querySelectorAll('body *')).filter(el => !el.children.length && opts.includes((el.textContent || '').replace(/\s+/g, ' ').trim()) && (el.offsetWidth || el.offsetHeight));
