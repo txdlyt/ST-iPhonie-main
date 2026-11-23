@@ -516,7 +516,7 @@ export function drawApp(ctx) {
       const ctl = opts.length
         ? `<select data-pxpanel="1" data-kind="speed" data-name="生成速度"${dis}>${(opts.some(o => o.name === mult) ? opts : [{name: mult, extra: p.speed.extra, wait: p.speed.wait}, ...opts]).map(o => `<option value="${esc(o.name)}"${o.name === mult ? ' selected' : ''}>${esc((o.label ? o.label + ' ' : '') + o.name)}${o.vip ? ' · VIP' : ''}${Number.isFinite(o.extra) ? ` · +${pxNum(o.extra)} 积分` : ''}${o.wait ? ` · ${esc(o.wait)}` : ''}</option>`).join('')}</select>`
         : `<b>${esc(mult)}</b>`;
-      rows.push(row('生成速度', ctl, [label, price(p.speed.extra), p.speed.wait ? '等待 ' + p.speed.wait : ''].filter(Boolean).join(' · ')));
+      rows.push(row('生成速度', ctl));
     }
     const tools = Array.isArray(p.tools) ? p.tools : [];
     let last = '';

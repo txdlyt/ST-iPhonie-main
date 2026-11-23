@@ -3247,7 +3247,7 @@ summary:has(.fold-note):after{margin-left:8px;flex-shrink:0}
 .tag-role-name{overflow-wrap:anywhere}
 
 /* PixAI 反代: the page's settings, read live */
-.px-sync{display:grid;gap:12px}
+.px-sync{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
 .px-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .px-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .px-cell{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:16px;background:var(--card);box-shadow:inset 0 0 0 2px var(--line);min-width:0}
