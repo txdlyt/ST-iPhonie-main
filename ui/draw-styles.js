@@ -17,6 +17,7 @@ import {layerSort} from './layer-sort.js';
 import {styleTree, styleOfWords, styleSample} from '../core/draw.js';
 import {openImageViewer} from '../image-viewer.js';
 import {pickPicture} from './draw-images.js';
+import {styleNameOf, cleanBrackets} from './draw-import.js';
 
 /** One line for a 画风's parameters: 「V4.5 Full · 28 步 · CFG 5 · k_euler_ancestral」. */
 export const paramLine = (p, names = {}) => [names[p.model] || p.model, `${p.steps} 步`, `CFG ${p.scale}`, p.sampler].join(' · ');
@@ -293,7 +294,26 @@ export function styleSheets({ctx, state, styleId, style, render, shownPicture = 
   }
 
 
-  return {pickStyle, editStyle};
+  /**
+   * 读图 → 画风: what a NovelAI picture was drawn with, kept as a new 画风 in one tap: the whole prompt as the artist string (the person splits it by hand), the negative, and the model / steps / CFG / sampler it was drawn with; the picture is its
+   * 效果图. It is not made the one in use, so the prompt on the page is not given the artist string twice. The editor opens
+   * on it, to move the line between 画师串 and 固定正面 if the guess was off.
+   */
+  async function styleFromPicture(file, found, {clean = false, actual = false} = {}) {
+    const words = actual && found.actual ? found.actual : found, tidy = text => clean ? cleanBrackets(text) : String(text || '');
+    const artist = tidy(words.prompt), positive = '';
+    const taken = new Set(state().styles.map(s => s.name));
+    let name = styleNameOf(artist), n = 1;
+    for (const base = name; taken.has(name); ) name = `${base.slice(0, 36)} ${++n}`;
+    const created = api.saveStyle({name, artist, positive, negative: tidy(words.negative), params: found.params});
+    let cover = true;
+    try { await api.setStyleCover(created.id, file); } catch { cover = false; }
+    render();
+    ctx.notify(`已存成画风「${created.name}」${cover ? '' : '（效果图没存上）'}。整段提示词都放在画师串里，可以在这里自己拆`);
+    editStyle(state().styles.find(s => s.id === created.id) || created);
+  }
+
+  return {pickStyle, editStyle, styleFromPicture};
 }
 
 /**

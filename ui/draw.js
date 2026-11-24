@@ -1293,6 +1293,7 @@ export function drawApp(ctx) {
     const found = await readNovelAI(buffer), carried = await embeddedVibeFile(buffer).catch(() => null);
     pictureSheet({ctx, file, found, carried: !!carried, locks: state().locks,
       take: choice => takePicture(file, found, choice),
+      saveStyle: choice => styleFromPicture(file, found, choice),
       use: async kind => {
         if (kind === 'base') { await refs.useAsBase(file); tab = 'refs'; render(); ctx.notify('已放进「参考图」当底图'); }
         else if (kind === 'ref') { await refs.useAsRef(file); tab = 'refs'; render(); ctx.notify('已放进「参考图」当角色参考'); }
@@ -1368,7 +1369,7 @@ export function drawApp(ctx) {
   }
 
   // 画风: ui/draw-styles.js.
-  const {pickStyle} = styleSheets({ctx, state, styleId, style, render, shownPicture: () => results[current] ? shownBlob() : null, afterPaid: () => refreshSubscription(true)});
+  const {pickStyle, styleFromPicture} = styleSheets({ctx, state, styleId, style, render, shownPicture: () => results[current] ? shownBlob() : null, afterPaid: () => refreshSubscription(true)});
   watchCovers(v.root);
 
   readHearts();
