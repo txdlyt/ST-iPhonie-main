@@ -444,6 +444,32 @@ export function relayTrouble(r, body = '') {
   return `连不上中转，它没有任何回应${r.proxy === 'on' ? '，酒馆那边也连不上它' : ''}：可能关了、换了地址、证书过期，或者这台设备的网络连不到它（有的中转要挂梯子）。问问中转的提供者，或者先换回 NovelAI 官方`;
 }
 
+/** 开头（跳过空白）是 event: / data: / 注释行 ":"，就是 SSE 文本流，不是 NovelAI 的二进制帧。 */
+function looksLikeSse(bytes) {
+  let i = 0;
+  while (i < bytes.length && (bytes[i] === 0x20 || bytes[i] === 0x0a || bytes[i] === 0x0d || bytes[i] === 0x09)) i++;
+  const head = String.fromCharCode(...bytes.subarray(i, i + 6));
+  return head.startsWith('event:') || head.startsWith('data:') || head.startsWith(':') || head.startsWith('id:') || head.startsWith('retry:');
+}
+/** 从缓冲里取出完整的 SSE 事件（空行分隔，多行 data: 拼起来，data 按 JSON 读），返回没取完的尾巴。end 为真时尾巴也当一个事件。 */
+function takeSse(buffer, end, handle) {
+  const blocks = buffer.split(/\r?\n\r?\n/);
+  const rest = end ? '' : blocks.pop();
+  for (const block of end ? blocks : blocks) {
+    let event = '', data = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (!line || line.startsWith(':')) continue;
+      const at = line.indexOf(':'), field = at < 0 ? line : line.slice(0, at), value = at < 0 ? '' : line.slice(at + 1).replace(/^ /, '');
+      if (field === 'event') event = value; else if (field === 'data') data.push(value);
+    }
+    if (!event && !data.length) continue;
+    let parsed = null; const joined = data.join('\n');
+    try { parsed = joined ? JSON.parse(joined) : null; } catch { parsed = {message: joined}; }
+    handle({event, data: parsed});
+  }
+  return rest;
+}
+
 export class NovelAIClient {
   // relay: the user's relay address ('' for NovelAI itself), set from the drawing settings before each call.
   // viaTavern: relays only the tavern's /proxy/ reaches (they let no web page ask them), found when one gave no answer.
@@ -544,7 +570,8 @@ export class NovelAIClient {
    * that does not pass it on) the plain request is made instead: nothing has been drawn or paid for by then.
    */
   async generateStream(body, signal, onFrame = () => {}) {
-    const request = {...body, parameters: {...body.parameters, stream: 'msgpack'}};
+    // 中转的流式文档：不要在请求体里手写 parameters.stream，后端自己注入 "sse"；NovelAI 官方才需要明说 msgpack。
+    const request = this.relay ? body : {...body, parameters: {...body.parameters, stream: 'msgpack'}};
     let response;
     try { response = await this.call('/ai/generate-image-stream', {method: 'POST', headers: this.headers(), body: JSON.stringify(request), signal}); }
     // A relay without the stream may also answer its address with no CORS headers, at once: the empty request got through then.
@@ -553,8 +580,19 @@ export class NovelAIClient {
     if (!reader) return unzipFirstImage(await response.arrayBuffer());
     const steps = body.parameters.steps;
     let held = new Uint8Array(0), final = null, failed = '', checked = false;
-    let seen = false, cut = '', total = 0, last = null;
+    let seen = false, cut = '', total = 0, last = null, mode = '', text = '';
+    const decoder = new TextDecoder();
     const kinds = new Map();
+    const toBlob = b64 => { const image = Uint8Array.from(atob(String(b64).replace(/^data:[^,]*,/, '')), c => c.charCodeAt(0)); return {image, blob: new Blob([image], {type: pictureType(image)})}; };
+    // 中转的 SSE 流：event 名（或 data 里的 event_type）是 intermediate / final / done / error / ready。
+    const onSse = ({event, data}) => {
+      const kind = String(event || data?.event_type || 'message');
+      kinds.set(kind, (kinds.get(kind) || 0) + 1);
+      if (kind === 'error' || (kind === 'done' && data?.success === false)) { failed = String(data?.error || data?.message || '中转没画成'); return; }
+      if (kind === 'intermediate' && typeof data?.image === 'string') { const {blob} = toBlob(data.image); onFrame({image: blob, step: Number(data.step_ix) || 0, steps}); return; }
+      const raw = kind === 'done' ? (data?.final_image || data?.images?.[0]?.data) : kind === 'final' ? (data?.image || data?.final_image) : '';
+      if (typeof raw === 'string' && raw) { const {blob} = toBlob(raw); if (kind === 'final' || !final) final = blob; last = {kind, blob}; }
+    };
     for (;;) {
       let piece;
       // iPhone cuts a stream when the page goes to the background or the network changes: "Load failed" / "network connection was lost".
@@ -566,6 +604,9 @@ export class NovelAIClient {
       next.set(held); next.set(value, held.length); held = next;
       // A relay may answer the stream's address with the usual ZIP.
       if (!checked && held.length >= 2) { checked = true; if (held[0] === 0x50 && held[1] === 0x4b) { for (;;) { const more = await reader.read(); if (more.done) break; const all = new Uint8Array(held.length + more.value.length); all.set(held); all.set(more.value, held.length); held = all; } return unzipFirstImage(held.buffer.slice(held.byteOffset, held.byteOffset + held.byteLength)); } }
+      if (!mode && held.length >= 8) mode = looksLikeSse(held) ? 'sse' : 'bin';
+      if (mode === 'sse') { text += decoder.decode(held, {stream: true}); held = new Uint8Array(0); text = takeSse(text, false, onSse); continue; }
+      if (mode !== 'bin') continue;
       while (held.length >= 4) {
         const size = new DataView(held.buffer, held.byteOffset, 4).getUint32(0);
         if (held.length < 4 + size) break;
@@ -578,6 +619,8 @@ export class NovelAIClient {
         else if (frame?.event_type === 'final' && image) final = new Blob([image], {type: pictureType(image)});
       }
     }
+    if (!mode && held.length) mode = looksLikeSse(held) ? 'sse' : 'bin';
+    if (mode === 'sse') { text += decoder.decode(held, {stream: false}); takeSse(text, true, onSse); text = ''; held = new Uint8Array(0); }
     if (final) return final;
     // A relay may name the last frame differently ("complete", "result"...): the last picture frame that is not a step preview is it.
     if (last && last.kind !== 'intermediate' && !failed) return last.blob;
