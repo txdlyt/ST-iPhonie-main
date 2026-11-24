@@ -342,6 +342,8 @@ export interface DrawInput { prompt: string; negative?: string; characters?: Dra
     preview?: boolean;
     /** PixAI 反代: this picture is number `index` (from 0) of `size` pictures of one request (the same `run`); the bridge draws them all at once and hands them out one by one. Left out, the picture is a request of one. */
     batch?: { run: string; index: number; size: number };
+    /** Preview before keeping: returns the blob and an empty photoId, without writing to the album. */
+    temporary?: boolean;
     /** NovelAI V4.5: 角色参考 (fitted pictures). */
     refs?: Array<{ image: string; kind: 'character' | 'style' | 'both'; strength: number; fidelity: number }>; }
 /** seed is -1 for GPT (it takes none); params are what the engine used (GPT has no steps). */
@@ -1369,7 +1371,9 @@ export interface BackendAPI extends Omit<BackendFacade, 'exportBackup'> {
     /** people: registered names the model put in the picture (the drawing app adds them with their looks). */
     suggestPrompt(): Promise<{ prompt: string; people: string[]; /** NovelAI: tokens the line holds, and the room it had */ tokens?: number; budget?: number }>;
     /** 帮我写: a prompt line for a picture the user describes in a few words; cast: names of the people in it. */
-    writePrompt(idea: string, cast?: string[]): Promise<{ prompt: string; people: string[]; /** NovelAI: tokens the line holds, and the room it had */ tokens?: number; budget?: number }>;
+    /** The active tavern user's persona description for a self portrait. */
+    chatDrawPersona(): string;
+    writePrompt(idea: string, cast?: string[], options?: { explicitCast?: boolean; describedLook?: string }): Promise<{ prompt: string; people: string[]; /** NovelAI: tokens the line holds, and the room it had */ tokens?: number; budget?: number }>;
     /** Pictures stored in the open tavern chat. */
     chatPictureStats(): { count: number };
     /** Plans the pictures of the newest character reply again and queues them. */
