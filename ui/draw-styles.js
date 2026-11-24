@@ -295,25 +295,29 @@ export function styleSheets({ctx, state, styleId, style, render, shownPicture = 
 
 
   /**
-   * 读图 → 画风: what a NovelAI picture was drawn with, kept as a new 画风 in one tap: the whole prompt as the artist string (the person splits it by hand), the negative, and the model / steps / CFG / sampler it was drawn with; the picture is its
-   * 效果图. It is not made the one in use, so the prompt on the page is not given the artist string twice. The editor opens
-   * on it, to move the line between 画师串 and 固定正面 if the guess was off.
+   * Words kept as a new 画风 in one tap: the whole prompt as the artist string (the person splits it by hand), the
+   * negative, the model / steps / CFG / sampler, and a picture as its 效果图 when there is one. It is not made the one in
+   * use, so the prompt on the page is not given the artist string twice. The editor opens on it.
    */
-  async function styleFromPicture(file, found, {clean = false, actual = false} = {}) {
-    const words = actual && found.actual ? found.actual : found, tidy = text => clean ? cleanBrackets(text) : String(text || '');
-    const artist = tidy(words.prompt), positive = '';
+  async function styleFromWords({prompt, negative = '', params, blob = null}) {
+    if (!String(prompt || '').trim()) throw Error('提示词是空的，没什么可存');
     const taken = new Set(state().styles.map(s => s.name));
-    let name = styleNameOf(artist), n = 1;
+    let name = styleNameOf(prompt), n = 1;
     for (const base = name; taken.has(name); ) name = `${base.slice(0, 36)} ${++n}`;
-    const created = api.saveStyle({name, artist, positive, negative: tidy(words.negative), params: found.params});
+    const created = api.saveStyle({name, artist: String(prompt).trim(), positive: '', negative: String(negative || '').trim(), params});
     let cover = true;
-    try { await api.setStyleCover(created.id, file); } catch { cover = false; }
+    if (blob) { try { await api.setStyleCover(created.id, blob); } catch { cover = false; } }
     render();
     ctx.notify(`已存成画风「${created.name}」${cover ? '' : '（效果图没存上）'}。整段提示词都放在画师串里，可以在这里自己拆`);
     editStyle(state().styles.find(s => s.id === created.id) || created);
   }
+  /** 读图 → 画风: what a NovelAI picture was drawn with; the picture is its 效果图. */
+  function styleFromPicture(file, found, {clean = false, actual = false} = {}) {
+    const words = actual && found.actual ? found.actual : found, tidy = text => clean ? cleanBrackets(text) : String(text || '');
+    return styleFromWords({prompt: tidy(words.prompt), negative: tidy(words.negative), params: found.params, blob: file});
+  }
 
-  return {pickStyle, editStyle, styleFromPicture};
+  return {pickStyle, editStyle, styleFromPicture, styleFromWords};
 }
 
 /**
