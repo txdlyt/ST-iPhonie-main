@@ -39,9 +39,11 @@ const viewerCode = () => viewerLoad ||= import('./image-viewer.js').catch(error 
 export function createPictureHost({context, redrawMessage = (id, message) => context().updateMessageBlock?.(id, message), settings, backend, marker, scheduleRender, openDraw, notice, voice = null, phone = null, speakers = () => [], voiced: lined = () => {}, outfitChanged = () => {}}) {
   const jobs = new Map(); // queue key -> {state: 'generating'|'error', message}
   const folds = new Map(); // `${id}:${hash}` -> true/false, this session's fold choice per picture
-  // The latest single tap on a picture: {key, id, message, tag, was, at, rect, timer, done}. It folds or unfolds the
-  // picture after DOUBLE_TAP unless a second tap comes first. A slower second tap lands where the picture was before
-  // it changed size, so one inside the old spot within SLOW_TAP still counts: the fold is put back and the viewer opens.
+  const bars = new Set(); // `${id}:${hash}` of the pictures whose button bar (收起 / 重画) is showing; a tap outside the picture hides it
+  // The latest single tap on a picture: {key, id, message, tag, was: {folded, bar}, at, rect, timer, done}. It unfolds a
+  // folded picture, or shows the button bar of an open one, after DOUBLE_TAP unless a second tap comes first. A slower
+  // second tap lands where the picture was before it changed size, so one inside the old spot within SLOW_TAP still
+  // counts: the fold and the bar are put back and the viewer opens.
   let first = null;
   const DOUBLE_TAP = 400, SLOW_TAP = 800;
 
@@ -541,22 +543,22 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   const paidButtons = new WeakMap();
   function fill(el, id, message, tag) {
     const record = stored(message, tag.hash), pic = shown(message, tag.hash), key = jobKey(id, tag), job = jobs.get(key);
-    const s = settings(), folded = folds.get(id + ':' + tag.hash) ?? s.draw.fold;
+    const s = settings(), folded = folds.get(id + ':' + tag.hash) ?? s.draw.fold, bar = bars.has(id + ':' + tag.hash);
     const state = job?.state || (pic ? 'done' : record?.removed ? 'removed' : 'idle');
     const waiting = state === 'generating' ? queueText(key) : '';
     const quote = state === 'idle' && s.draw.auto && backend.drawReady() ? backend.drawQuote?.(pictureInputs(s,tag,message.mes).params) : null;
     const reason = state === 'idle' ? (!s.draw.enabled ? '正文出图没有开启' : !backend.drawReady() ? backend.drawMissing() : !s.draw.auto ? '自动出图已关闭' : s.draw.engine === 'gpt' ? 'GPT 生图每张都要花钱' : quote?.free === false || quote?.paid ? '这张图预计会扣点' : quote?.free === null ? '当前连接无法确认免费额度' : '这张图没有自动生成') : '';
     const paidSource = state === 'idle' && s.draw.enabled && s.draw.auto && backend.drawReady() &&
       (s.draw.engine === 'gpt' || quote?.free === false || quote?.free === null) ? storyDrawSource(s.draw) : '';
-    const signature = JSON.stringify([paidSource, state, pic?.url, pic?.count, folded, waiting, job?.message, reason]);
+    const signature = JSON.stringify([paidSource, state, pic?.url, pic?.count, folded, bar, waiting, job?.message, reason]);
     if (el.dataset.stttsRendered === signature) return;
     el.dataset.stttsRendered = signature;
     el.dataset.state = state;
     el.toggleAttribute('data-folded', state === 'done' && folded);
     if (state === 'done' && folded) {
-      el.innerHTML = `<button type="button" class="sttts-pic-fold" data-sttts-pic-action="tap" aria-label="展开图片，双击放大查看"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</button>`;
+      el.innerHTML = `<button type="button" class="sttts-pic-fold" data-sttts-pic-action="tap" aria-label="展开图片，双击放大查看"><span class="sttts-pic-fold-chip"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</span></button>`;
     } else if (state === 'done') {
-      el.innerHTML = frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下收起，双击放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button>`);
+      el.innerHTML = frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，双击放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button>${bar ? '<span class="sttts-pic-top"><button type="button" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-top-right"><button type="button" data-sttts-pic-action="redo">重画</button></span></span>' : ''}`);
     } else if (state === 'removed') {
       el.innerHTML = `<span class="sttts-pic-removed">图片已删除<button type="button" data-sttts-pic-action="draw">重新生成</button></span>`;
     } else if (state === 'generating') {
@@ -595,6 +597,13 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   /** Handles clicks inside picture blocks. Returns true when the click was ours. */
   function click(event) {
     if (lateSecondTap(event)) return true;
+    // The button bar goes away only when the tap is outside the picture it belongs to.
+    if (bars.size) {
+      const inside = event.target?.closest?.('[data-sttts-pic]'), mine = inside && inside.dataset.stttsToken === marker ? Number(inside.closest('.mes[mesid]')?.getAttribute('mesid')) + ':' + inside.dataset.stttsHash : null;
+      let hidden = false;
+      for (const key of [...bars]) if (key !== mine) { bars.delete(key); hidden = true; }
+      if (hidden) scheduleRender();
+    }
     const button = event.target.closest('[data-sttts-pic-action]');
     const box = button?.closest('[data-sttts-pic]');
     if (!box || box.dataset.stttsToken !== marker) return false;
@@ -616,17 +625,20 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       return;
     }
     if (first && !first.done) { clearTimeout(first.timer); toggle(first); }
-    const t = first = {key, id, message, tag, was: folds.get(key) ?? settings().draw.fold, at: Date.now(), rect: source.getBoundingClientRect?.(), done: false};
+    const t = first = {key, id, message, tag, was: {folded: folds.get(key) ?? settings().draw.fold, bar: bars.has(key)}, at: Date.now(), rect: source.getBoundingClientRect?.(), done: false};
     t.timer = setTimeout(() => toggle(t), DOUBLE_TAP);
   }
-  function toggle(t) { t.done = true; act(t.was ? 'unfold' : 'fold', t.id, t.message, t.tag); }
+  function toggle(t) { t.done = true; act(t.was.folded ? 'unfold' : 'bar', t.id, t.message, t.tag); }
   /** A second tap that came after the picture already folded or unfolded, on the spot where it was tapped first. */
   function lateSecondTap(event) {
     const t = first, r = t?.rect, x = event.clientX, y = event.clientY;
+    // The bar's buttons sit on the picture: a tap on one of them is that button's, never a slow second tap.
+    if (event.target?.closest?.('[data-sttts-pic-action]:not([data-sttts-pic-action="tap"])')) return false;
     if (!t?.done || Date.now() - t.at > SLOW_TAP || !r?.width || !(x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)) return false;
     first = null;
     event.preventDefault();
-    folds.set(t.key, t.was);
+    folds.set(t.key, t.was.folded);
+    if (t.was.bar) bars.add(t.key); else bars.delete(t.key);
     scheduleRender();
     act('zoom', t.id, t.message, t.tag);
     return true;
@@ -634,6 +646,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   function act(action, id, message, tag, source = null) {
     const pic = shown(message, tag.hash);
     if (action === 'draw' || action === 'redo') {
+      bars.delete(id + ':' + tag.hash);
       const paidSource = paidButtons.get(source);
       if (paidSource && paidSource === storyDrawSource(settings().draw)) {
         const swipe = message.swipe_id;
@@ -644,7 +657,8 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     }
     if (action === 'cancel') backend.drawQueue?.cancel?.(jobKey(id, tag));
     if (action === 'open') openDraw({...pictureInputs(settings(), tag, message.mes), tag: tag.prompt, seed: pic?.seed});
-    if (action === 'fold' || action === 'unfold') { folds.set(id + ':' + tag.hash, action === 'fold'); scheduleRender(); }
+    if (action === 'fold' || action === 'unfold') { const key = id + ':' + tag.hash; folds.set(key, action === 'fold'); if (action === 'unfold') bars.add(key); else bars.delete(key); scheduleRender(); }
+    if (action === 'bar') { bars.add(id + ':' + tag.hash); scheduleRender(); }
     if ((action === 'prev' || action === 'next') && pic) {
       keep(message, tag.hash, versionsOf(stored(message, tag.hash)), pic.index + (action === 'next' ? 1 : -1));
       saveSoon();

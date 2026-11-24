@@ -2788,11 +2788,11 @@ async function runJob(url, body, startText, firstLine, onFail) {
   try {
     const r = await call(url, { method: 'POST', body: JSON.stringify(body || {}) });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) {
+    if (r.ok && j.ok !== false) {
       ok = true; const m = j.message || '完成';
       setLive(m, 100, 'ok');
       if (j.warn) say(m); else say('✓ ' + m, 'ok');
-    } else { const m = (j.message || '失败') + '（' + r.status + '）'; setLive('✕ ' + m, lastPct, 'err'); say(m, 'bad'); failed = m; }
+    } else { const m = (j.message || '失败') + '（' + (j.status || r.status) + '）'; setLive('✕ ' + m, lastPct, 'err'); say(m, 'bad'); failed = m; }
   } catch (e) { setLive('✕ 失败：' + e.message, lastPct, 'err'); say('失败：' + e.message, 'bad'); failed = e.message; }
   finally { clearInterval(timer); busy = false; setActs(false); stopping = false; $('stopText').textContent = '停止'; }
   if (failed && onFail) onFail(failed);
@@ -3099,8 +3099,13 @@ async function whoAmI(page, waitMs = 15000) {
   const until = Date.now() + waitMs;
   while (!apiReady() && Date.now() < until) await sleep(500);
   if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500); }
-  const me = await apiCall(page, 'GET', '/v2/user/me').catch(() => null);
-  return { user: me && me.status === 200 && me.json?.id ? me.json : null, status: me ? me.status : 0 };
+  // 等了还没抄到请求头：和出图一样，改从页面存的令牌 / refresh-token 取（以前这里没有这一步，换账号就直接「无响应」）
+  if (!apiReady()) await refreshTokenNow(page).catch(() => false);
+  let failure = '';
+  const me = await apiCall(page, 'GET', '/v2/user/me').catch(error => { failure = error?.message || String(error); return null; });
+  if (me && me.status === 0) failure = me.text || '请求没有回应';
+  const user = me && me.status === 200 && me.json?.id ? me.json : null;
+  return { user, status: me ? me.status : 0, note: user ? '' : [failure, authNote].filter(Boolean).join('；') };
 }
 // 把「当前账号」此刻的登录状态重新存一遍档。PixAI 的刷新令牌用一次就换新的，存档不跟着更新，下次载入的就是失效的旧令牌。
 // 只在确认网页上登录着的就是这个账号时才覆盖，免得拿登出的状态把好存档冲掉。
@@ -3450,7 +3455,7 @@ async function switchToSaved(email) {
   if (!who.user && (who.status === 0 || who.status >= 500)) { await sleep(2500); who = await whoAmI(gp, 3000); }
   const acc = findAcc(email);
   if (!who.user) {
-    if (who.status === 0 || who.status >= 500) throw new Error(`没能确认登录状态（读用户信息失败 ${who.status || '无响应'}），点「刷新」或稍后再试`);
+    if (who.status === 0 || who.status >= 500) throw new Error(`没能确认登录状态（读用户信息失败 ${who.status || '无响应'}${who.note ? '；原因：' + who.note : ''}），点「刷新」或稍后再试`);
     if (acc) { acc.expired = true; persist(); }
     throw new Error('存档里的登录已经失效：页面打开了，但没有登上。请用密码登录一次，之后程序会自动保持存档最新');
   }
@@ -3465,6 +3470,23 @@ app.post('/admin/switch', async (req, res) => {
   if (!acc.savedAt) return res.status(400).json({ message: '这个账号还没存档，请用密码登录一次' });
   if (!req.body?.force && sameEmail(accounts.current, acc.email)) return res.json({ ok: true, message: '已经是这个账号' }); // force：「重登」，当前账号也照样把存档重新载一遍
   if (isGenerating()) return res.status(409).json({ message: '反代正在出图，画完再换账号（卡住了就点「重试」）' });
+  // 换账号要一分钟左右，中间环节（nginx / Cloudflare 等）在「一直没数据」时会切断连接并报 504，而后台其实还在继续、最后切成功了。
+  // 和出图一样：超过 keepAliveStartMs 还没结果，先发响应头，再周期性写空格保活；结果用 JSON 写在最后，失败时带 ok:false 和 status。
+  let started = false, beatTimer = null;
+  const startTimer = setTimeout(() => {
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    res.status(200);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    started = true;
+    res.write(' ');
+    beatTimer = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write(' '); }, CONFIG.keepAliveMs);
+  }, CONFIG.keepAliveStartMs);
+  const stopBeat = () => { clearTimeout(startTimer); clearInterval(beatTimer); };
+  res.on('close', stopBeat);
+  const reply = (code, payload) => { stopBeat(); if (started) { if (!res.writableEnded && !res.destroyed) res.end(JSON.stringify({ ...payload, status: code })); } else res.status(code).json(payload); };
   const job = settingLock.then(() => switchToSaved(acc.email));
   settingLock = holdLock(job);
   try {
@@ -3474,11 +3496,11 @@ app.post('/admin/switch', async (req, res) => {
     persist();
     stage('已切换并回到生图页', 100, 'ok');
     console.log('已切换到存档账号');
-    res.json({ ok: true, message: '已切换到 ' + acc.email });
+    reply(200, { ok: true, message: '已切换到 ' + acc.email });
   } catch (error) {
     stage('切换失败', loginProgress.pct, 'err');
     console.error('切换账号失败：', error.message);
-    res.status(502).json({ ok: false, message: error.message });
+    reply(502, { ok: false, message: error.message });
   }
 });
 
