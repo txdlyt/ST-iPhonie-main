@@ -143,7 +143,7 @@ export function drawApp(ctx) {
     /** NovelAI's prompt boxes show what is special in the words. */
     const box = html => e === 'nai' ? markedBox(html) : html;
     if (tab === 'prompt') body = `
-      ${randomText && e === 'nai' ? randomCard() : ''}<div class="group pad">${field('这张图的提示词', box(textArea('prompt', prompt, 'rows="4" placeholder="英文 tag，逗号分隔，例如 2girls, rainy day, cafe window, sharing an umbrella"')), e === 'gpt' ? '会和画风的固定正面、每个角色的外貌一起整理成一段英文描述发给 GPT。画师串、权重括号和负面不会发给 GPT。' : e === 'comfy' ? '实际发送：画师串 + 固定正面 + 这里的提示词，后面接上每个角色的外貌；NovelAI 的权重写法会自动换成 ComfyUI 的。' : '实际发送：画师串 + 固定正面 + 这里的提示词。\n\n打字时会联想 tag；打 @ 选片段。\n||红发|蓝发|| 每张随机选一个。\n1.2::tag:: 加重，-1::tag:: 去掉。\n结尾写 Text: 文字，图里就画上这段字（V4 以后）；V5 里引号中的话也会画成字。\n没有用「角色」时，也可以用 | 分开场景和每个人（V4 以后）。')}
+      ${randomText && e === 'nai' ? randomCard() : ''}<div class="group pad">${(f => e === 'nai' ? f.replace('<div class="field"><span>', '<div class="field"><span>' + btn('save-prompt-style', icon('paint') + '存入画风', 'chip-button', 'style="margin-left:auto;order:9"')) : f)(field('这张图的提示词', box(textArea('prompt', prompt, 'rows="4" placeholder="英文 tag，逗号分隔，例如 2girls, rainy day, cafe window, sharing an umbrella"')), e === 'gpt' ? '会和画风的固定正面、每个角色的外貌一起整理成一段英文描述发给 GPT。画师串、权重括号和负面不会发给 GPT。' : e === 'comfy' ? '实际发送：画师串 + 固定正面 + 这里的提示词，后面接上每个角色的外貌；NovelAI 的权重写法会自动换成 ComfyUI 的。' : '实际发送：画师串 + 固定正面 + 这里的提示词。\n\n打字时会联想 tag；打 @ 选片段。\n||红发|蓝发|| 每张随机选一个。\n1.2::tag:: 加重，-1::tag:: 去掉。\n结尾写 Text: 文字，图里就画上这段字（V4 以后）；V5 里引号中的话也会画成字。\n没有用「角色」时，也可以用 | 分开场景和每个人（V4 以后）。'))}
         <div class="token-meter" data-token-meter="positive" hidden></div>
         <div class="field idea-field"><span>想画什么${help('用中文说一句就行，比如「下雨天两个人在便利店门口共撑一把伞」，也可以写很多要求（框会跟着变高），点「帮我写」，模型会补成完整的英文提示词填到上面（会换掉上面原来的）。可以直接写人名：作品里的角色模型会写成它认得的 tag；角色 App 里登记了外貌的人，模型只写名字，插件会把他们加进「角色」并带上外貌。用 NovelAI 时会按 token 上限尽量写满。')}</span>${textArea('idea', idea, 'class="idea-box" rows="2" maxlength="1000" placeholder="例如：下雨天两个人共撑一把伞。可以写很多要求：动作、表情、衣服、天气、镜头……"')}<div class="actions" style="margin:6px 0 0">${btn('write-prompt', icon('wand') + '帮我写', 'secondary')}${btn('suggest', icon('book') + '从剧情生成', 'secondary')}${e === 'nai' ? btn('open-chunks', icon('layers') + '片段', 'secondary') + btn('random-prompt', icon('dice') + '随机', 'secondary') : ''}</div></div>
 </div>
@@ -827,6 +827,13 @@ export function drawApp(ctx) {
     const index = Number(el.dataset.index);
     switch (el.dataset.action) {
       case 'tab': tab = el.dataset.tab; await render(); break;
+      case 'save-prompt-style': {
+        try {
+          const blob = results[current] ? await shownBlob().catch(() => null) : null;
+          await styleFromWords({prompt, negative, params: state().params, blob});
+        } catch (error) { ctx.notify(error.message, {error: true}); }
+        break;
+      }
       case 'draw-engine': api.saveDraw({engine: el.dataset.pick}); if (el.dataset.pick === 'pixai') { pixaiInfo = undefined; pixaiLast = null; if (state().pixai.mode === 'api') count = state().pixai.api.count; } render(); refreshSubscription(); refreshPixai(); break;
       case 'pixai-mode': { const mode = el.dataset.value; if (mode === state().pixai.mode) break; api.saveDraw({pixai: {mode}}); if (mode === 'api') count = state().pixai.api.count; else { pixaiInfo = undefined; pixaiLast = null; } render(); refreshPixai(); break; }
       case 'pixai-api-source': api.saveDraw({pixai: {api: {source: el.dataset.value}}}); render(); break;
@@ -1369,7 +1376,7 @@ export function drawApp(ctx) {
   }
 
   // 画风: ui/draw-styles.js.
-  const {pickStyle, styleFromPicture} = styleSheets({ctx, state, styleId, style, render, shownPicture: () => results[current] ? shownBlob() : null, afterPaid: () => refreshSubscription(true)});
+  const {pickStyle, styleFromPicture, styleFromWords} = styleSheets({ctx, state, styleId, style, render, shownPicture: () => results[current] ? shownBlob() : null, afterPaid: () => refreshSubscription(true)});
   watchCovers(v.root);
 
   readHearts();
