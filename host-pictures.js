@@ -556,9 +556,10 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     el.dataset.state = state;
     el.toggleAttribute('data-folded', state === 'done' && folded);
     if (state === 'done' && folded) {
-      el.innerHTML = `<button type="button" class="sttts-pic-fold" data-sttts-pic-action="tap" aria-label="展开图片，双击放大查看"><span class="sttts-pic-fold-chip"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</span></button>`;
+      // The native 砂糖生图 card, folded: only its bar, with the 展开 button.
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="true"><span class="sttts-pic-ctl"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="unfold" aria-label="展开图片${pic.count > 1 ? `（${pic.count} 个版本）` : ''}">展开</button></span></span>`;
     } else if (state === 'done') {
-      el.innerHTML = frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，双击放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button>${bar ? '<span class="sttts-pic-top"><button type="button" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-top-right"><button type="button" data-sttts-pic-action="redo">重画</button></span></span>' : ''}`);
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? '<span class="sttts-pic-ctl sttts-pic-ctl-on"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-grp"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="gen">生成图片</button><button type="button" class="sttts-pic-btn" data-sttts-pic-action="redo">刷新重绘</button></span></span>' : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，双击放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
     } else if (state === 'removed') {
       el.innerHTML = `<span class="sttts-pic-removed">图片已删除<button type="button" data-sttts-pic-action="draw">重新生成</button></span>`;
     } else if (state === 'generating') {
