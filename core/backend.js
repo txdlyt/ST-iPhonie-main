@@ -63,7 +63,7 @@ import { DialoguePlayer } from './player.js';
 import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS } from './library.js';
 import { makeThumb, makePreview, packPicture } from './thumbnail.js';
 import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js';
-import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
+import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, referenceTitle, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
 import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
 import { setChatMoments } from './chat.js';
@@ -1988,7 +1988,7 @@ export class TTSBackend {
         const engine = this.settings.draw.engine;
         if (!this.drawReady()) return Promise.reject(Error(this.drawMissing()));
         // 底图 (图生图 / 局部重绘) and 角色参考 are NovelAI's: the drawing app sends them only when NovelAI draws.
-        const extra = engine === 'nai' ? { base: !!base?.image, mask: !!base?.mask, refs: (refs || []).filter(r => r?.image).length, ...(base?.image ? { size: { width: base.width, height: base.height } } : {}) } : {};
+        const extra = engine === 'nai' ? { base: !!base?.image, mask: !!(base?.image && base?.mask), refs, ...(base?.image ? { size: { width: base.width, height: base.height } } : {}) } : {};
         // GPT's 参考图 (up to 16, known by their order): the pictures and what the user wrote each one is.
         const gptRefs = engine === 'gpt' ? (refs || []).filter(r => typeof r?.image === 'string' && r.image).slice(0, GPT_MAX_REFS).map(r => ({ image: r.image, type: /^image\/(png|jpeg|webp)$/.test(r.type) ? r.type : 'image/png', label: String(r.label || '').slice(0, 80) })) : [];
         const quote = this.drawQuote(params, extra);
@@ -2082,9 +2082,9 @@ export class TTSBackend {
             this.assertOpen();
             if (preparePhoto) blob = await preparePhoto(blob);
             this.assertOpen();
-            const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, { negative, characters });
+            const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, request.actual);
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
-            if (request.refs) info.push(['角色参考', `${request.refs} 张`]);
+            if (request.refs) info.push([referenceTitle(request.params.model), `${request.refs} 张`]);
             const photo = temporary ? null : await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + (blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '.png'), blob, info, card: this.cardKey(), cardName: this.space.name });
             this.ledger.image('nai');
             this.#hostAuto(photo, blob);
@@ -2096,7 +2096,7 @@ export class TTSBackend {
             this.emit('draw', { phase: 'done' });
             // Paid images change the Anlas balance and V5 images use up the allowance: read the subscription again next time.
             if (this.subscription && (quote.free === false || isV5(request.params.model))) this.subscription.checkedAt = 0;
-            return { photoId: photo?.id || '', seed: request.seed, params: request.params, prompt: request.body.input, engine: 'nai', blob, info };
+            return { photoId: photo?.id || '', seed: request.seed, params: request.params, prompt: request.body.input, actual: request.actual, engine: 'nai', blob, info };
         } });
         job.catch(error => { this.emit('draw', { phase: error.cancelled ? 'cancelled' : 'error', message: error.message }); });
         return job;
@@ -3670,23 +3670,31 @@ export class TTSBackend {
         await this.appsMutate('wardrobe', () => this.apps.put([{id, kind:'wardrobe-story', enabled, at:now, updatedAt:now}]));
         return enabled;
     }
-    async editWardrobeCategory({old = '', name = '', remove = false, deleteItems = false, expectedCount} = {}) {
+    async editWardrobeCategory({old = '', name = '', remove = false, deleteItems = false, expectedCount, order} = {}) {
         const before = categoryName(old), after = categoryName(name);
-        if ((!remove && !after) || (remove && !before)) throw Error('请填写有效的分类名称');
+        const sorting = Array.isArray(order);
+        if (!sorting && (remove ? !before : !after)) throw Error('请填写有效的分类名称');
         let gone = [];
         await this.appsMutate('wardrobe', () => this.apps.transformKinds(['wardrobe-item','wardrobe-categories'], rows => {
             const items = rows.filter(row => row.kind === 'wardrobe-item'), saved = rows.find(row => row.id === CATEGORY_DOC);
             const names = wardrobeCategories(items, saved?.names);
+            const now = Date.now();
+            const categoryDoc = names => ({id:CATEGORY_DOC, kind:'wardrobe-categories', names, at:saved?.at || now, updatedAt:now});
+            if (sorting) {
+                const requested = new Set(order);
+                if (order.length !== names.length || requested.size !== names.length || names.some(name => !requested.has(name))) {
+                    throw Error('分类已变化，请重新打开管理分类');
+                }
+                return [categoryDoc(order), ...items];
+            }
             if (before && !names.includes(before)) throw Error('这个分类已不存在');
             if (!remove && before !== after && names.includes(after)) throw Error('已有同名分类');
             if (remove && after && (!names.includes(after) || before === after)) throw Error('请选择其他分类');
             const affected = before ? items.filter(item => item.category === before) : [];
             if (deleteItems && (!remove || affected.length !== expectedCount)) throw Error('分类下的衣物已变化，请重新确认');
             gone = deleteItems ? affected : [];
-            const next = names.filter(value => value !== before);
-            if (!remove && after) next.push(after);
-            const now = Date.now();
-            return [{id:CATEGORY_DOC, kind:'wardrobe-categories', names:next, at:saved?.at || now, updatedAt:now},
+            const next = remove ? names.filter(value => value !== before) : before ? names.map(value => value === before ? after : value) : [...names, after];
+            return [categoryDoc(next),
                 ...items.filter(row => !gone.includes(row)).map(row => before && row.category === before ? {...row, category:after, updatedAt:now} : row)];
         }));
         if (gone.length) this.noteGone('wardrobe', gone.map(row => row.id), Math.max(...gone.map(row => row.updatedAt || 0)));

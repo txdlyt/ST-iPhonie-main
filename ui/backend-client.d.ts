@@ -344,10 +344,10 @@ export interface DrawInput { prompt: string; negative?: string; characters?: Dra
     batch?: { run: string; index: number; size: number };
     /** Preview before keeping: returns the blob and an empty photoId, without writing to the album. */
     temporary?: boolean;
-    /** NovelAI V4.5: 角色参考 (fitted pictures). */
-    refs?: Array<{ image: string; kind: 'character' | 'style' | 'both'; strength: number; fidelity: number }>; }
+    /** NovelAI 角色参考 / 精准参考 (fitted pictures). */
+    refs?: Array<{ image: string; kind: 'character' | 'style' | 'both' | 'outfit'; strength: number; fidelity?: number; sameOutfit?: boolean }>; }
 /** seed is -1 for GPT (it takes none); params are what the engine used (GPT has no steps). */
-export interface DrawResult { blob: Blob; info: Array<[string, string | number]>; photoId: string; seed: number; params: DrawParams; prompt: string; engine: DrawEngine; }
+export interface DrawResult { blob: Blob; info: Array<[string, string | number]>; photoId: string; seed: number; params: DrawParams; prompt: string; engine: DrawEngine; actual?: Pick<DrawInput, 'prompt' | 'negative' | 'characters'>; }
 export interface SettingsSnapshot { state: Settings; revision: number; }
 
 /** 聊天预设: how phone contacts reply, how much they see, and how a chat is brought into the story. */
@@ -1297,7 +1297,7 @@ export interface BackendFacade {
     exportWardrobePack(ids?: string[]): Promise<Blob>;
     previewWardrobePack(file: Blob): Promise<WardrobePackPreview>;
     importWardrobePack(file: Blob, options?: {overwrite?: boolean; expected?: WardrobePackPreview}): Promise<{added:number; replaced:number}>;
-    editWardrobeCategory(options: {old?:string; name?:string; remove?:boolean; deleteItems?:boolean; expectedCount?:number}): Promise<string[]>;
+    editWardrobeCategory(options: {old?:string; name?:string; remove?:boolean; deleteItems?:boolean; expectedCount?:number; order?:string[]}): Promise<string[]>;
     setWardrobeCandidate(owner: string, id: string, on: boolean): Promise<void>;
     saveWardrobeItem(item: Partial<WardrobeItem> & { owner: string }): Promise<WardrobeItem>;
     saveWardrobeSet(set: Partial<WardrobeSet> & ({id: string} | {owner: string; description: string})): Promise<WardrobeSet>;
