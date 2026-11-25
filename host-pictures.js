@@ -534,6 +534,9 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   }
 
   function frame(inner) { return `<span class="sttts-pic-frame">${inner}</span>`; }
+  // The button bar of an open picture. Showing or hiding it only adds or removes this element: the <img> is not made again,
+  // so the picture does not blink (a new <img> is blank until the browser has decoded the whole file again).
+  const BAR_HTML = '<span class="sttts-pic-ctl sttts-pic-ctl-on"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-grp"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="gen">生成图片</button><button type="button" class="sttts-pic-btn" data-sttts-pic-action="redo">刷新重绘</button></span></span>';
   const paidButtons = new WeakMap();
   function fill(el, id, message, tag) {
     const record = stored(message, tag.hash), pic = shown(message, tag.hash), key = jobKey(id, tag), job = jobs.get(key);
@@ -549,11 +552,23 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     el.dataset.stttsRendered = signature;
     el.dataset.state = state;
     el.toggleAttribute('data-folded', state === 'done' && folded);
+    const open = state === 'done' && !folded, shownImg = open ? el.querySelector('.sttts-pic-card[data-collapsed="false"] .sttts-pic-zoom img') : null;
+    if (open && shownImg && el.stttsOpen === pic.url + '|' + pic.count) {
+      // Same picture, still open: only the bar changed.
+      const card = el.querySelector('.sttts-pic-card'), ctl = card.querySelector(':scope > .sttts-pic-ctl');
+      if (bar && !ctl) card.insertAdjacentHTML('afterbegin', BAR_HTML); else if (!bar && ctl) ctl.remove();
+      return;
+    }
+    el.stttsOpen = '';
     if (state === 'done' && folded) {
       // The 砂糖生图 card, folded: only its bar, with one button that says what it is (the plugin's own words).
       el.innerHTML = `<span class="sttts-pic-card" data-collapsed="true"><span class="sttts-pic-ctl"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="unfold" aria-label="展开图片"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</button></span></span>`;
     } else if (state === 'done') {
-      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? '<span class="sttts-pic-ctl sttts-pic-ctl-on"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-grp"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="gen">生成图片</button><button type="button" class="sttts-pic-btn" data-sttts-pic-action="redo">刷新重绘</button></span></span>' : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? BAR_HTML : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
+      // Folding and opening again brings back the same <img> (already decoded) instead of a new one.
+      const fresh = el.querySelector('.sttts-pic-zoom img'), kept = el.stttsImg;
+      if (kept && kept.getAttribute('src') === pic.url && kept.complete && kept.naturalWidth) fresh.replaceWith(kept); else el.stttsImg = fresh;
+      el.stttsOpen = pic.url + '|' + pic.count;
     } else if (state === 'removed') {
       el.innerHTML = `<span class="sttts-pic-removed">图片已删除<button type="button" data-sttts-pic-action="draw">重新生成</button></span>`;
     } else if (state === 'generating') {
