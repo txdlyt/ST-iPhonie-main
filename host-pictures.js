@@ -40,12 +40,6 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   const jobs = new Map(); // queue key -> {state: 'generating'|'error', message}
   const folds = new Map(); // `${id}:${hash}` -> true/false, this session's fold choice per picture
   const bars = new Set(); // `${id}:${hash}` of the pictures whose button bar (收起 / 重画) is showing; a tap outside the picture hides it
-  // The latest single tap on a picture: {key, id, message, tag, was: {folded, bar}, at, rect, timer, done}. It unfolds a
-  // folded picture, or shows the button bar of an open one, after DOUBLE_TAP unless a second tap comes first. A slower
-  // second tap lands where the picture was before it changed size, so one inside the old spot within SLOW_TAP still
-  // counts: the fold and the bar are put back and the viewer opens.
-  let first = null;
-  const DOUBLE_TAP = 400, SLOW_TAP = 800;
 
   const stored = (message, hash) => message?.extra?.sttts_pics?.[hash] || null;
   /** The version on screen, with its position: {…version, index, count}; null when there is none. */
@@ -556,16 +550,16 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     el.dataset.state = state;
     el.toggleAttribute('data-folded', state === 'done' && folded);
     if (state === 'done' && folded) {
-      // The native 砂糖生图 card, folded: only its bar, with the 展开 button.
-      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="true"><span class="sttts-pic-ctl"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="unfold" aria-label="展开图片${pic.count > 1 ? `（${pic.count} 个版本）` : ''}">展开</button></span></span>`;
+      // The 砂糖生图 card, folded: only its bar, with one button that says what it is (the plugin's own words).
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="true"><span class="sttts-pic-ctl"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="unfold" aria-label="展开图片"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</button></span></span>`;
     } else if (state === 'done') {
-      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? '<span class="sttts-pic-ctl sttts-pic-ctl-on"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-grp"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="gen">生成图片</button><button type="button" class="sttts-pic-btn" data-sttts-pic-action="redo">刷新重绘</button></span></span>' : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，双击放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? '<span class="sttts-pic-ctl sttts-pic-ctl-on"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="fold">收起</button><span class="sttts-pic-grp"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="gen">生成图片</button><button type="button" class="sttts-pic-btn" data-sttts-pic-action="redo">刷新重绘</button></span></span>' : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
     } else if (state === 'removed') {
       el.innerHTML = `<span class="sttts-pic-removed">图片已删除<button type="button" data-sttts-pic-action="draw">重新生成</button></span>`;
     } else if (state === 'generating') {
       // Redrawing keeps the current picture on screen with a small note over it.
       el.innerHTML = pic
-        ? frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下收起，双击放大查看"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button><span class="sttts-pic-note">${esc(waiting)}<button type="button" data-sttts-pic-action="cancel">取消</button></span>`)
+        ? frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button><span class="sttts-pic-note">${esc(waiting)}<button type="button" data-sttts-pic-action="cancel">取消</button></span>`)
         : frame(`<span class="sttts-pic-wait">${esc(waiting)}<br><button type="button" data-sttts-pic-action="cancel">取消</button></span>`);
     } else if (state === 'error') {
       const again = backend.pixaiRecoverable?.(key) && settings().draw.engine === 'pixai';
@@ -597,7 +591,6 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
 
   /** Handles clicks inside picture blocks. Returns true when the click was ours. */
   function click(event) {
-    if (lateSecondTap(event)) return true;
     // The button bar goes away only when the tap is outside the picture it belongs to.
     if (bars.size) {
       const inside = event.target?.closest?.('[data-sttts-pic]'), mine = inside && inside.dataset.stttsToken === marker ? Number(inside.closest('.mes[mesid]')?.getAttribute('mesid')) + ':' + inside.dataset.stttsHash : null;
@@ -616,33 +609,10 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     else act(button.dataset.stttsPicAction, id, message, tag, button);
     return true;
   }
-  /** One tap folds or unfolds; a second tap within DOUBLE_TAP opens the viewer instead. */
+  /** A tap on a picture shows its button bar at once; a tap while the bar is showing opens the viewer. There is no double tap to wait for. */
   function tap(id, message, tag, source) {
-    const key = id + ':' + tag.hash;
-    if (first && !first.done && first.key === key) {
-      clearTimeout(first.timer);
-      first = null;
-      act('zoom', id, message, tag, source.closest('[data-sttts-pic]')?.querySelector('img') ? source : null);
-      return;
-    }
-    if (first && !first.done) { clearTimeout(first.timer); toggle(first); }
-    const t = first = {key, id, message, tag, was: {folded: folds.get(key) ?? settings().draw.fold, bar: bars.has(key)}, at: Date.now(), rect: source.getBoundingClientRect?.(), done: false};
-    t.timer = setTimeout(() => toggle(t), DOUBLE_TAP);
-  }
-  function toggle(t) { t.done = true; act(t.was.folded ? 'unfold' : 'bar', t.id, t.message, t.tag); }
-  /** A second tap that came after the picture already folded or unfolded, on the spot where it was tapped first. */
-  function lateSecondTap(event) {
-    const t = first, r = t?.rect, x = event.clientX, y = event.clientY;
-    // The bar's buttons sit on the picture: a tap on one of them is that button's, never a slow second tap.
-    if (event.target?.closest?.('[data-sttts-pic-action]:not([data-sttts-pic-action="tap"])')) return false;
-    if (!t?.done || Date.now() - t.at > SLOW_TAP || !r?.width || !(x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)) return false;
-    first = null;
-    event.preventDefault();
-    folds.set(t.key, t.was.folded);
-    if (t.was.bar) bars.add(t.key); else bars.delete(t.key);
-    scheduleRender();
-    act('zoom', t.id, t.message, t.tag);
-    return true;
+    if (bars.has(id + ':' + tag.hash)) act('zoom', id, message, tag, source.closest('[data-sttts-pic]')?.querySelector('img') ? source : null);
+    else act('bar', id, message, tag);
   }
   function act(action, id, message, tag, source = null) {
     const pic = shown(message, tag.hash);

@@ -84,17 +84,24 @@
 #chat .sttts-pic-removed{display:inline-flex;align-items:center;gap:8px;font-size:.8em;color:color-mix(in srgb,var(--sttts-body) 60%,transparent)}
 #chat .sttts-pic-removed button{font:inherit;color:var(--sttts-quote);background:transparent;border:0;padding:2px 4px;cursor:pointer;min-height:24px}
 #chat [data-sttts-pic][data-state="generating"] .sttts-pic-removed{margin-bottom:6px}
-/* 砂糖生图的卡片，数值照它的 inline.css 原样：毛玻璃卡片，顶部一条栏（收起 / 生成图片 / 刷新重绘），收起时只剩栏和「展开」。 */
+/* 砂糖生图的卡片结构：展开时按钮栏盖在图的顶上，三个带边框的小框（收起 / 生成图片 / 刷新重绘）；收起时只剩一条。字和底沿用插件原来的：主题的粉色字、米色底。 */
 #chat [data-sttts-pic][data-folded]{width:min(100%,560px);margin:10px 0 14px}
-#chat .sttts-pic-card{position:relative;display:flex;flex-direction:column;width:100%;box-sizing:border-box;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.18)}
-#chat .sttts-pic-ctl{position:absolute;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;box-sizing:border-box;background:rgba(0,0,0,0.25)}
+#chat .sttts-pic-card{position:relative;display:flex;flex-direction:column;width:100%;box-sizing:border-box;border-radius:12px;overflow:hidden;border:1px solid color-mix(in srgb,var(--sttts-body) 16%,transparent)}
+#chat .sttts-pic-ctl{position:absolute;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;box-sizing:border-box;background:color-mix(in srgb,color-mix(in srgb,var(--sttts-body) 7%,#faf3ea) 85%,transparent);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #chat .sttts-pic-ctl-on{animation:sttts-ctl-in .2s ease both}
 @keyframes sttts-ctl-in{from{opacity:0}to{opacity:1}}
 #chat .sttts-pic-grp{display:flex;gap:6px}
-#chat .sttts-pic-btn{padding:3px 10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);border-radius:6px;font:inherit;font-size:12px;line-height:1.4;cursor:pointer;color:rgba(255,255,255,0.7);-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;touch-action:manipulation}
-#chat .sttts-pic-btn:hover{background:rgba(255,255,255,0.22);color:rgba(255,255,255,0.95)}
+#chat .sttts-pic-btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;background:color-mix(in srgb,var(--sttts-body) 7%,transparent);border:1px solid color-mix(in srgb,var(--sttts-body) 22%,transparent);border-radius:6px;font:inherit;font-size:12px;line-height:1.4;cursor:pointer;color:var(--sttts-quote);-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;touch-action:manipulation}
+#chat .sttts-pic-btn:hover{background:color-mix(in srgb,var(--sttts-body) 14%,transparent)}
+/* 收起：一条，不叠图 */
+#chat .sttts-pic-card[data-collapsed="true"]{background:color-mix(in srgb,var(--sttts-body) 7%,transparent)}
+#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-ctl{position:static;padding:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-btn{flex:1;justify-content:flex-start;width:100%;padding:8px 12px;background:none;border:0;border-radius:0}
+#chat .sttts-pic-fold-mark{font-size:.8em;opacity:.8}
 #chat .sttts-pic-body{position:relative;display:block;width:100%;box-sizing:border-box;overflow:hidden}
-#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-ctl{position:static}
+#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-ctl{position:static;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-ctl{padding:0}
+#chat .sttts-pic-card[data-collapsed="true"] .sttts-pic-btn{flex:1;justify-content:flex-start;width:100%;padding:8px 12px;background:none;border:0;border-radius:0}
 /* manipulation: phones must not take the second tap of a double tap for page zoom. */
 #chat .sttts-pic-zoom{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
 #chat .sttts-pic-pager{display:inline-flex;align-items:center;gap:2px;font-variant-numeric:tabular-nums;color:var(--sttts-quote)}
