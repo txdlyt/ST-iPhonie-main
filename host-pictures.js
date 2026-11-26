@@ -1,5 +1,6 @@
 import {storyDrawSource} from './core/draw.js';
 import {replacePicture,storyPickerContext} from './ui/replace-picture.js';
+import {makePreview} from './core/thumbnail.js';
 import {replyBody, replyRevision} from './core/reply-revision.js';
 import {storyScope, mapStory, cleanBody, cleanSkip, NARRATION_BODY, NARRATION_SKIP} from './core/story-scope.js';
 // In-chat pictures: fills the placeholders left by <img>…</img> tags, generates them with NovelAI,
@@ -102,6 +103,40 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const response = await fetch('/api/images/delete', {method: 'POST', headers: context().getRequestHeaders(), body: JSON.stringify({path: url})});
     if (!response.ok && response.status !== 404) throw Error('没能从酒馆删除图片文件（' + response.status + '）');
   }
+  /** A version's preview file goes with it; a preview that cannot be deleted is no reason to keep the version. */
+  const removePreview = version => version?.preview ? removeFile(version.preview).catch(() => {}) : Promise.resolve();
+  /** The 720px preview of a picture, uploaded beside it as `<stamp>-v`: what the chat shows, so the full picture is only
+   *  downloaded when it is opened. '' when the picture itself would do, or the preview could not be made or uploaded. */
+  async function uploadPreview(blob, stamp, folder) {
+    try {
+      const made = await makePreview(blob);
+      return made && !made.same && made.blob ? await upload(made.blob, stamp + '-v', folder) : '';
+    } catch { return ''; }
+  }
+  // Pictures made before previews existed get theirs the first time they are on screen: one at a time, once per session.
+  const previewTried = new Set();
+  let previewChain = Promise.resolve();
+  function backfillPreview(id, message, tag, img) {
+    const url = shown(message, tag.hash)?.url, found = /user\/images\/([^/]+)\/(st-iphonie-\d+)\.[a-z0-9]+$/i.exec(String(url || ''));
+    if (!found || previewTried.has(url)) return;
+    previewTried.add(url);
+    const run = () => { previewChain = previewChain.then(async () => {
+      try {
+        const version = versionsOf(stored(message, tag.hash)).find(v => v.url === url);
+        if (!version || version.preview) return;
+        // The picture was just downloaded to be shown: the browser's own copy answers (nothing is fetched twice).
+        const response = await fetch(url, {cache: 'force-cache'});
+        if (!response.ok) return;
+        const preview = await uploadPreview(await response.blob(), found[2], decodeURIComponent(found[1]));
+        if (!preview) return;
+        const now = versionsOf(stored(context().chat?.[id] === message ? message : null, tag.hash)).find(v => v.url === url);
+        if (!now) { await removeFile(preview).catch(() => {}); return; } // the chat or the picture changed meanwhile
+        now.preview = preview;
+        saveSoon();
+      } catch { /* the full picture keeps being shown */ }
+    }); };
+    if (img?.complete && img.naturalWidth) run(); else img?.addEventListener('load', run, {once: true});
+  }
 
   /** Asks before spending Anlas (or paying for a GPT picture). Returns 'free', 'paid' or false (declined, or no key). params: the picture's, when they are its own; who: the other plugin asking. */
   async function allowed(interactive, params, who = '') {
@@ -159,12 +194,12 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     try {
       const inputs = pictureInputs(settings(), tag, message.mes);
       const result = await backend.generateImage({...inputs, allowPaid: permission === 'paid', valid, name: 'chat', key, label: '正文图片 · ' + tag.prompt.slice(0, 24)});
-      const url = await upload(result.blob, 'st-iphonie-' + Date.now());
+      const stamp = 'st-iphonie-' + Date.now(), url = await upload(result.blob, stamp), preview = await uploadPreview(result.blob, stamp);
       // Only store the picture when the same message is still there with this tag.
       const now = context().chat[id];
       if (now === message && now.swipe_id === swipe && parsePictures(now.mes).some(t => t.hash === tag.hash)) {
         const list = versionsOf(stored(now, tag.hash));
-        list.push({url, photoId: result.photoId, seed: result.seed, width: result.params.width, height: result.params.height, model: result.params.model, steps: result.params.steps, style: result.style, prompt: tag.prompt, characters: inputs.names, at: Date.now()});
+        list.push({url, photoId: result.photoId, seed: result.seed, width: result.params.width, height: result.params.height, model: result.params.model, steps: result.params.steps, style: result.style, ...(preview ? {preview} : {}), prompt: tag.prompt, characters: inputs.names, at: Date.now()});
         keep(now, tag.hash, list, list.length - 1);
         await context().saveChat();
         if (settings().general.hideStoryWaves) redrawMessage(id, now);
@@ -564,17 +599,18 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       // The 砂糖生图 card, folded: only its bar, with one button that says what it is (the plugin's own words).
       el.innerHTML = `<span class="sttts-pic-card" data-collapsed="true"><span class="sttts-pic-ctl"><button type="button" class="sttts-pic-btn" data-sttts-pic-action="unfold" aria-label="展开图片"><span class="sttts-pic-fold-mark" aria-hidden="true">▸</span>图片已收起${pic.count > 1 ? ` · ${pic.count} 个版本` : ''} · 点一下展开</button></span></span>`;
     } else if (state === 'done') {
-      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? BAR_HTML : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
+      el.innerHTML = `<span class="sttts-pic-card" data-collapsed="false">${bar ? BAR_HTML : ''}<span class="sttts-pic-body"><button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看${pic.count > 1 ? `（${pic.count} 个版本）` : ''}、参数和操作"><img src="${esc(pic.preview || pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button></span></span>`;
       // Folding and opening again brings back the same <img> (already decoded) instead of a new one.
       const fresh = el.querySelector('.sttts-pic-zoom img'), kept = el.stttsImg;
-      if (kept && kept.getAttribute('src') === pic.url && kept.complete && kept.naturalWidth) fresh.replaceWith(kept); else el.stttsImg = fresh;
+      if (kept && kept.getAttribute('src') === (pic.preview || pic.url) && kept.complete && kept.naturalWidth) fresh.replaceWith(kept); else el.stttsImg = fresh;
       el.stttsOpen = pic.url + '|' + pic.count;
+      if (!pic.preview) backfillPreview(id, message, tag, el.querySelector('.sttts-pic-zoom img'));
     } else if (state === 'removed') {
       el.innerHTML = `<span class="sttts-pic-removed">图片已删除<button type="button" data-sttts-pic-action="draw">重新生成</button></span>`;
     } else if (state === 'generating') {
       // Redrawing keeps the current picture on screen with a small note over it.
       el.innerHTML = pic
-        ? frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看"><img src="${esc(pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button><span class="sttts-pic-note">${esc(waiting)}<button type="button" data-sttts-pic-action="cancel">取消</button></span>`)
+        ? frame(`<button type="button" class="sttts-pic-zoom" data-sttts-pic-action="tap" aria-label="点一下显示按钮，再点一下放大查看"><img src="${esc(pic.preview || pic.url)}" alt="${esc(tag.prompt)}" loading="lazy"></button><span class="sttts-pic-note">${esc(waiting)}<button type="button" data-sttts-pic-action="cancel">取消</button></span>`)
         : frame(`<span class="sttts-pic-wait">${esc(waiting)}<br><button type="button" data-sttts-pic-action="cancel">取消</button></span>`);
     } else if (state === 'error') {
       const again = backend.pixaiRecoverable?.(key) && settings().draw.engine === 'pixai';
@@ -668,12 +704,13 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
           {label:'替换图片',run:()=>replacePicture(storyPickerContext(document,notice),backend.api(),()=>viewer.close(),async photoId=>{
             const photo=await backend.library.getPhoto(photoId);
             if(!photo?.blob) throw Error('图片已不存在');
-            const url=await upload(photo.blob,'st-iphonie-'+Date.now());
+            const stamp='st-iphonie-'+Date.now(),url=await upload(photo.blob,stamp),preview=await uploadPreview(photo.blob,stamp);
             if(context().chat[id]!==message || message.swipe_id!==swipe || !parsePictures(message.mes).some(t=>t.hash===tag.hash)) {
               await removeFile(url).catch(()=>{});
+              if(preview) await removeFile(preview).catch(()=>{});
               throw Error('正文已变化，请重新打开插图');
             }
-            const versions=[...versionsOf(stored(message,tag.hash)),{url,photoId,at:Date.now(),prompt:tag.prompt}];
+            const versions=[...versionsOf(stored(message,tag.hash)),{url,...(preview?{preview}:{}),photoId,at:Date.now(),prompt:tag.prompt}];
             const previous=stored(message,tag.hash);
             keep(message,tag.hash,versions,versions.length-1);
             const changed=stored(message,tag.hash);
@@ -802,6 +839,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
     const others = pic ? pic.count - 1 : 0;
     if (!pic || !globalThis.confirm(`删除这张图？图片文件也会从酒馆删除。${others ? `这个标签还有 ${others} 个别的版本。` : '之后可以点“重新生成”再画。'}`)) return false;
     await removeFile(pic.url);
+    await removePreview(pic);
     const list = versionsOf(stored(message, tag.hash)).filter((_, i) => i !== pic.index);
     keep(message, tag.hash, list, pic.index - 1);
     await context().saveChat();
@@ -822,7 +860,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const pics = m?.extra?.sttts_pics;
       if (!pics) continue;
       for (const record of Object.values(pics)) for (const version of versionsOf(record)) {
-        try { await removeFile(version.url); count++; } catch { failed++; }
+        try { await removeFile(version.url); await removePreview(version); count++; } catch { failed++; }
       }
       delete m.extra.sttts_pics;
     }
@@ -880,12 +918,12 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const inputs=pictureInputs(settings(),tag,raw);
       const result=await backend.generateImage({...inputs,allowPaid:permission==='paid',name:'chat',key:'selection:'+snap.id+':'+end,label:'选段生图 · '+text.slice(0,24)});
       if(!valid()){notice('正文已变化，生成的图片已保留在相册，没有插入旧位置');return;}
-      const url=await upload(result.blob,'st-iphonie-'+Date.now());
+      const stamp='st-iphonie-'+Date.now(),url=await upload(result.blob,stamp),preview=await uploadPreview(result.blob,stamp);
       if(!valid()){notice('正文已变化，生成的图片已保留在相册，没有插入旧位置');return;}
       const previous=structuredClone(message.extra?.sttts_pics||{}),pics={...previous};
       for(const t of old)delete pics[t.hash];
       for(const t of old){const next=tags.find(n=>n.start===t.start+(t.start>=end?addition.length:0));if(next && previous[t.hash])pics[next.hash]=previous[t.hash];}
-      pics[tag.hash]={versions:[{url,photoId:result.photoId,seed:result.seed,width:result.params.width,height:result.params.height,model:result.params.model,style:result.style,prompt:tag.prompt,characters:inputs.names,at:Date.now()}],index:0};
+      pics[tag.hash]={versions:[{url,...(preview?{preview}:{}),photoId:result.photoId,seed:result.seed,width:result.params.width,height:result.params.height,model:result.params.model,style:result.style,prompt:tag.prompt,characters:inputs.names,at:Date.now()}],index:0};
       message.mes=raw;message.extra??={};message.extra.sttts_pics=pics;
       if(Array.isArray(message.swipes))message.swipes[message.swipe_id??0]=raw;
       try{await context().saveChat();}catch(error){
