@@ -64,7 +64,7 @@ import { LocalLibrary, PHONE_APPS, PHONE_WALLPAPERS, PHONE_GLYPHS, PHONE_SKINS }
 import { makeThumb, makePreview, packPicture } from './thumbnail.js';
 import { PixaiClient, pixaiRequest, normalizeBatch, exactSize } from './pixai.js';
 import { NovelAIClient, normalizeDrawParams, relayUrl, FISH_PATHS, NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SCHEDULES, buildImageRequest, ucPresets, qualityPresets, upscaleBody, isV5, referenceTitle, augmentBody, upscaleBy, UPSCALE_MAX, DIRECTOR_TOOLS } from './novelai.js';
-import { PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
+import { activeStyle, PIC_TAG_FORMAT, DEFAULT_DRAW_RULE, DRAW_COUNT_MAX, drawCast, defaultDraw, baibaiDrawPreset, normalizeVibeSettings, applyImageConnection, tavernPicture } from './draw.js';
 import { normalizeBubbleSet, normalizeBubbleSets, normalizeBubbleOf, BUBBLE_LIMITS } from './bubble-css.js';
 import { setChatMoments } from './chat.js';
 import { normalizeStickers, defaultChat, normalizeChatPreset, normalizeContact, validateChatPreset, validateContact, chatContacts, inSpace, activeSpace, validChatSave, roleInSpace, buildChatRequest, activeChatPreset, normalizeVoiceText, normalizeProfile , normalizeAvatars, normalizeNames, normalizeProactive, normalizeRoleStickers, normalizeBgOf, normalizeStatusOf, normalizePeeked, normalizeQuickReactions } from './chat.js';
@@ -1960,9 +1960,9 @@ export class TTSBackend {
         return { blob, seed, params: { model: c.model || '工作流', width: p.width, height: p.height, steps: c.steps, scale: c.scale, sampler: c.sampler }, prompt: text.prompt };
     }
     /** How a picture was drawn, as the viewer's 参数 rows (kept with the album photo). */
-    pictureInfo(engine, { params = {}, seed, prompt }, { negative = '', characters = [] } = {}) {
+    pictureInfo(engine, { params = {}, seed, prompt }, { negative = '', characters = [], style = '' } = {}) {
         return [
-            ['引擎', DRAW_ENGINE_NAMES[engine] || engine], ['模型', NAI_MODEL_NAMES[params.model] || params.model],
+            ['引擎', DRAW_ENGINE_NAMES[engine] || engine], ['画风', style], ['模型', NAI_MODEL_NAMES[params.model] || params.model],
             ['尺寸', params.width && params.height ? `${params.width} × ${params.height}` : ''], ['步数', params.steps], ['CFG', params.scale], ['Rescale', params.cfgRescale || ''], ['采样器', params.sampler],
             ...(params.effort === 'medium' ? [['努力程度', '中']] : []), ...(params.quality && params.quality !== 'none' ? [['质量标签', qualityPresets(params.model).find(q => q.id === params.quality)?.name]] : []), ...(params.ucPreset && params.ucPreset !== 'none' ? [['负面预设', ucPresets(params.model).find(u => u.id === params.ucPreset)?.name]] : []),
             ['种子', seed >= 0 ? seed : ''], ['画于', new Date().toLocaleString('zh-CN', { hour12: false })],
@@ -1987,6 +1987,8 @@ export class TTSBackend {
         if (!String(prompt || '').trim()) return Promise.reject(Error('请先写提示词'));
         const engine = this.settings.draw.engine;
         if (!this.drawReady()) return Promise.reject(Error(this.drawMissing()));
+        // The 画风 in use when the picture is asked for (shown in its 参数); PixAI draws from a 记录, not a 画风.
+        const styleName = engine === 'pixai' ? '' : String(activeStyle(this.settings.draw)?.name || '');
         // 底图 (图生图 / 局部重绘) and 角色参考 are NovelAI's: the drawing app sends them only when NovelAI draws.
         const extra = engine === 'nai' ? { base: !!base?.image, mask: !!(base?.image && base?.mask), refs, ...(base?.image ? { size: { width: base.width, height: base.height } } : {}) } : {};
         // GPT's 参考图 (up to 16, known by their order): the pictures and what the user wrote each one is.
@@ -2037,7 +2039,7 @@ export class TTSBackend {
                 if (preparePhoto) made.blob = await preparePhoto(made.blob);
                 this.assertOpen();
                 const ext = made.blob.type === 'image/jpeg' ? 'jpg' : made.blob.type === 'image/webp' ? 'webp' : 'png';
-                const info = this.pictureInfo(engine, made, picture);
+                const info = this.pictureInfo(engine, made, { ...picture, style: styleName });
                 if (made.dropped) info.push(['参考图', '没带：中转不支持改图接口（/images/edits）']);
                 else if (made.refs) info.push(['参考图', made.faces?.length ? made.faces.join('、') : `${made.refs} 张`]);
                 const photo = temporary ? null : await this.library.addPhoto({ name: (name || DRAW_ENGINE_NAMES[engine]) + '-' + (made.seed >= 0 ? made.seed : Date.now()) + '.' + ext, blob: made.blob, info, card: this.cardKey(), cardName: this.space.name });
@@ -2048,7 +2050,7 @@ export class TTSBackend {
                     this.emit('library', { collection: 'photos' });
                 }
                 this.emit('draw', { phase: 'done' });
-                return { photoId: photo?.id || '', seed: made.seed, params: made.params, prompt: made.prompt, engine, blob: made.blob, info };
+                return { photoId: photo?.id || '', seed: made.seed, params: made.params, prompt: made.prompt, style: styleName, engine, blob: made.blob, info };
             } });
             job.catch(error => { this.emit('draw', { phase: error.cancelled ? 'cancelled' : 'error', message: error.message }); });
             return job;
@@ -2082,7 +2084,7 @@ export class TTSBackend {
             this.assertOpen();
             if (preparePhoto) blob = await preparePhoto(blob);
             this.assertOpen();
-            const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, request.actual);
+            const info = this.pictureInfo('nai', { params: request.params, seed: request.seed, prompt: request.body.input }, { ...request.actual, style: styleName });
             if (request.body.action !== 'generate') info.push(['方式', request.body.action === 'infill' ? `局部重绘 · 强度 ${request.body.parameters.strength}` : `图生图 · 强度 ${request.body.parameters.strength} · 噪声 ${request.body.parameters.noise}`]);
             if (request.refs) info.push([referenceTitle(request.params.model), `${request.refs} 张`]);
             const photo = temporary ? null : await this.library.addPhoto({ name: (name || 'NovelAI') + '-' + request.seed + (blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '.png'), blob, info, card: this.cardKey(), cardName: this.space.name });
@@ -2096,7 +2098,7 @@ export class TTSBackend {
             this.emit('draw', { phase: 'done' });
             // Paid images change the Anlas balance and V5 images use up the allowance: read the subscription again next time.
             if (this.subscription && (quote.free === false || isV5(request.params.model))) this.subscription.checkedAt = 0;
-            return { photoId: photo?.id || '', seed: request.seed, params: request.params, prompt: request.body.input, actual: request.actual, engine: 'nai', blob, info };
+            return { photoId: photo?.id || '', seed: request.seed, params: request.params, prompt: request.body.input, actual: request.actual, style: styleName, engine: 'nai', blob, info };
         } });
         job.catch(error => { this.emit('draw', { phase: error.cancelled ? 'cancelled' : 'error', message: error.message }); });
         return job;

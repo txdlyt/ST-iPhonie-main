@@ -164,7 +164,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const now = context().chat[id];
       if (now === message && now.swipe_id === swipe && parsePictures(now.mes).some(t => t.hash === tag.hash)) {
         const list = versionsOf(stored(now, tag.hash));
-        list.push({url, photoId: result.photoId, seed: result.seed, width: result.params.width, height: result.params.height, model: result.params.model, steps: result.params.steps, prompt: tag.prompt, characters: inputs.names, at: Date.now()});
+        list.push({url, photoId: result.photoId, seed: result.seed, width: result.params.width, height: result.params.height, model: result.params.model, steps: result.params.steps, style: result.style, prompt: tag.prompt, characters: inputs.names, at: Date.now()});
         keep(now, tag.hash, list, list.length - 1);
         await context().saveChat();
         if (settings().general.hideStoryWaves) redrawMessage(id, now);
@@ -691,6 +691,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
   /** The 参数 panel of the viewer for one version. */
   function pictureInfo(v, tag) {
     return [
+      ['画风', v.style || ''],
       ['模型', NAI_MODEL_NAMES?.[v.model] || v.model],
       ['尺寸', v.width && v.height ? `${v.width} × ${v.height}` : ''],
       ['步数', v.steps],
@@ -884,7 +885,7 @@ export function createPictureHost({context, redrawMessage = (id, message) => con
       const previous=structuredClone(message.extra?.sttts_pics||{}),pics={...previous};
       for(const t of old)delete pics[t.hash];
       for(const t of old){const next=tags.find(n=>n.start===t.start+(t.start>=end?addition.length:0));if(next && previous[t.hash])pics[next.hash]=previous[t.hash];}
-      pics[tag.hash]={versions:[{url,photoId:result.photoId,seed:result.seed,width:result.params.width,height:result.params.height,model:result.params.model,prompt:tag.prompt,characters:inputs.names,at:Date.now()}],index:0};
+      pics[tag.hash]={versions:[{url,photoId:result.photoId,seed:result.seed,width:result.params.width,height:result.params.height,model:result.params.model,style:result.style,prompt:tag.prompt,characters:inputs.names,at:Date.now()}],index:0};
       message.mes=raw;message.extra??={};message.extra.sttts_pics=pics;
       if(Array.isArray(message.swipes))message.swipes[message.swipe_id??0]=raw;
       try{await context().saveChat();}catch(error){
