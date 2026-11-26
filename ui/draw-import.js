@@ -2,6 +2,7 @@
 // (as its own app lets you); whatever the picture, it can also go on as a base, a vibe or a reference.
 import {esc, btn, help} from './common.js';
 import {icon} from './icons.js';
+import {NAI_MODEL_NAMES} from '../core/novelai.js';
 
 /** 去掉权重括号, as NovelAI's app does it. */
 export const cleanBrackets = text => String(text).replace(/[[\]{}]/g, '').replace(/,(?=[^ ])/g, ', ').replace(/ ,/g, ',');
@@ -53,7 +54,7 @@ export function pictureSheet({ctx, file, found, carried = false, locks = [], tak
         ${row('prompt', '提示词', choice.prompt, locked('prompt'))}${row('negative', '负面', choice.negative, locked('negative'))}
         ${people ? row('characters', `角色 · ${people} 个`, choice.characters, locked('characters')) + (choice.characters && !locked('characters') ? how('addCharacters', String(choice.addCharacters), [['false', '替换现在的'], ['true', '加在后面']]) : '') : ''}
         ${vibeCount ? row('vibes', `Vibe · ${vibeCount} 个`, choice.vibes, locked('vibes')) + (choice.vibes && !locked('vibes') ? how('addVibes', String(choice.addVibes), [['false', '用这些'], ['true', '加进在用的组']]) : '') : ''}
-        ${row('settings', '参数', choice.settings, false, '模型、尺寸、步数、Scale、采样器…')}
+        ${row('settings', '参数', choice.settings, false, found.params?.model ? (NAI_MODEL_NAMES[found.params.model] || found.params.model) : '没读出模型')}
         ${Number.isInteger(found.params?.seed) ? row('seed', `种子 · ${found.params.seed}`, choice.seed, locked('seed')) : ''}
       </div>
       <div class="group">
