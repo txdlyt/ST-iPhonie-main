@@ -10,6 +10,7 @@ import {openBook} from '../core/bookshelf.js';
 import {pictureInputs, sizeFor} from '../core/draw.js';
 import {comicRequest, parseComic, panelRects, pageTags, pageCharacters, COMIC_NEGATIVE, COMIC_PAGES, clampPages} from '../core/comic.js';
 import {composePage} from '../core/comic-canvas.js';
+import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, normalizeComic, comicTags, canvasOptions} from '../core/comic-settings.js';
 import {bookRange, rangeMarkup, pickBookRange, readBookSource, bookForm, BOOK_SOURCES, BOOK_TEXT_LIMIT} from './book-setup.js';
 
 const KEY = 'stiphonie.comic.drafts';
@@ -21,6 +22,7 @@ export function comicApp(ctx) {
   let view = 'shelf', drafts = load(), form = null, draft = null, job = null;
   function load() { try { const list = JSON.parse(ctx.win.localStorage.getItem(KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
   function save() { try { ctx.win.localStorage.setItem(KEY, JSON.stringify(drafts.slice(0, 30))); } catch { ctx.notify('这台设备存不下漫画草稿了', {error: true}); } }
+  const cfg = () => normalizeComic(api.getState().comic);
   const infoOf = () => { try { return api.bookInfo?.() || null; } catch { return null; } };
   const rowsOf = info => { try { return api.bookMessages?.() || []; } catch { return []; } };
   const routes = () => api.readState?.().routes || api.getState().routes;
@@ -34,18 +36,18 @@ export function comicApp(ctx) {
   async function pageUrl(d, i) {
     const p = d.pages[i];
     if (!p.photo) return '';
-    const key = d.id + ':' + i + ':' + p.photo;
+    const key = d.id + ':' + i + ':' + p.photo + ':' + JSON.stringify(canvasOptions(cfg()));
     if (urls.has(key)) return urls.get(key);
     const photo = await api.getPhoto(p.photo).catch(() => null);
     if (!photo?.blob) return '';
-    const url = ctx.win.URL.createObjectURL(await composePage(photo.blob, p, {doc: ctx.doc}));
+    const url = ctx.win.URL.createObjectURL(await composePage(photo.blob, p, {doc: ctx.doc, ...canvasOptions(cfg())}));
     urls.set(key, url);
     return url;
   }
   async function pageBlob(d, i) {
     const photo = await api.getPhoto(d.pages[i].photo);
     if (!photo?.blob) throw Error('第 ' + (i + 1) + ' 页的图不在相册里了');
-    return composePage(photo.blob, d.pages[i], {doc: ctx.doc});
+    return composePage(photo.blob, d.pages[i], {doc: ctx.doc, ...canvasOptions(cfg())});
   }
 
   // ---------- the shelf ----------
@@ -55,8 +57,26 @@ export function comicApp(ctx) {
       const n = d.pages.length, m = drawn(d);
       return `<button type="button" class="bk-card cm-card" data-cm-open="${esc(d.id)}" aria-label="${esc(d.title)}"><span class="bk-mini cm-cover"><b>${esc(d.title)}</b><i>${m}/${n} 页</i></span><span class="bk-badge">${d.shelved ? '已放进书架 · ' : ''}${n} 页${m < n ? ` · 差 ${n - m} 页没画` : ''}</span></button>`;
     };
-    v.draw(heading('漫画', help('把酒馆里的故事做成漫画：文字模型先写分镜（每页几格、每格画什么、说什么），页面先在这里排出来；再用绘图 App 一页页画（自动画，或自己一页页点），对白由插件叠在图上。画完的漫画放进书架里读。\n做好的部分随时存着：中途停下，之后在漫画里接着画。草稿存在这台设备的浏览器里；图存在相册里。') + (drafts.length ? btn('cm-new', icon('add') + '做一本', 'chip-button') : ''), 'Comic')
+    v.draw(heading('漫画', help('把酒馆里的故事做成漫画：文字模型先写分镜（每页几格、每格画什么、说什么），页面先在这里排出来；再用绘图 App 一页页画（自动画，或自己一页页点），对白由插件叠在图上。画完的漫画放进书架里读。\n做好的部分随时存着：中途停下，之后在漫画里接着画。草稿存在这台设备的浏览器里；图存在相册里。') + btn('cm-settings', icon('settings') + '设置', 'chip-button') + (drafts.length ? btn('cm-new', icon('add') + '做一本', 'chip-button') : ''), 'Comic')
       + `<div class="bk-shelf">${drafts.length ? drafts.map(card).join('') : btn('cm-new', icon('add') + '<span>做一本漫画</span>', 'bk-new')}</div>`);
+  }
+
+  // ---------- 设置 ----------
+  function settings() {
+    view = 'settings'; draft = null; form = null;
+    const c = cfg();
+    const seg = (key, list, now = c[key], wrap = '') => `<div class="segmented${wrap}">${list.map(([k, l]) => `<button type="button" data-cm-cfg="${key}" data-value="${k}" aria-pressed="${String(now) === String(k)}">${l}</button>`).join('')}</div>`;
+    const styleNote = COMIC_STYLES.find(([k]) => k === c.style)?.[2] || '';
+    v.draw(heading('漫画设置', '', 'Comic')
+      + `<div class="group pad bk-setup">
+        <div class="field"><span>色彩${help('黑白：分镜里不写颜色，画图时加 monochrome、greyscale、screentone，并排除 color。')}</span>${seg('color', COMIC_COLORS)}</div>
+        <div class="field"><span>分镜风格${help('影响文字模型怎么写分镜（每页几格、景别、节奏）。版式仍是插件固定的排法，斜切格、宽屏格画不出来。单图单格、上下两格会固定每页的格数。')}</span>${seg('style', COMIC_STYLES.map(([k, l]) => [k, l]), c.style, ' cm-wrap')}${styleNote ? `<small>${esc(styleNote)}</small>` : ''}</div>
+        <div class="field"><span>对白语言${help('文字模型写分镜时，台词用这个语言。')}</span>${seg('lang', COMIC_LANGS)}</div>
+        <div class="field"><span>对白字号</span>${seg('textSize', COMIC_TEXT_SIZES)}</div>
+        <div class="field"><span>对白叠字${help('关掉：只出画面，不在图上叠对白（已画好的页也会不显示字）。')}</span>${seg('textHide', [[false, '显示'], [true, '隐藏']])}</div>
+        <div class="field"><span>气泡形状</span>${seg('bubble', COMIC_BUBBLES)}</div>
+        <div class="field"><span>页面留白${help('写进分镜要求和画图标签里，绘图模型会不会照做取决于模型。不指定：什么都不加。')}</span>${seg('gutter', COMIC_GUTTERS)}</div></div>
+        <div class="actions"><button type="button" class="secondary" data-action="cm-shelf">返回</button></div>`);
   }
 
   // ---------- 做一本 ----------
@@ -99,10 +119,10 @@ export function comicApp(ctx) {
     job = {stop: false}; view = 'board';
     v.draw(heading('正在写分镜', '', 'Storyboard') + `<div class="bk-progress"><b>文字模型在写分镜…</b><div class="bk-bar"><i style="width:35%"></i></div><small>写好后页面会先排出来，再画图。这一步没有进度条，要等文字模型写完。</small></div><div class="actions"><button type="button" class="secondary" data-action="cm-stop">取消</button></div>`);
     try {
-      const request = comicRequest({story, names: roleNames(), pages: count});
+      const request = comicRequest({story, names: roleNames(), pages: count, comic: cfg()});
       const reply = await api.bookWrite(request[0].content, request[1].content, {length: 3500});
       if (job.stop || v.disposed) return;
-      const comic = parseComic(reply, {maxPages: count || undefined});
+      const comic = parseComic(reply, {maxPages: count || undefined, comic: cfg()});
       draft = {id: 'c-' + Date.now().toString(36), title: title || comic.title || '漫画', at: Date.now(), how, pages: comic.pages};
       drafts.unshift(draft); save();
       job = null;
@@ -140,9 +160,9 @@ export function comicApp(ctx) {
   /** One page drawn by the 绘图 App (people with their looks, 画风 as in the 绘图 App, a tall picture). */
   async function drawPage(d, i) {
     const p = d.pages[i], names = pageCharacters(p);
-    const inputs = pictureInputs(api.getState(), {prompt: pageTags(p), characters: names}, '');
+    const inputs = pictureInputs(api.getState(), {prompt: pageTags(p, cfg()), characters: names}, '');
     inputs.params = {...inputs.params, ...sizeFor(inputs.params, '竖')};
-    inputs.negative = [inputs.negative, COMIC_NEGATIVE].filter(Boolean).join(', ');
+    inputs.negative = [inputs.negative, COMIC_NEGATIVE, comicTags(cfg()).negative].filter(Boolean).join(', ');
     const {names: _n, ...request} = inputs;
     const result = await api.generateImage({...request, allowPaid: true, name: '漫画-' + safe(d), key: `comic:${d.id}:${i}:${Date.now()}`, label: `漫画 · ${d.title} · 第 ${i + 1} 页`});
     p.photo = result.photoId;
@@ -183,6 +203,8 @@ export function comicApp(ctx) {
   // ---------- events ----------
   v.on('click', '[data-action=cm-new]', () => { newForm(); make(); });
   v.on('click', '[data-action=cm-shelf]', () => shelf());
+  v.on('click', '[data-action=cm-settings]', () => settings());
+  v.on('click', '[data-cm-cfg]', el => { try { api.saveComic({[el.dataset.cmCfg]: el.dataset.cmCfg === 'textHide' ? el.dataset.value === 'true' : el.dataset.value}); } catch (e) { ctx.notify(e.message, {error: true}); } settings(); });
   v.on('click', '[data-action=cm-range]', pickRange);
   v.on('click', '[data-action=cm-start]', start);
   v.on('click', '[data-action=cm-stop]', () => { if (job) { job.stop = true; job.queue = []; } if (view === 'board') { job = null; make(); } ctx.notify('画完这一页就停'); });

@@ -5,6 +5,7 @@ import {writeZip} from './core/model-files.js';
 import {openBook} from './core/bookshelf.js';
 import {comicRequest, parseComic, pageTags, pageCharacters, COMIC_NEGATIVE, clampPages} from './core/comic.js';
 import {composePage} from './core/comic-canvas.js';
+import {normalizeComic, comicTags, canvasOptions} from './core/comic-settings.js';
 
 /** drawFor: host-pictures.js drawFor (a picture drawn like one in the story). notice(text): a line shown to the person. */
 export function createComicHost({context, settings, backend, drawFor, notice, doc = globalThis.document}) {
@@ -28,18 +29,18 @@ export function createComicHost({context, settings, backend, drawFor, notice, do
     if (!backend.drawReady()) throw Error(backend.drawMissing() || '绘图引擎还没设好');
     running.add(message);
     try {
-      const names = [...new Set([...(settings().routes || []).map(r => r?.name), ctx.name1, ctx.name2].filter(Boolean))], count = Number(pages) > 0 ? clampPages(pages) : 0; // 0: the model decides
+      const set = normalizeComic(settings().comic), names = [...new Set([...(settings().routes || []).map(r => r?.name), ctx.name1, ctx.name2].filter(Boolean))], count = Number(pages) > 0 ? clampPages(pages) : 0; // 0: the model decides
       notice('漫画：正在写分镜…');
-      const reply = await backend.generateText(ctx, {use: 'picture', prompt: comicRequest({story, names, pages: count}), plainText: true, trimNames: false, responseLength: 3500});
-      const comic = parseComic(reply, {maxPages: count || undefined}), made = [];
+      const reply = await backend.generateText(ctx, {use: 'picture', prompt: comicRequest({story, names, pages: count, comic: set}), plainText: true, trimNames: false, responseLength: 3500});
+      const comic = parseComic(reply, {maxPages: count || undefined, comic: set}), made = [];
       let failure = null;
       for (let i = 0; i < comic.pages.length; i++) {
         try {
           if (context()?.chat?.[id] !== message) throw Error('聊天已切换');
           notice(`漫画：正在画第 ${i + 1}/${comic.pages.length} 页…`);
           const page = comic.pages[i];
-          const drawn = await drawFor({prompt: pageTags(page), negative: COMIC_NEGATIVE, characters: pageCharacters(page), size: '竖', from: '漫画'});
-          made.push(await composePage(drawn.blob, page, {doc}));
+          const drawn = await drawFor({prompt: pageTags(page, set), negative: [COMIC_NEGATIVE, comicTags(set).negative].filter(Boolean).join(', '), characters: pageCharacters(page), size: '竖', from: '漫画'});
+          made.push(await composePage(drawn.blob, page, {doc, ...canvasOptions(set)}));
         } catch (error) { failure = {page: i + 1, error}; break; }
       }
       if (!made.length) throw failure.error;

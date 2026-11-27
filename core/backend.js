@@ -26,6 +26,7 @@ import { normalizePool } from './auto-voice.js';
 import { normalizeSounds, soundRow, readPack, missingKey, soundName, packRows, parseLinkLines, PACK_FORMAT, SOUND_LIMITS, SOUND_KINDS, normalizeSfx, SFX_MODELS, SFX_FORMATS, SFX_LIMITS } from './sounds.js';
 import { normalizeHost, uploadImage, testHost, hostReady, hostLinks } from './image-host.js';
 import { normalizeTagger, reachableFromHttps } from './tagger.js';
+import { normalizeComic } from './comic-settings.js';
 import { decodeMono, encodeWav } from './audio-join.js';
 import { BACKUP_PARTS, PART_STORES, ROW_PARTS, fieldsOf, writeBackup, readBackup, rowJSON, withBlobs, sealKeys, openKeys } from './backup.js';
 import { lookPictures, lookThumb } from './looks.js';
@@ -556,6 +557,13 @@ export class TTSBackend {
         const next = this.getState();
         next.narration = normalizeNarration({ ...next.narration, ...clone(patch) });
         return clone(this.save(next).narration);
+    }
+    /** 漫画设置: color, panel style, text language / size / hidden, bubble shape, gutter. */
+    saveComic(patch) {
+        if (!patch || typeof patch !== 'object') throw Error('设置格式无效');
+        const next = this.getState();
+        next.comic = normalizeComic({ ...next.comic, ...clone(patch) });
+        return clone(this.save(next).comic);
     }
     /** 视觉小说: its settings (the 立绘 of each character are in cast). */
     saveVn(patch) {
@@ -4391,7 +4399,7 @@ export class TTSBackend {
                 this.save(next);
             },
             ...songFacade(this), getState: () => this.getState(), readState: () => { this.assertOpen(); return this.settings; }, getSnapshot: () => this.getSnapshot(), save: (next, revision) => this.save(next, revision),
-            updateGeneral: patch => this.updateGeneral(patch), saveNarration: patch => this.saveNarration(patch), saveVn: patch => this.saveVn(patch), vnCast: () => this.vnCast(), vnSpriteRequest: (name, options) => clone(spriteRequest(this.seen, String(name || ''), clone(options || {}))), saveRoute: (route, options) => this.saveRoute(route, clone(options || {})), saveVoicePool: list => this.saveVoicePool(clone(list)), deleteRoute: id => this.deleteRoute(id),
+            updateGeneral: patch => this.updateGeneral(patch), saveNarration: patch => this.saveNarration(patch), saveComic: patch => this.saveComic(patch), saveVn: patch => this.saveVn(patch), vnCast: () => this.vnCast(), vnSpriteRequest: (name, options) => clone(spriteRequest(this.seen, String(name || ''), clone(options || {}))), saveRoute: (route, options) => this.saveRoute(route, clone(options || {})), saveVoicePool: list => this.saveVoicePool(clone(list)), deleteRoute: id => this.deleteRoute(id),
             switchRouteEngine, cleanAliases, validRoleName: name => typeof name === 'string' && !!name.trim() && !isPlaceholderRole(name),
             saveConnection: (engine, patch) => this.saveConnection(engine, patch),
             savePreset: preset => this.savePreset(preset), deletePreset: id => this.deletePreset(id), selectPreset: id => this.selectPreset(id),

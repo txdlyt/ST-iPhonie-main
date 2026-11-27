@@ -142,3 +142,7 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 .cm-row span{flex:1;min-width:0;font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
 .cm-page[data-state=running] .cm-pic{outline:3px solid var(--accent)}
 .cm-page[data-state=failed] .cm-row span{color:#c0392b}
+
+/* 漫画设置: the 分镜风格 options wrap into rows of three (nine in one pill do not fit a phone) */
+.segmented.cm-wrap{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-radius:20px}
+.segmented.cm-wrap button{white-space:nowrap}
