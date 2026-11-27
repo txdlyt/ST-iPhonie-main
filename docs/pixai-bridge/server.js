@@ -585,7 +585,7 @@ async function dismissDailyReward(page) {
           await page.mouse.move(box.x + 14, box.y + box.height / 2, { steps: 6 });
           await sleep(200 + Math.floor(Math.random() * 300));
           await page.mouse.click(box.x + 28, box.y + box.height / 2); // 真实鼠标点验证框里左边的勾选框
-          console.log(`签到验证：点了勾选框（${how}，第 ${round} 轮）`);
+          console.log(`签到验证：点了勾选框（${how}，第 ${round} 轮；验证框 x=${Math.round(box.x)} y=${Math.round(box.y)} 宽=${Math.round(box.width)} 高=${Math.round(box.height)}；点击位置 x=${Math.round(box.x + 28)} y=${Math.round(box.y + box.height / 2)}；frame 数 ${page.frames().filter(fr => /challenges\.cloudflare\.com/.test(fr.url())).length}）`);
         } else {
           const label = page.getByText(/驗證您是人類|验证您是人类|Verify you are human/).first();
           const lb = await label.isVisible().catch(() => false) ? await label.boundingBox() : null;
@@ -599,8 +599,9 @@ async function dismissDailyReward(page) {
             break;
           }
         }
-        for (let i = 0; i < 30 && !(await claim.isEnabled().catch(() => false)); i++) await sleep(500);
-        if (!(await claim.isEnabled().catch(() => false))) console.warn(`签到验证第 ${round}/3 轮没通过`);
+        const waitHalfSec = round === 1 ? 12 : 30; // 第 1 轮只等 6 秒，没过就换下一种办法再点；之后每轮 15 秒
+        for (let i = 0; i < waitHalfSec && !(await claim.isEnabled().catch(() => false)); i++) await sleep(500);
+        if (!(await claim.isEnabled().catch(() => false))) console.warn(`签到验证第 ${round}/3 轮没通过（等了 ${waitHalfSec / 2} 秒）`);
       }
       if (await claim.isEnabled().catch(() => false)) {
         await claim.click({ timeout: 5000 });
@@ -3096,11 +3097,11 @@ async function clearLoginState(ctx) {
 // 问 PixAI 现在页面登录的是谁：{ user, status }。user 为 null 就是没登上（或读失败，看 status）
 async function whoAmI(page, waitMs = 15000) {
   watchApiHeaders(page);
+  // 先直接读页面存的令牌 / 调 refresh-token（不用干等页面发请求）；取不到再等页面自己发出带鉴权的请求
+  if (!apiReady()) await refreshTokenNow(page).catch(() => false);
   const until = Date.now() + waitMs;
   while (!apiReady() && Date.now() < until) await sleep(500);
   if (!apiReady()) { await nudgePage(page); for (let i = 0; i < 6 && !apiReady(); i++) await sleep(500); }
-  // 等了还没抄到请求头：和出图一样，改从页面存的令牌 / refresh-token 取（以前这里没有这一步，换账号就直接「无响应」）
-  if (!apiReady()) await refreshTokenNow(page).catch(() => false);
   let failure = '';
   const me = await apiCall(page, 'GET', '/v2/user/me').catch(error => { failure = error?.message || String(error); return null; });
   if (me && me.status === 0) failure = me.text || '请求没有回应';
@@ -3439,6 +3440,7 @@ async function switchToSaved(email) {
 
   stage('打开生图页', 70);
   let gp;
+  dailyClaimed = false; // 清掉上一个账号留下的标记，只认这次打开生图页时的签到结果
   try {
     gp = await (opening ??= openGeneratorPage({ claim: true }).finally(() => { opening = null; }));
   } catch (error) {
@@ -3450,16 +3452,21 @@ async function switchToSaved(email) {
     throw error;
   }
   // 页面能打开不等于登上了：登录失效时生图页照样会开（只是没登录）。读一次当前用户确认
-  stage('确认登录是否成功', 85);
-  let who = await whoAmI(gp);
-  if (!who.user && (who.status === 0 || who.status >= 500)) { await sleep(2500); who = await whoAmI(gp, 3000); }
   const acc = findAcc(email);
-  if (!who.user) {
+  const signedIn = dailyClaimed; // 这次看到了「獎勵已領取」：领取要登录才能成功，不用再确认
+  let who = { user: null, status: 0, note: '' };
+  if (signedIn) console.log('签到领取成功，已登录，跳过确认登录');
+  else {
+    stage('确认登录是否成功', 85);
+    who = await whoAmI(gp);
+    if (!who.user && (who.status === 0 || who.status >= 500)) { await sleep(2500); who = await whoAmI(gp, 3000); }
+  }
+  if (!signedIn && !who.user) {
     if (who.status === 0 || who.status >= 500) throw new Error(`没能确认登录状态（读用户信息失败 ${who.status || '无响应'}${who.note ? '；原因：' + who.note : ''}），点「刷新」或稍后再试`);
     if (acc) { acc.expired = true; persist(); }
     throw new Error('存档里的登录已经失效：页面打开了，但没有登上。请用密码登录一次，之后程序会自动保持存档最新');
   }
-  if (acc && !acc.uid) acc.uid = String(who.user.id);
+  if (acc && !acc.uid && who.user) acc.uid = String(who.user.id);
   try { await saveLoginState(email); if (acc) acc.savedAt = Date.now(); } catch { /* 存不上也不影响这次使用 */ } // 载入时令牌可能刚换过，趁现在存回去
   batcher.runs.clear();
 }
