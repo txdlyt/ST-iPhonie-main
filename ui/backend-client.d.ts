@@ -196,6 +196,7 @@ export interface Settings {
     sounds: SoundSettings;
     music: MusicSettings;
     narration: NarrationSettings;
+    comic: ComicSettings;
     vn: VnSettings;
     text: TextSettings;
     /** 向量模型 for 记忆 (key kept as KeyEngine 'embed'). */
@@ -333,6 +334,8 @@ export interface DrawQuote { params: DrawParams; clamped: boolean; /** null when
     /** GPT / ComfyUI only: which engine; paid: GPT (every picture costs money). */
     engine?: DrawEngine; paid?: boolean; }
 export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on a 5x5 grid, -1 lets the model decide. */ position: number; /** V5: anywhere in the picture, 0-1 (other models take the nearest grid cell). */ center?: { x: number; y: number }; /** false: left out of this picture. */ enabled?: boolean; }
+export interface ComicValues { color: 'full' | 'mono'; style: string; lang: 'zh' | 'ja'; textSize: 'small' | 'auto' | 'large'; textHide: boolean; bubble: 'round' | 'oval' | 'box'; gutter: 'none' | 'white' | 'black' | 'bleed'; note: string; }
+export interface ComicSettings extends ComicValues { preset: string; presets: Array<{ id: string; name: string; values: ComicValues }>; }
 export interface DrawInput { prompt: string; negative?: string; characters?: DrawCharacter[]; params?: Partial<DrawParams>; allowPaid?: boolean; name?: string; /** Queue key; the same key joins the waiting job. */ key?: string; label?: string;
     /** GPT: the 角色参考图 of the people in it (pictureInputs), by the characters' order; null for one with none. */
     roleRefs?: Array<{ name: string; path: string } | null>;
@@ -736,6 +739,8 @@ export interface BackendFacade {
     save(next: Settings, expectedRevision?: number): Settings;
     updateGeneral(patch: Partial<GeneralSettings>): Settings;
     /** 整篇朗读: on/off, the 旁白's voice, the system voice and speed, the tags read past. */
+    /** 漫画设置 and 漫画预设 (core/comic-settings.js): the options in use, saved presets of them, and the one marked. */
+    saveComic(patch: Partial<ComicSettings>): ComicSettings;
     saveNarration(patch: Partial<NarrationSettings> & {skip?: string[] | string}): NarrationSettings;
     saveVn(patch: Partial<VnSettings>): VnSettings;
     /** The people of the open card (everyone when none is open), with their looks and 立绘. */

@@ -1147,10 +1147,12 @@ export function createPhoneApp({window: win, api, mount = win.document.getElemen
   /** An App the tavern page asked for (the music island's double tap): taken when the phone shows, or right away. */
   // 'chat:moments': the chat app on 动态 (the 动态小窗's tap).
   function openPart(value) {
-    const [name, part] = String(value || '').split(':');
+    const [name, part, extra] = String(value || '').split(':');
     if (!LOADERS[name]) return false;
     open(name);
     if (part === 'moments') withView('chat', v => v.showMoments?.());
+    // 'comic:<楼层>:<页数>': the 漫画 App's making form for that message (the 楼层 menu's 画成漫画).
+    if (name === 'comic' && /^\d+$/.test(part || '')) withView('comic', v => v.makeFrom?.(Number(part), Number(extra) || 0));
     return true;
   }
   function takeApp() { return openPart(api.takeApp?.()); }

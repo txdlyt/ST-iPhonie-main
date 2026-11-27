@@ -146,3 +146,61 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 /* 漫画设置: the 分镜风格 options wrap into rows of three (nine in one pill do not fit a phone) */
 .segmented.cm-wrap{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-radius:20px}
 .segmented.cm-wrap button{white-space:nowrap}
+
+/* 漫画 App 的阅读器（翻书 / 卡片堆 / 上下滑），样式和做法参考智库的漫画书 */
+.cm-rd{position:fixed;inset:0;z-index:9999;background:#141210;color:#f4efe4;font-family:"Noto Serif SC","Songti SC",serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+.cm-rd header{position:absolute;top:0;left:0;right:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:max(10px,env(safe-area-inset-top)) 12px 6px}
+.cm-rd header b{flex:1;min-width:0;font-size:15px;letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cm-rd header small{font:11px ui-monospace,Menlo,monospace;letter-spacing:.1em;opacity:.75}
+.cm-rd .bb{min-width:40px;height:40px;padding:0 12px;border-radius:999px;border:1.5px solid rgba(244,239,228,.6);background:transparent;color:inherit;font:14px inherit;cursor:pointer}
+.cm-rd .seg{flex-basis:100%;display:flex;margin:0 auto;max-width:300px;padding:3px;border-radius:999px;background:rgba(244,239,228,.12)}
+.cm-rd .seg button{flex:1;border:0;background:transparent;color:#f4efe4;font:13px inherit;padding:6px 10px;border-radius:999px;cursor:pointer}
+.cm-rd .seg button.on{background:#f4efe4;color:#3a2a22}
+.cm-rd-stage{position:absolute;inset:112px 0 92px;display:flex;align-items:center;justify-content:center;perspective:1600px}
+.cm-rd-stage .empty{opacity:.7;font-size:14px;text-align:center;line-height:1.8;padding:0 24px}
+.cm-rd .tip{position:absolute;left:0;right:0;bottom:74px;text-align:center;font-size:11px;opacity:.55;letter-spacing:.1em}
+.cm-rd footer{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:10px;padding:8px 12px max(14px,env(safe-area-inset-bottom))}
+.cm-rd footer input{flex:1;accent-color:#c98a3e}
+.cm-rd-art{position:absolute;inset:0;overflow:hidden;background:#ece4d4}
+.cm-rd-art img{width:100%;height:100%;object-fit:contain;display:block;-webkit-user-drag:none}
+.cm-rd-art span{position:absolute;right:8px;bottom:6px;font:10px ui-monospace,Menlo,monospace;color:#3a2a22;background:rgba(244,239,228,.9);padding:1px 7px;border-radius:99px}
+.cm-rd-spread{position:relative;width:min(96vw,calc((100vh - 220px) * 1.368));aspect-ratio:1664/1216;transform-style:preserve-3d}
+.cm-rd-spread::before{content:"";position:absolute;inset:-6px -10px -10px -10px;border-radius:8px;background:#3a2a22;box-shadow:0 18px 40px rgba(0,0,0,.6);transform:translateZ(-3px)}
+.cm-rd-lbase,.cm-rd-rbase{position:absolute;top:0;bottom:0;width:50%}
+.cm-rd-lbase{left:0;border-radius:8px 0 0 8px;background:linear-gradient(90deg,#efe7d6,#e2d8c4)}
+.cm-rd-rbase{right:0;border-radius:0 8px 8px 0;background:repeating-linear-gradient(90deg,#d9cfbd 0 2px,#efe7d6 2px 4px)}
+.cm-rd-blank{position:absolute;inset:0;display:grid;place-items:center;color:#a39580;font-size:13px;letter-spacing:.3em}
+.cm-rd-leaf{position:absolute;top:0;bottom:0;left:50%;width:50%;transform-origin:left center;transform-style:preserve-3d;transition:transform .5s cubic-bezier(.3,.7,.2,1)}
+.cm-rd-leaf.drag{transition:none}
+.cm-rd-leaf .f,.cm-rd-leaf .b{position:absolute;inset:0;overflow:hidden;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.cm-rd-leaf .f{border-radius:0 8px 8px 0}
+.cm-rd-leaf .b{transform:rotateY(180deg);border-radius:8px 0 0 8px;background:#f4efe4}
+.cm-rd-leaf .shade{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(0,0,0,.35),transparent 40%);opacity:0}
+.cm-rd-gutter{position:absolute;left:50%;top:0;bottom:0;width:36px;margin-left:-18px;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(0,0,0,.28) 45%,rgba(0,0,0,.35) 50%,rgba(0,0,0,.28) 55%,transparent);transform:translateZ(1px);z-index:999}
+.cm-rd-flow{position:relative;width:100%;height:100%}
+.cm-rd-card{position:absolute;left:50%;top:50%;width:min(60vw,calc((100vh - 220px) * .55));aspect-ratio:832/1216;transition:transform .45s cubic-bezier(.3,.7,.2,1),filter .45s;cursor:pointer}
+.cm-rd-card .cm-rd-art{border-radius:10px;box-shadow:0 14px 34px rgba(0,0,0,.55)}
+.cm-rd-card.drag{transition:none}
+.cm-rd-scroll{position:absolute;inset:0;overflow-y:auto;scroll-snap-type:y mandatory;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.cm-rd-scroll::-webkit-scrollbar{display:none}
+.cm-rd-vpage{height:100%;scroll-snap-align:center;display:flex;align-items:center;justify-content:center;padding:8px 0}
+.cm-rd-vpage .holder{position:relative;height:100%;aspect-ratio:832/1216;max-width:94vw;border-radius:8px;overflow:hidden}
+.cm-rd-vfloor{scroll-snap-align:start;padding:18px 0 6px;text-align:center;font-size:12px;letter-spacing:.3em;color:#c98a3e}
+.cm-rd-toc{position:absolute;left:0;right:0;bottom:0;max-height:70%;overflow:auto;background:#f4efe4;color:#3a2a22;border-radius:22px 22px 0 0;padding:10px 16px 20px;scrollbar-width:none}
+.cm-rd-toc::-webkit-scrollbar{display:none}
+.cm-rd-toc h4{margin:4px 0 10px;font-size:16px;letter-spacing:.2em}
+.cm-rd-toc button{display:flex;gap:10px;align-items:center;width:100%;margin:0 0 8px;padding:6px;border:1.5px solid #3a2a22;border-radius:14px;background:#f4efe4;color:#3a2a22;font:14px inherit;text-align:left;cursor:pointer}
+.cm-rd-toc button img{width:44px;height:60px;object-fit:cover;object-position:top;border-radius:8px;background:#ddd}
+.cm-rd-toc button small{display:block;font-size:11px;color:#6e5a4d}
+.cm-rd-toc button span{flex:1;min-width:0}
+.cm-rd-toc button.todo{border-style:dashed}
+.cm-rd-toc button.todo i{flex:0 0 44px;height:60px;border-radius:8px;border:1.5px dashed #b9a896;display:grid;place-items:center;font-style:normal;font-size:20px;color:#9a8878}
+.cm-rd-toc button.todo em{flex:0 0 auto;font-style:normal;font-size:12px;padding:4px 10px;border-radius:999px;background:#3a2a22;color:#f4efe4}
+.cm-rd-toc-tip{font-size:12px;color:#6e5a4d;margin:-4px 0 10px;line-height:1.6}
+.cm-rd .empty .bb.wide{width:auto;padding:0 18px;margin-top:14px;border-radius:999px}
+.cm-rd-sheet{position:absolute;left:0;right:0;bottom:0;max-height:70%;overflow:auto;background:#f4efe4;color:#3a2a22;border-radius:22px 22px 0 0;padding:10px 16px 20px;z-index:20}
+.cm-rd-sheet h4{margin:4px 0 10px;font-size:16px;letter-spacing:.2em}
+.cm-rd-sheet .row{display:flex;gap:10px;align-items:center;margin:0 0 10px}
+.cm-rd-sheet .row>span{flex:1;font-size:14px}
+.cm-rd-sheet .row button{padding:6px 14px;border:1.5px solid #3a2a22;border-radius:999px;background:transparent;color:#3a2a22;font:inherit;cursor:pointer}
+.cm-rd-sheet .row button[aria-pressed=true]{background:#3a2a22;color:#f4efe4}

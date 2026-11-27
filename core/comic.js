@@ -17,8 +17,9 @@ export function comicRequest({story, names = [], pages = 0, comic = null}) {
   const system = [
     '你是漫画分镜师。把用户给的一段故事改成漫画分镜，只输出一个 JSON，不要任何别的文字，不要代码块。',
     count ? `共 ${count} 页。` : `页数由你按故事的长短定：故事短就少画，长就多画，最少 ${COMIC_PAGES.min} 页，最多 ${COMIC_PAGES.max} 页。`,
-    '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。',
-    `像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，${count ? `整本最多 ${big} 页 splash` : 'splash 不超过总页数的三分之一'}。`,
+    ...(fixedPanels(set) ? [] : [
+      '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。',
+      `像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，${count ? `整本最多 ${big} 页 splash` : 'splash 不超过总页数的三分之一'}。`]),
     ...extra,
     '每格有：scene（给画图模型的英文标签，逗号分隔，写构图、动作、表情、场景、光线；不要写人物外貌，不要写台词，不要写文字）；',
     'who（这一格出现的人物名字数组，名字必须从下面「可用人物」里选；没有人就写空数组）；',

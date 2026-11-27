@@ -23,14 +23,52 @@ export const COMIC_GUTTERS = [['none', '不指定'], ['white', '白边'], ['blac
 const GUTTER_TAGS = {white: 'white border', black: 'black border, thick black panel borders, no white margin', bleed: 'full bleed, no border'};
 const GUTTER_WORDS = {white: 'Every panel sits inside an even white margin.', black: 'The panels touch each other and are separated only by thick black lines.', bleed: 'Every panel extends to the edges of the page with no margin.'};
 
-export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none'});
+const VALUE_KEYS = ['color', 'style', 'lang', 'textSize', 'textHide', 'bubble', 'gutter', 'note'];
+export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', note: '', preset: '', presets: []});
 const pick = (list, value, fallback) => list.some(([k]) => k === value) ? value : fallback;
-export function normalizeComic(value) {
-  const base = defaultComic(), v = value && typeof value === 'object' ? value : {};
+/** The options alone (what a 预设 holds): color, style, language, text size / hidden, bubble, gutter, and the person's own 额外要求 (note). */
+function normalizeValues(v) {
+  const base = defaultComic();
   return {
     color: pick(COMIC_COLORS, v.color, base.color), style: pick(COMIC_STYLES, v.style, base.style), lang: pick(COMIC_LANGS, v.lang, base.lang),
-    textSize: pick(COMIC_TEXT_SIZES, v.textSize, base.textSize), textHide: v.textHide === true, bubble: pick(COMIC_BUBBLES, v.bubble, base.bubble), gutter: pick(COMIC_GUTTERS, v.gutter, base.gutter)
+    textSize: pick(COMIC_TEXT_SIZES, v.textSize, base.textSize), textHide: v.textHide === true, bubble: pick(COMIC_BUBBLES, v.bubble, base.bubble), gutter: pick(COMIC_GUTTERS, v.gutter, base.gutter),
+    note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : ''
   };
+}
+export const COMIC_NOTE_MAX = 2000;
+export const COMIC_PRESET_MAX = 30;
+export function normalizeComic(value) {
+  const v = value && typeof value === 'object' ? value : {}, seen = new Set();
+  const presets = (Array.isArray(v.presets) ? v.presets : []).filter(p => p && typeof p === 'object' && typeof p.id === 'string' && p.id && !seen.has(p.id) && seen.add(p.id))
+    .slice(0, COMIC_PRESET_MAX).map(p => ({id: p.id, name: String(p.name ?? '').trim().slice(0, 30) || '未命名', values: normalizeValues(p.values && typeof p.values === 'object' ? p.values : {})}));
+  return {...normalizeValues(v), preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets};
+}
+/** The options now in use, without the preset list. */
+export const comicValues = comic => { const c = normalizeComic(comic); return Object.fromEntries(VALUE_KEYS.map(k => [k, c[k]])); };
+/** The settings with a preset applied (its options replace the ones in use; the preset stays marked). */
+export function applyPreset(comic, id) {
+  const c = normalizeComic(comic), p = c.presets.find(x => x.id === id);
+  return p ? normalizeComic({...c, ...p.values, preset: p.id}) : c;
+}
+/** The options in use saved as a preset: a new one (named), or over the one `id`. Throws when there is no room or no name. */
+export function savePreset(comic, {id = '', name = ''} = {}) {
+  const c = normalizeComic(comic), values = comicValues(c);
+  if (id) {
+    const at = c.presets.findIndex(p => p.id === id);
+    if (at < 0) throw Error('这个预设已经不在了');
+    return normalizeComic({...c, preset: id, presets: c.presets.map((p, i) => i === at ? {...p, name: String(name).trim() || p.name, values} : p)});
+  }
+  const label = String(name).trim();
+  if (!label) throw Error('先给预设起个名字');
+  if (c.presets.length >= COMIC_PRESET_MAX) throw Error('最多存 ' + COMIC_PRESET_MAX + ' 个预设');
+  const made = {id: 'cp-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: label, values};
+  return normalizeComic({...c, preset: made.id, presets: [...c.presets, made]});
+}
+export function removePreset(comic, id) { const c = normalizeComic(comic); return normalizeComic({...c, preset: c.preset === id ? '' : c.preset, presets: c.presets.filter(p => p.id !== id)}); }
+/** Whether the options in use differ from the preset marked (so the page can say 已改动). */
+export function presetChanged(comic) {
+  const c = normalizeComic(comic), p = c.presets.find(x => x.id === c.preset);
+  return !!p && JSON.stringify(normalizeValues(p.values)) !== JSON.stringify(comicValues(c));
 }
 
 /** Panels per page when the style fixes it (单图单格 → 1, 上下两格 → 2), else 0. */
@@ -42,6 +80,7 @@ export function comicRules(comic) {
   if (style) rules.push(style);
   if (c.color === 'mono') rules.push('黑白漫画：scene 里只用灰阶明暗，不写任何颜色词（blue、red、brown 等一律不写）；写光源方向、明暗对比和网点（screentone）。');
   if (c.gutter !== 'none') rules.push('页面留白：' + GUTTER_WORDS[c.gutter]);
+  if (c.note.trim()) rules.push('额外要求（来自用户，照着做）：' + c.note.trim());
   return rules;
 }
 /** What the 绘图 App is told on top of a page's tags: [before, negative]. */
