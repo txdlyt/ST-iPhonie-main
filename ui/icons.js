@@ -28,6 +28,7 @@ const GLYPHS = {
   // A game pad: the cross on the left, two buttons on the right.
   games: '<rect x="6" y="18" width="52" height="30" rx="15"/><path d="M19 26v14M12 33h14" stroke="var(--t2)" stroke-width="4.5" stroke-linecap="round"/><circle cx="42" cy="29" r="3.6" fill="var(--tac)"/><circle cx="49" cy="36" r="3.6" fill="var(--tac)"/>',
   // An open picture book: two pages, a picture on the left, a ribbon.
+  comic: '<rect x="8" y="9" width="48" height="46" rx="4"/><path d="M8 32h48M32 9v23M26 55V32" stroke="var(--t2)" stroke-width="3"/><path d="M36 14h16v12H36z" fill="var(--t2)"/><circle cx="17" cy="43" r="4" fill="var(--tac)"/>',
   picbook: '<path d="M32 16C24 11 15 10 6 12v38c9-2 18-1 26 4 8-5 17-6 26-4V12c-9-2-18-1-26 4z"/><path d="M32 16v38" stroke="var(--t2)" stroke-width="3"/><path d="M11 38l6-8 5 5 4-4 3 7z" fill="var(--t2)"/><circle cx="20" cy="22" r="3" fill="var(--tac)"/><path d="M38 22h14M38 29h14M38 36h10" stroke="var(--t2)" stroke-width="2.6" stroke-linecap="round"/><path d="M45 8v14l3-3 3 3V8z" fill="var(--tac)"/>',
   // A shirt on a hanger (its bar seen across the shoulders), a pocket in the accent. The hook curls round the middle line
   // (one curling off to the right made the icon look tilted), and the whole sits so its ink centres like the others'

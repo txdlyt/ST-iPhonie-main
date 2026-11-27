@@ -8,12 +8,14 @@ export const COMIC_PAGES = {min: 1, max: 12, usual: 4};
 export const clampPages = n => Math.max(COMIC_PAGES.min, Math.min(COMIC_PAGES.max, Math.round(Number(n)) || COMIC_PAGES.usual));
 
 /** The text model's request: the story → a storyboard as JSON. names: the people the 绘图 App knows. */
-export function comicRequest({story, names = [], pages = COMIC_PAGES.usual}) {
-  const count = clampPages(pages), big = Math.max(1, Math.floor(count / 3));
+export function comicRequest({story, names = [], pages = 0}) {
+  // pages 0 / empty: the model decides how many, by how much story there is.
+  const count = Number(pages) > 0 ? clampPages(pages) : 0, big = count ? Math.max(1, Math.floor(count / 3)) : 0;
   const system = [
     '你是漫画分镜师。把用户给的一段故事改成漫画分镜，只输出一个 JSON，不要任何别的文字，不要代码块。',
-    `共 ${count} 页。每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。`,
-    `像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，整本最多 ${big} 页 splash。`,
+    count ? `共 ${count} 页。` : `页数由你按故事的长短定：故事短就少画，长就多画，最少 ${COMIC_PAGES.min} 页，最多 ${COMIC_PAGES.max} 页。`,
+    '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。',
+    `像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，${count ? `整本最多 ${big} 页 splash` : 'splash 不超过总页数的三分之一'}。`,
     '每格有：scene（给画图模型的英文标签，逗号分隔，写构图、动作、表情、场景、光线；不要写人物外貌，不要写台词，不要写文字）；',
     'who（这一格出现的人物名字数组，名字必须从下面「可用人物」里选；没有人就写空数组）；',
     'lines（这一格的台词数组，最多 3 句；每句 {who, text, kind}，kind 是 say（说话）、think（心里话）、narr（旁白）之一；text 用中文，短，不超过 24 个字；旁白的 who 写「旁白」）。',

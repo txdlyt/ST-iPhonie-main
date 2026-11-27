@@ -124,3 +124,21 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 .bt-lore-entry mark{background:var(--accent-soft);color:var(--accent-ink);border-radius:3px}
 .bt-entry-text{max-height:10.2em;box-sizing:content-box;overflow:auto;overscroll-behavior:contain;margin:0 0 12px;padding:10px 12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;background:var(--card2);border-radius:10px}
 @media(prefers-reduced-motion:reduce){.bt-cover::before,.bt-player::before,.bt-dream .current{animation:none!important}.bt-dream header{transition:none}}
+
+/* 漫画 (ui/comic.js): the shelf cards, the pages as placeholders until they are drawn */
+.cm-cover{display:grid;place-content:center;gap:8px;padding:14px;text-align:center;background:linear-gradient(160deg,#fff6d6,#ffe3a3);color:#5b2a14}
+.cm-cover b{font-size:16px;line-height:1.3;overflow-wrap:anywhere}
+.cm-cover i{font-style:normal;font-size:12px;font-weight:700;opacity:.75}
+.cm-pages{display:grid;gap:18px;margin:14px 0}
+.cm-page{display:grid;gap:8px}
+.cm-pic{position:relative;border-radius:10px;overflow:hidden;background:var(--card2);box-shadow:0 8px 18px -10px rgba(0,0,0,.5)}
+.cm-pic img{display:block;width:100%;height:auto}
+.cm-sheet{position:relative;display:block;width:100%;background:#f6f1e4}
+.cm-panel{position:absolute;display:grid;place-items:center;box-sizing:border-box;border:2px solid #2b2b2b;background:#fffdf6;padding:6px;overflow:hidden}
+.cm-panel small{font-style:normal;font-size:11px;line-height:1.4;color:#555;text-align:center;overflow:hidden}
+.cm-busy{position:absolute;inset:auto 0 0 0;padding:8px;text-align:center;font-style:normal;font-weight:800;font-size:13px;color:#fff;background:rgba(0,0,0,.55)}
+.cm-row{display:flex;align-items:center;gap:10px}
+.cm-row b{font-size:13px}
+.cm-row span{flex:1;min-width:0;font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
+.cm-page[data-state=running] .cm-pic{outline:3px solid var(--accent)}
+.cm-page[data-state=failed] .cm-row span{color:#c0392b}

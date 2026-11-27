@@ -51,3 +51,9 @@ test('comicRequest names the page count and the people', () => {
   assert.equal(clampPages(99), 12);
   assert.equal(clampPages('x'), 4);
 });
+test('comicRequest: no page count lets the model decide', () => {
+  const [system] = comicRequest({story: '雨夜', names: [], pages: 0});
+  assert.match(system.content, /页数由你按故事的长短定/);
+  assert.doesNotMatch(system.content, /共 \d+ 页/);
+  assert.match(system.content, /不超过总页数的三分之一/);
+});

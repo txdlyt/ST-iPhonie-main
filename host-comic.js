@@ -28,10 +28,10 @@ export function createComicHost({context, settings, backend, drawFor, notice, do
     if (!backend.drawReady()) throw Error(backend.drawMissing() || '绘图引擎还没设好');
     running.add(message);
     try {
-      const names = [...new Set([...(settings().routes || []).map(r => r?.name), ctx.name1, ctx.name2].filter(Boolean))], count = clampPages(pages);
+      const names = [...new Set([...(settings().routes || []).map(r => r?.name), ctx.name1, ctx.name2].filter(Boolean))], count = Number(pages) > 0 ? clampPages(pages) : 0; // 0: the model decides
       notice('漫画：正在写分镜…');
       const reply = await backend.generateText(ctx, {use: 'picture', prompt: comicRequest({story, names, pages: count}), plainText: true, trimNames: false, responseLength: 3500});
-      const comic = parseComic(reply, {maxPages: count}), made = [];
+      const comic = parseComic(reply, {maxPages: count || undefined}), made = [];
       let failure = null;
       for (let i = 0; i < comic.pages.length; i++) {
         try {

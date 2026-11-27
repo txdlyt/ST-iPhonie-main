@@ -24,6 +24,7 @@ export const APPS = {
   paint: {name: '画画', eyebrow: 'Paint', colors: ['#ffd1e6', '#e85d9b', '#7fd0ff']},
   vn: {name: '视觉小说', eyebrow: 'Visual Novel', colors: ['#ffd49a', '#f07a45', '#fff2b8']},
   picbook: {name: '绘本', eyebrow: 'Picture Book', colors: ['#bfe6ff', '#3f8fe8', '#ffd25e']},
+  comic: {name: '漫画', eyebrow: 'Comic', colors: ['#ffe3a3', '#e0533d', '#fff6d6']},
   ledger: {name: '账本', eyebrow: 'Ledger', colors: ['#f4d9ae', '#a8692a', '#ffe9a0']},
   wardrobe: {name: '衣柜', eyebrow: 'Wardrobe', colors: ['#f7c9d2', '#b03a5b', '#ffe3a3']},
   generator: {name: '生成器', eyebrow: 'Generator', colors: ['#e6f6b0', '#6f9a1e', '#ffc4dc']}
@@ -36,7 +37,7 @@ export const SLOT = null;
 export const HOME = {
   pages: [
     ['roles', 'engines', 'presets', 'library', 'gallery', 'notes', 'forum', 'peek'],
-    ['sounds', 'assistant', 'music', 'games', 'paint', 'vn', 'logs', 'indie', 'picbook', 'ledger', 'wardrobe', 'generator'],
+    ['sounds', 'assistant', 'music', 'games', 'paint', 'vn', 'logs', 'indie', 'picbook', 'comic', 'ledger', 'wardrobe', 'generator'],
     ['bookshelf']
   ],
   dock: ['chat', 'draw', 'listen', 'settings']

@@ -278,6 +278,7 @@
 
 .sttts-context-menu{position:fixed;z-index:2147483000;display:flex;flex-direction:column;width:max-content;min-width:0;max-width:calc(100vw - 16px);box-sizing:border-box;padding:5px;border:1px solid var(--SmartThemeBorderColor,rgba(128,128,128,.4));border-radius:10px;background:var(--SmartThemeBlurTintColor,#242424);color:var(--SmartThemeBodyColor,#eee);box-shadow:0 5px 20px #0003;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);font:inherit}
 .sttts-context-menu button{width:auto;min-width:0;max-width:100%;box-sizing:border-box;margin:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;padding:10px 12px;min-height:40px;border-radius:6px;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
+.sttts-comic-ask{gap:6px;padding:10px}.sttts-comic-ask label{display:flex;flex-direction:column;gap:6px;font-size:.9em}.sttts-comic-ask input{box-sizing:border-box;width:100%;padding:8px;border-radius:6px;border:1px solid var(--SmartThemeBorderColor,#888);background:var(--SmartThemeBlurTintColor,#222);color:inherit;font:inherit}.sttts-comic-ask div{display:flex;gap:6px}.sttts-comic-ask button{flex:1;text-align:center}
 .sttts-context-menu button:hover,.sttts-context-menu button:focus-visible{background:var(--SmartThemeQuoteColor,#555);outline:1px solid var(--SmartThemeBorderColor,#888)}
 .sttts-tools-entry{background:transparent;border:0;color:inherit;font-size:inherit;cursor:pointer}
 

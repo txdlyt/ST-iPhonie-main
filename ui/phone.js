@@ -31,7 +31,7 @@ const LOADERS = {
   forum: () => import('./forum.js').then(m => m.forumApp), peek: () => import('./peek.js').then(m => m.peekApp),
   sounds: () => import('./sounds.js').then(m => m.soundsApp), assistant: () => import('./assistant.js').then(m => m.assistantApp),
   music: () => import('./music.js').then(m => m.musicApp), games: () => import('./games.js').then(m => m.gamesApp),
-  picbook: () => import('./book.js').then(m => m.bookApp), indie: () => import('./indie.js').then(m => m.indieApp),
+  picbook: () => import('./book.js').then(m => m.bookApp), comic: () => import('./comic.js').then(m => m.comicApp), indie: () => import('./indie.js').then(m => m.indieApp),
   paint: () => import('./paint.js').then(m => m.paintApp), vn: () => import('./vn.js').then(m => m.vnApp), logs: () => import('./logs.js').then(m => m.logsApp),
   ledger: () => import('./ledger.js').then(m => m.ledgerApp),
   wardrobe: () => import('./wardrobe.js').then(m => m.wardrobeApp),
