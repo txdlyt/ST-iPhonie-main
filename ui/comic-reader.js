@@ -4,20 +4,24 @@
 import {esc} from './common.js';
 
 const MODES = [['book', '翻书'], ['flow', '卡片堆'], ['scroll', '上下滑']];
+export const READING_MODES = [['page', '翻页（书架）'], ...MODES];
 const KEY = 'stiphonie.comic.reader';
+/** How the person reads a comic: 'page' (the 书架's way, the default) or one of 翻书 / 卡片堆 / 上下滑. */
+export function readingMode(win) { try { const m = JSON.parse(win.localStorage.getItem(KEY) || 'null')?.mode; if (READING_MODES.some(([k]) => k === m)) return m; } catch { /* default */ } return 'page'; }
+export function setReadingMode(win, mode) { try { win.localStorage.setItem(KEY, JSON.stringify({mode})); } catch { /* it can still be read */ } }
 
 /**
  * ctx: the phone's context. comic: {title}. load(): the pages' picture addresses in order (the words laid on or not, as
  * the 字幕 setting now says). caption: {get(), set(on)}. start: the first page shown (from 0). onClose(): the reader is gone.
  * Returns {close, reload}.
  */
-export function openComicReader(ctx, {title = '漫画', load, caption, start = 0, parent, onClose = () => {}}) {
+export function openComicReader(ctx, {title = '漫画', load, caption, options, toc: tocOut, bookmark, start = 0, parent, onClose = () => {}}) {
   const {doc, win} = ctx;
   let urls = [], mode = 'book', at = start, turned = 0, leaves = [], cards = [], sx = null, moved = false, drag = null, closed = false;
   try { const saved = JSON.parse(win.localStorage.getItem(KEY) || 'null'); if (MODES.some(([m]) => m === saved?.mode)) mode = saved.mode; } catch { /* no saved way of reading */ }
   const root = doc.createElement('div');
   root.className = 'cm-rd'; root.setAttribute('role', 'dialog');
-  root.innerHTML = `<header><b></b><small></small><button class="bb" data-b="set">设置</button><button class="bb" data-b="toc">目录</button><button class="bb" data-b="x" aria-label="关闭">✕</button>
+  root.innerHTML = `<header><b></b><small></small><button class="bb" data-b="set">设置</button><button class="bb" data-b="mark">书签</button><button class="bb" data-b="toc">目录</button><button class="bb" data-b="x" aria-label="关闭">✕</button>
     <div class="seg">${MODES.map(([m, t]) => `<button data-mode="${m}">${t}</button>`).join('')}</div></header>
     <div class="cm-rd-stage"></div><div class="tip"></div>
     <footer><button class="bb" data-b="-1" aria-label="上一页">‹</button><input type="range" min="1" value="1" aria-label="翻到"><button class="bb" data-b="1" aria-label="下一页">›</button></footer>`;
@@ -126,7 +130,7 @@ export function openComicReader(ctx, {title = '漫画', load, caption, start = 0
     const m = ev.target.closest('[data-mode]');
     if (m) { mode = m.dataset.mode; build(); return; }
     const b = ev.target.closest('[data-b]')?.dataset.b;
-    if (b === 'x') close(); else if (b === 'toc') toc(); else if (b === 'set') settingsSheet(); else if (b) go(Number(b));
+    if (b === 'x') close(); else if (b === 'toc') (tocOut || toc)(); else if (b === 'mark') bookmark?.(); else if (b === 'set') (options || settingsSheet)(); else if (b) go(Number(b));
   });
   bar.addEventListener('input', () => {
     const v = Number(bar.value) - 1;

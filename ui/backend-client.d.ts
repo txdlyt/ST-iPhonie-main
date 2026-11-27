@@ -334,8 +334,9 @@ export interface DrawQuote { params: DrawParams; clamped: boolean; /** null when
     /** GPT / ComfyUI only: which engine; paid: GPT (every picture costs money). */
     engine?: DrawEngine; paid?: boolean; }
 export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on a 5x5 grid, -1 lets the model decide. */ position: number; /** V5: anywhere in the picture, 0-1 (other models take the nearest grid cell). */ center?: { x: number; y: number }; /** false: left out of this picture. */ enabled?: boolean; }
+export interface ComicEntry { id: string; title: string; enabled: boolean; to: 'story' | 'tags' | 'negative'; text: string; }
 export interface ComicValues { color: 'full' | 'mono'; style: string; lang: 'zh' | 'ja'; textSize: 'small' | 'auto' | 'large'; textHide: boolean; bubble: 'round' | 'oval' | 'box'; gutter: 'none' | 'white' | 'black' | 'bleed'; note: string; }
-export interface ComicSettings extends ComicValues { preset: string; presets: Array<{ id: string; name: string; values: ComicValues }>; }
+export interface ComicSettings extends ComicValues { preset: string; presets: Array<{ id: string; name: string; entries: ComicEntry[] }>; }
 export interface DrawInput { prompt: string; negative?: string; characters?: DrawCharacter[]; params?: Partial<DrawParams>; allowPaid?: boolean; name?: string; /** Queue key; the same key joins the waiting job. */ key?: string; label?: string;
     /** GPT: the 角色参考图 of the people in it (pictureInputs), by the characters' order; null for one with none. */
     roleRefs?: Array<{ name: string; path: string } | null>;

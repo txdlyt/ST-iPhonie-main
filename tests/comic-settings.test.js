@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeComic, defaultComic, comicRules, comicTags, fixedPanels, canvasOptions, savePreset, applyPreset, removePreset, presetChanged, comicValues} from '../core/comic-settings.js';
+import {normalizeComic, defaultComic, comicRules, comicTags, fixedPanels, canvasOptions, savePreset, newPreset, removePreset, presetFile, readPresetFile} from '../core/comic-settings.js';
 import {comicRequest, parseComic, pageTags} from '../core/comic.js';
 
 const board = n => JSON.stringify({pages: [{kind: 'page', panels: Array.from({length: n}, (_, i) => ({scene: 's' + i, who: [], lines: []}))}, {kind: 'splash', panels: [{scene: 'big', who: [], lines: []}]}]});
@@ -43,24 +43,31 @@ test('额外要求 reaches the request', () => {
   assert.match(comicRequest({story: 'x', comic: {note: '多用特写'}})[0].content, /额外要求.*多用特写/);
   assert.equal(normalizeComic({note: 'a'.repeat(3000)}).note.length, 2000);
 });
-test('presets: save, apply, change, overwrite, remove', () => {
-  let c = normalizeComic({color: 'mono', style: 'shonen', note: '特写'});
-  assert.throws(() => savePreset(c, {name: ' '}), /名字/);
-  c = savePreset(c, {name: '热血黑白'});
-  assert.equal(c.presets.length, 1); assert.equal(c.preset, c.presets[0].id); assert.equal(presetChanged(c), false);
-  const id = c.preset;
-  c = normalizeComic({...c, color: 'full', lang: 'ja'});
-  assert.equal(presetChanged(c), true);
-  c = applyPreset(c, id);
-  assert.deepEqual([c.color, c.style, c.lang, c.note], ['mono', 'shonen', 'zh', '特写']); assert.equal(presetChanged(c), false);
-  c = savePreset(normalizeComic({...c, bubble: 'oval'}), {id});
-  assert.equal(c.presets.length, 1); assert.equal(c.presets[0].values.bubble, 'oval'); assert.equal(c.presets[0].name, '热血黑白');
-  c = savePreset(c, {id, name: '改名了'}); assert.equal(c.presets[0].name, '改名了');
-  assert.equal(applyPreset(c, 'nope').preset, id);
-  c = removePreset(c, id); assert.deepEqual([c.presets.length, c.preset], [0, '']);
-  assert.deepEqual(Object.keys(comicValues(c)).sort(), ['bubble', 'color', 'gutter', 'lang', 'note', 'style', 'textHide', 'textSize']);
+test('presets are lists of entries: save, edit, switch off, remove', () => {
+  let c = normalizeComic({});
+  const made = newPreset('我的分镜'); made.entries[0].text = '多用特写';
+  made.entries.push({id: 'e2', title: '前缀', enabled: true, to: 'tags', text: 'masterpiece, '}, {id: 'e3', title: '负面', enabled: true, to: 'negative', text: 'text'}, {id: 'e4', title: '关着', enabled: false, to: 'story', text: '不会发'});
+  c = savePreset(c, made);
+  assert.equal(c.preset, made.id); assert.equal(c.presets[0].entries.length, 4);
+  const rules = comicRules(c).join('\n');
+  assert.match(rules, /【分镜要求】\n多用特写/); assert.doesNotMatch(rules, /不会发/);
+  assert.equal(comicTags(c).tags, 'masterpiece'); assert.equal(comicTags(c).negative, 'text');
+  const again = structuredClone(c.presets[0]); again.entries[0].enabled = false;
+  c = savePreset(c, again); assert.equal(c.presets.length, 1); assert.doesNotMatch(comicRules(c).join(''), /多用特写/);
+  c = removePreset(c, made.id); assert.deepEqual([c.presets.length, c.preset], [0, '']);
+});
+test('a preset file: out and back (new id), bare preset, wrong kind, empty', () => {
+  const p = newPreset('导出'); p.entries[0].text = '写得紧凑';
+  const back = readPresetFile(presetFile(p));
+  assert.equal(back.name, '导出'); assert.notEqual(back.id, p.id); assert.equal(back.entries[0].text, '写得紧凑');
+  assert.equal(JSON.parse(presetFile(p)).kind, 'comic');
+  assert.equal(readPresetFile(JSON.stringify({name: 'x', entries: [{text: 'a'}]})).entries.length, 1);
+  assert.throws(() => readPresetFile(JSON.stringify({format: 'st-iphonie-preset', kind: 'draw', preset: {entries: [{text: 'a'}]}})), /不是漫画预设/);
+  assert.throws(() => readPresetFile('{"entries":[]}'), /没有预设的条目/);
+  assert.throws(() => readPresetFile('nope'), /JSON/);
 });
 test('a preset in saved settings that is broken is cleaned up', () => {
-  const c = normalizeComic({preset: 'a', presets: [{id: 'a', name: '', values: {color: 'pink'}}, {id: 'a', name: 'dup'}, null, {name: 'noid'}]});
-  assert.equal(c.presets.length, 1); assert.equal(c.presets[0].name, '未命名'); assert.equal(c.presets[0].values.color, 'full'); assert.equal(c.preset, 'a');
+  const c = normalizeComic({preset: 'a', presets: [{id: 'a', name: '', entries: [{text: 5}, {title: 't', to: 'zz', text: 'ok'}]}, {id: 'a', name: 'dup'}, null, {name: 'noid'}]});
+  assert.equal(c.presets.length, 1); assert.equal(c.presets[0].name, '未命名'); assert.equal(c.preset, 'a');
+  assert.deepEqual(c.presets[0].entries.map(e => [e.to, e.text]), [['story', ''], ['story', 'ok']]);
 });

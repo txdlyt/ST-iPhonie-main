@@ -10,8 +10,10 @@ import {openBook} from '../core/bookshelf.js';
 import {pictureInputs, sizeFor} from '../core/draw.js';
 import {comicRequest, parseComic, panelRects, pageTags, pageCharacters, COMIC_NEGATIVE, COMIC_PAGES, clampPages} from '../core/comic.js';
 import {composePage} from '../core/comic-canvas.js';
-import {openComicReader} from './comic-reader.js';
-import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, applyPreset, savePreset, removePreset, presetChanged} from '../core/comic-settings.js';
+import {openComicReader, readingMode, setReadingMode, READING_MODES} from './comic-reader.js';
+import {openAlbum} from './album-viewer.js';
+import {saveFile} from '../download.js';
+import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO} from '../core/comic-settings.js';
 import {bookRange, rangeMarkup, pickBookRange, readBookSource, bookForm, BOOK_SOURCES, BOOK_TEXT_LIMIT} from './book-setup.js';
 
 const KEY = 'stiphonie.comic.drafts';
@@ -20,7 +22,7 @@ const SOURCES = BOOK_SOURCES.filter(([k]) => k !== 'theater');
 
 export function comicApp(ctx) {
   const {api} = ctx, v = createView(ctx, 'comic'), urls = new Map(), failures = new Map();
-  let view = 'shelf', drafts = load(), form = null, draft = null, job = null, reader = null;
+  let view = 'shelf', drafts = load(), form = null, draft = null, job = null, reader = null, album = null;
   function load() { try { const list = JSON.parse(ctx.win.localStorage.getItem(KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
   function save() { try { ctx.win.localStorage.setItem(KEY, JSON.stringify(drafts.slice(0, 30))); } catch { ctx.notify('这台设备存不下漫画草稿了', {error: true}); } }
   const cfg = () => normalizeComic(api.getState().comic);
@@ -63,26 +65,36 @@ export function comicApp(ctx) {
   }
 
   // ---------- 设置 ----------
-  const presetChoices = c => [['', c.presets.length ? '（不用预设）' : '（还没有预设）'], ...c.presets.map(p => [p.id, p.name + (p.id === c.preset && presetChanged(c) ? '（已改动）' : '')])];
+  const presetChoices = c => [['', c.presets.length ? '（不用预设）' : '（还没有预设）'], ...c.presets.map(p => [p.id, p.name])];
   const store = next => { try { api.saveComic(next); } catch (e) { ctx.notify(e.message, {error: true}); } };
-  /** A small dialog asking for a name; resolves to the name, or null when closed. */
-  function askName(title, value = '') {
-    const d = ctx.dialog(title, `<div class="field"><span>名字</span><input data-cm-name value="${esc(value)}" maxlength="30"></div><div class="actions"><button type="button" class="primary" data-cm-name-ok>存好</button></div>`);
-    return new Promise(resolve => {
-      let answer = null;
-      d.onClose(() => resolve(answer));
-      d.body.querySelector('[data-cm-name-ok]').addEventListener('click', () => { answer = d.body.querySelector('[data-cm-name]').value.trim(); if (!answer) { ctx.notify('先给预设起个名字'); return; } d.close(); });
-    });
+  // ---------- 漫画预设: like the 绘图预设, a list of entries, each switched on or off and edited as text ----------
+  let editing = null;
+  function editPreset(preset) { editing = structuredClone(preset); presetEditor(); }
+  function presetEditor() {
+    view = 'preset'; draft = null; form = null;
+    const p = editing, last = p.entries.length - 1;
+    const entry = (e, i) => `<div class="group pad cm-entry">
+        <div class="setting-row"><span class="switch-label">启用这一条</span><input class="switch" aria-label="启用这一条" type="checkbox" data-cm-entry="enabled" data-i="${i}"${e.enabled ? ' checked' : ''}></div>
+        <div class="field"><span>标题</span><input data-cm-entry="title" data-i="${i}" value="${esc(e.title)}" maxlength="80" placeholder="这一条是什么"></div>
+        <div class="field"><span>发给谁${help('给分镜的要求：写分镜时发给文字模型，比如镜头、节奏、对白怎么写。画面前缀：加在每一页画面提示词的最前面。负面词：加进每一页的负面提示词。')}</span>${select('cm-entry-to', e.to, COMIC_ENTRY_TO, `data-cm-entry="to" data-i="${i}"`)}</div>
+        <div class="field"><span>内容</span><textarea rows="7" data-cm-entry="text" data-i="${i}" placeholder="写在这里">${esc(e.text)}</textarea></div>
+        <div class="actions">${i > 0 ? btn('cm-entry-up', '上移', 'secondary', `data-i="${i}"`) : ''}${i < last ? btn('cm-entry-down', '下移', 'secondary', `data-i="${i}"`) : ''}${btn('cm-entry-del', '删除这一条', 'secondary', `data-i="${i}"`)}</div></div>`;
+    v.draw(heading('编辑漫画预设', help('一条一条写分镜和出图的要求，每条可以单独开关；使用中的预设里打开的条目，会在每次写分镜、每次出图时加进去。可以导出成文件，也可以把文件交给 AI 改好再导入。'), 'Comic Preset')
+      + `<div class="group pad bk-setup"><div class="field"><span>预设名</span><input data-cm-pname value="${esc(p.name)}" maxlength="60"></div></div>`
+      + p.entries.map(entry).join('')
+      + `<div class="actions">${btn('cm-entry-add', icon('add') + '加一条', 'secondary')}</div>
+      <div class="actions"><button type="button" class="secondary" data-action="cm-preset-cancel">取消</button><button type="button" class="primary" data-action="cm-preset-save">保存并使用</button></div>`);
   }
-  async function presetAction(what) {
-    const c = cfg(), now = c.presets.find(p => p.id === c.preset);
-    try {
-      if (what === 'new') { const name = await askName('存为新预设'); if (name) store(savePreset(c, {name})); }
-      else if (what === 'update' && now) { store(savePreset(c, {id: now.id})); ctx.notify('预设「' + now.name + '」已更新'); }
-      else if (what === 'rename' && now) { const name = await askName('预设改名', now.name); if (name) store({...c, presets: c.presets.map(p => p.id === now.id ? {...p, name} : p)}); }
-      else if (what === 'delete' && now) { if (!await ctx.confirm('删除预设「' + now.name + '」？', '现在用着的设置不变，只是这个预设没了。')) return; store(removePreset(c, now.id)); }
-    } catch (e) { ctx.notify(e.message, {error: true}); }
-    if (view === 'settings') settings();
+  async function importPreset(file) {
+    try { editPreset(readPresetFile(await file.text())); ctx.notify('读进来了，看一下再点「保存并使用」'); } catch (e) { ctx.notify(e.message, {error: true}); }
+  }
+  async function exportPreset() {
+    const now = activePreset(cfg()); if (!now) return;
+    try { ctx.notify('已导出 ' + await saveFile(ctx.doc, new Blob([presetFile(now)], {type: 'application/json'}), '漫画预设 ' + now.name)); } catch (e) { ctx.notify(e.message, {error: true}); }
+  }
+  async function deletePreset() {
+    const now = activePreset(cfg()); if (!now || !await ctx.confirm('删除预设「' + now.name + '」？', '这个预设和它的条目会删掉。')) return;
+    store(removePreset(cfg(), now.id)); settings();
   }
   function settings() {
     view = 'settings'; draft = null; form = null;
@@ -91,8 +103,8 @@ export function comicApp(ctx) {
     const styleNote = COMIC_STYLES.find(([k]) => k === c.style)?.[2] || '';
     v.draw(heading('漫画设置', '', 'Comic')
       + `<div class="group pad bk-setup">
-        <div class="field"><span>漫画预设${help('把下面这一整套（色彩、分镜风格、语言、字号、气泡、留白、额外要求）存成一个名字，之后一点就套用。套用后再改下面的选项，预设不会变，点「更新」才会存进去。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
-          <div class="actions">${btn('cm-preset-new', '存为新预设', 'secondary')}${c.preset ? btn('cm-preset-update', '更新这个预设', 'secondary') + btn('cm-preset-rename', '改名', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}</div></div>
+        <div class="field"><span>漫画预设${help('出图和分镜的预设：一条一条的要求，每条可开关，写分镜、出图时加进去（和绘图预设一样的做法）。这里选使用哪一个；下面的色彩、分镜风格等选项照常生效，预设是在它们之上再加的。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
+          <div class="actions">${btn('cm-preset-new', '新建', 'secondary')}${c.preset ? btn('cm-preset-edit', '编辑', 'secondary') + btn('cm-preset-export', '导出', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}<label class="chip-button">导入<input type="file" data-cm-import accept=".json,application/json,text/plain" hidden aria-label="选择漫画预设文件"></label></div></div>
         <div class="field"><span>色彩${help('黑白：分镜里不写颜色，画图时加 monochrome、greyscale、screentone，并排除 color。')}</span>${seg('color', COMIC_COLORS)}</div>
         <div class="field"><span>分镜风格${help('影响文字模型怎么写分镜（每页几格、景别、节奏）。版式仍是插件固定的排法，斜切格、宽屏格画不出来。单图单格、上下两格会固定每页的格数。')}</span>${seg('style', COMIC_STYLES.map(([k, l]) => [k, l]), c.style, ' cm-wrap')}${styleNote ? `<small>${esc(styleNote)}</small>` : ''}</div>
         <div class="field"><span>对白语言${help('文字模型写分镜时，台词用这个语言。')}</span>${seg('lang', COMIC_LANGS)}</div>
@@ -120,7 +132,7 @@ export function comicApp(ctx) {
       + `<div class="group pad bk-setup">
         <div class="field"><span>故事来源</span>${seg('kind', SOURCES)}</div>
         ${source}
-        ${cfg().presets.length ? `<div class="field"><span>漫画预设${help('用哪一套漫画设置（色彩、分镜风格、对白……）。在右上角「设置」里存预设。')}</span>${select('cm-make-preset', cfg().preset, presetChoices(cfg()))}</div>` : ''}
+        ${cfg().presets.length ? `<div class="field"><span>漫画预设${help('用哪一个漫画预设（一条条分镜、出图要求）。在右上角「设置」里新建、编辑。')}</span>${select('cm-make-preset', cfg().preset, presetChoices(cfg()))}</div>` : ''}
         <div class="field"><span>页数${help('不填：文字模型按故事长短定（' + COMIC_PAGES.min + '–' + COMIC_PAGES.max + ' 页）。填了：就画这么多页。高潮的地方会单独占一整页（一格大图），其余每页 2–6 格。')}</span><input data-cm-field="pages" type="number" inputmode="numeric" min="${COMIC_PAGES.min}" max="${COMIC_PAGES.max}" value="${esc(form.pages)}" placeholder="不填：按故事长短"></div>
         <div class="field"><span>出图${help('自动出图：分镜写好后，一页接一页地画，进度显示在页面上。手动出图：只排出页面，你想画哪一页就点那一页的「画」。两种都可以随时再画。')}</span>${seg('how', MODES)}</div>
         <div class="field"><span>漫画名（可以不填）</span><input data-cm-field="title" value="${esc(form.title)}" maxlength="40" placeholder="让文字模型起"></div></div>
@@ -231,13 +243,27 @@ export function comicApp(ctx) {
   v.on('click', '[data-action=cm-new]', () => { newForm(); make(); });
   v.on('click', '[data-action=cm-shelf]', () => shelf());
   v.on('click', '[data-action=cm-settings]', () => settings());
-  v.on('click', '[data-action=cm-preset-new]', () => presetAction('new'));
-  v.on('click', '[data-action=cm-preset-update]', () => presetAction('update'));
-  v.on('click', '[data-action=cm-preset-rename]', () => presetAction('rename'));
-  v.on('click', '[data-action=cm-preset-delete]', () => presetAction('delete'));
-  v.on('change', '[data-field=cm-preset]', el => { store(el.value ? applyPreset(cfg(), el.value) : {...cfg(), preset: ''}); settings(); });
+  v.on('click', '[data-action=cm-preset-new]', () => editPreset(newPreset()));
+  v.on('click', '[data-action=cm-preset-edit]', () => { const now = activePreset(cfg()); if (now) editPreset(now); });
+  v.on('click', '[data-action=cm-preset-export]', exportPreset);
+  v.on('click', '[data-action=cm-preset-delete]', deletePreset);
+  v.on('click', '[data-action=cm-preset-cancel]', () => { editing = null; settings(); });
+  v.on('click', '[data-action=cm-preset-save]', () => { try { store(savePreset(cfg(), editing)); editing = null; settings(); } catch (e) { ctx.notify(e.message, {error: true}); } });
+  v.on('click', '[data-action=cm-entry-add]', () => { editing.entries.push({id: 'cp-' + Date.now().toString(36) + editing.entries.length, title: '', enabled: true, to: 'story', text: ''}); presetEditor(); });
+  v.on('click', '[data-action=cm-entry-del]', el => { editing.entries.splice(Number(el.dataset.i), 1); presetEditor(); });
+  v.on('click', '[data-action=cm-entry-up]', el => { const i = Number(el.dataset.i), e = editing.entries; [e[i - 1], e[i]] = [e[i], e[i - 1]]; presetEditor(); });
+  v.on('click', '[data-action=cm-entry-down]', el => { const i = Number(el.dataset.i), e = editing.entries; [e[i + 1], e[i]] = [e[i], e[i + 1]]; presetEditor(); });
+  v.on('change', '[data-field=cm-preset]', el => { store({...cfg(), preset: el.value}); settings(); });
+  v.on('change', '[data-cm-import]', el => { const f = el.files?.[0]; el.value = ''; if (f) importPreset(f); });
+  v.root.addEventListener('input', e => {
+    if (!editing || view !== 'preset') return;
+    const t = e.target;
+    if (t.dataset?.cmPname !== undefined) editing.name = t.value;
+    else if (t.dataset?.cmEntry) editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.dataset.cmEntry === 'enabled' ? t.checked : t.value;
+  });
+  v.root.addEventListener('change', e => { const t = e.target; if (editing && view === 'preset' && t.dataset?.cmEntry) editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.dataset.cmEntry === 'enabled' ? t.checked : t.value; });
   v.on('change', '[data-cm-note]', el => { store({...cfg(), note: el.value}); settings(); });
-  v.on('change', '[data-field=cm-make-preset]', el => { store(el.value ? applyPreset(cfg(), el.value) : {...cfg(), preset: ''}); make(); });
+  v.on('change', '[data-field=cm-make-preset]', el => { store({...cfg(), preset: el.value}); make(); });
   v.on('click', '[data-cm-cfg]', el => { try { api.saveComic({[el.dataset.cmCfg]: el.dataset.cmCfg === 'textHide' ? el.dataset.value === 'true' : el.dataset.value}); } catch (e) { ctx.notify(e.message, {error: true}); } settings(); });
   v.on('click', '[data-action=cm-range]', pickRange);
   v.on('click', '[data-action=cm-start]', start);
@@ -245,13 +271,55 @@ export function comicApp(ctx) {
   v.on('click', '[data-action=cm-all]', drawAll);
   v.on('click', '[data-action=cm-draw]', el => { if (draft) run(draft, [Number(el.dataset.i)]); });
   v.on('click', '[data-action=cm-shelve]', shelve);
-  function read() {
-    const d = draft; if (!d || reader && !reader.closed) return;
-    const ids = () => d.pages.map((_, i) => i).filter(i => d.pages[i].photo);
-    reader = openComicReader(ctx, {title: d.title, parent: ctx.doc.body, load: async () => Promise.all(ids().map(i => pageUrl(d, i))),
-      caption: {get: () => !cfg().textHide, set: on => store({...cfg(), textHide: !on})}});
+  // ---------- 阅读: the 书架's way (ui/album-viewer.js: a page full screen, swipe, 目录 / 书签 / 设置 on the bar) ----------
+  const marksOf = d => Array.isArray(d.marks) ? d.marks : (d.marks = []);
+  const closeReading = () => { const a = album, r = reader; album = reader = null; a?.close(); r?.close(); };
+  const readingOpen = () => !!(album?.open || (reader && !reader.closed));
+  /** Opens the comic of `d` at page `at` (an index among the drawn pages), the way the person reads (设置). */
+  function read(at = 0, d = draft) {
+    if (!d || readingOpen()) return;
+    const ids = d.pages.map((_, i) => i).filter(i => d.pages[i].photo);
+    if (!ids.length) { ctx.notify('还没有画好的页'); return; }
+    at = Math.max(0, Math.min(ids.length - 1, at));
+    const again = n => { closeReading(); read(n, d); };
+    const caption = {get: () => !cfg().textHide, set: on => store({...cfg(), textHide: !on})};
+    const toc = () => {
+      const dlg = ctx.dialog('目录与书签', '<div data-cm-toc></div>');
+      (async () => {
+        const rows = await Promise.all(ids.map(async (page, n) => `<button type="button" class="bs-row-link" data-cm-go="${n}"><strong>第 ${n + 1} 页${marksOf(d).includes(page) ? ' ★' : ''}</strong><small>${d.pages[page].kind === 'splash' ? '高潮大图' : d.pages[page].panels.length + ' 格'}</small></button>`));
+        const box = dlg.body.querySelector('[data-cm-toc]'); if (box) box.innerHTML = rows.join('');
+      })();
+      dlg.body.addEventListener('click', e => { const b = e.target.closest('[data-cm-go]'); if (!b) return; dlg.close(); again(Number(b.dataset.cmGo)); });
+    };
+    const bookmark = () => {
+      const page = ids[album?.index ?? at], marks = marksOf(d), found = marks.indexOf(page);
+      if (found < 0) marks.push(page); else marks.splice(found, 1);
+      save(); ctx.notify(found < 0 ? '已加书签' : '已移除书签');
+    };
+    const options = () => {
+      const now = readingMode(ctx.win), on = caption.get();
+      const seg = (key, list, cur) => `<div class="segmented">${list.map(([k, l]) => `<button type="button" data-cm-opt="${key}" data-value="${k}" aria-pressed="${String(cur) === String(k)}">${l}</button>`).join('')}</div>`;
+      const dlg = ctx.dialog('阅读设置', field('阅读方式' , seg('mode', READING_MODES, now)) + field('对白字幕', seg('caption', [['1', '显示'], ['0', '隐藏']], on ? '1' : '0')));
+      dlg.body.addEventListener('click', e => {
+        const b = e.target.closest('[data-cm-opt]'); if (!b) return;
+        if (b.dataset.cmOpt === 'caption') { caption.set(b.dataset.value === '1'); dlg.close(); again(album?.index ?? at); return; }
+        setReadingMode(ctx.win, b.dataset.value); dlg.close(); again(album?.index ?? at);
+      });
+    };
+    if (readingMode(ctx.win) !== 'page') {
+      reader = openComicReader(ctx, {title: d.title, parent: ctx.doc.body, start: at, caption, options, toc, bookmark,
+        load: async () => Promise.all(ids.map(i => pageUrl(d, i)))});
+      return;
+    }
+    album = openAlbum({ctx, host: v.root.closest('.screen') || v.root, ids: ids.map(String), index: at, preload: true,
+      load: async id => ({blob: await pageBlob(d, Number(id)), name: '第 ' + (ids.indexOf(Number(id)) + 1) + ' 页'}),
+      onPullDown: bookmark, onClose: () => { album = null; },
+      actions: [{key: 'toc', icon: 'book', label: '目录', run: toc}, {key: 'bookmark', icon: 'star', label: '书签', run: bookmark}, {key: 'settings', icon: 'sliders', label: '设置', run: options}]});
+    album.root.setAttribute('aria-label', d.title); album.root.querySelector('[data-av=close]').setAttribute('aria-label', '返回漫画');
+    const slider = ctx.doc.createElement('input'); slider.type = 'range'; slider.min = '0'; slider.max = String(ids.length - 1); slider.value = String(at); slider.setAttribute('aria-label', '漫画进度'); slider.className = 'reading-comic-progress';
+    slider.onchange = () => again(Number(slider.value)); album.root.querySelector('.album-bar').before(slider);
   }
-  v.on('click', '[data-action=cm-read]', read);
+  v.on('click', '[data-action=cm-read]', () => read(0));
   /** From the tavern page (the 楼层 menu's 画成漫画): the making form with that message and page count filled in. */
   v.makeFrom = (id, pages) => {
     if (job) { ctx.notify('先等正在画的这本'); return; }
@@ -268,10 +336,10 @@ export function comicApp(ctx) {
   v.on('click', '[data-cm-open]', el => { const d = drafts.find(x => x.id === el.dataset.cmOpen); if (d) work(d); });
   v.on('click', '[data-cm-set]', el => { form[el.dataset.cmSet] = el.dataset.value; make(); });
   v.root.addEventListener('input', e => { const f = e.target.dataset?.cmField; if (form && f) form[f] = e.target.value; });
-  v.back = () => { if (reader && !reader.closed) { reader.close(); return true; } if (view === 'shelf') return false; if (view === 'board') { if (job) job.stop = true; return true; } shelf(); return true; };
+  v.back = () => { if (readingOpen()) { closeReading(); return true; } if (view === 'preset') { editing = null; settings(); return true; } if (view === 'shelf') return false; if (view === 'board') { if (job) job.stop = true; return true; } shelf(); return true; };
   v.refresh = () => { if (view === 'shelf') shelf(); };
   const dispose = v.dispose;
-  v.dispose = () => { reader?.close(); if (job) { job.stop = true; job.queue = []; } for (const u of urls.values()) ctx.win.URL.revokeObjectURL(u); dispose(); };
+  v.dispose = () => { closeReading(); if (job) { job.stop = true; job.queue = []; } for (const u of urls.values()) ctx.win.URL.revokeObjectURL(u); dispose(); };
   shelf();
   return v;
 }
