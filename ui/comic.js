@@ -258,13 +258,15 @@ export function comicApp(ctx) {
     };
     const page = (p, i) => {
       const st = stateOf(i), src = urlsOf[i];
-      return `<div class="cm-page" data-state="${st}"><div class="cm-pic">${src ? `<img src="${esc(src)}" alt="第 ${i + 1} 页">` : holder(p, i)}${st === 'running' ? '<em class="cm-busy">正在画…</em>' : ''}</div>
+      return `<div class="cm-page" data-state="${st}">
         <div class="cm-row"><b>第 ${i + 1} 页 · ${p.kind === 'splash' ? '高潮大图' : p.panels.length + ' 格'}</b><span>${st === 'running' ? '正在画' : st === 'waiting' ? '排队中' : st === 'failed' ? '没画成：' + esc(failures.get(draft.id + ':' + i) || '') : src ? '已画' : '没画'}</span>
-        ${btn('cm-draw', src ? '重画' : '画', 'chip-button', `data-i="${i}"`)}</div></div>`;
+        ${btn('cm-draw', src ? '重画' : '画', 'chip-button', `data-i="${i}"`)}</div>
+        <div class="cm-pic">${src ? `<img src="${esc(src)}" alt="第 ${i + 1} 页">` : holder(p, i)}${st === 'running' ? '<em class="cm-busy">正在画…</em>' : ''}</div></div>`;
     };
     v.draw(heading(d.title, '', 'Comic')
       + `<div class="bk-progress"><b>${esc(status)}</b><div class="bk-bar"><i style="width:${n ? Math.round(m / n * 100) : 0}%"></i></div></div>
       <div class="actions">${busy ? '<button type="button" class="secondary" data-action="cm-stop">停下</button>' : (m < n ? `<button type="button" class="primary" data-action="cm-all">${icon('paint')}自动画剩下的 ${n - m} 页</button>` : '')}
+      ${m && !busy ? '<button type="button" class="secondary" data-action="cm-redo-all">全部重画</button>' : ''}
       ${m ? '<button type="button" class="primary" data-action="cm-read">阅读</button>' : ''}
       ${m && !busy ? `<button type="button" class="${m < n ? 'secondary' : 'primary'}" data-action="cm-shelve">放进书架${d.shelved ? '（更新）' : ''}</button>` : ''}
       ${d.shelved ? '<button type="button" class="secondary" data-action="cm-go">去书架</button>' : ''}</div>
@@ -300,6 +302,11 @@ export function comicApp(ctx) {
         if (view === 'work' && draft === d) await work(d);
       }
     } finally { const failed = job?.failed || {}; job = null; if (view === 'work' && draft === d) { await work(d); } const bad = Object.keys(failed).length; if (bad) ctx.notify(`有 ${bad} 页没画成，点那一页的「画」再试`, {error: true}); }
+  }
+  async function redrawAll() {
+    if (job || !draft) return;
+    if (!await ctx.confirm('全部重画？', `这 ${draft.pages.length} 页会按顺序重新画，已经画好的图会被换掉。`)) return;
+    run(draft, draft.pages.map((_, i) => i));
   }
   const drawAll = () => run(draft, draft.pages.map((_, i) => i).filter(i => !draft.pages[i].photo));
 
@@ -368,6 +375,7 @@ export function comicApp(ctx) {
   v.on('click', '[data-action=cm-make-back]', () => make());
   v.on('click', '[data-action=cm-stop]', () => { if (job) { job.stop = true; job.queue = []; } if (view === 'board') { job = null; make(); } ctx.notify('画完这一页就停'); });
   v.on('click', '[data-action=cm-all]', drawAll);
+  v.on('click', '[data-action=cm-redo-all]', redrawAll);
   v.on('click', '[data-action=cm-draw]', el => { if (draft) run(draft, [Number(el.dataset.i)]); });
   v.on('click', '[data-action=cm-shelve]', shelve);
   // ---------- 阅读: the 书架's way (ui/album-viewer.js: a page full screen, swipe, 目录 / 书签 / 设置 on the bar) ----------
