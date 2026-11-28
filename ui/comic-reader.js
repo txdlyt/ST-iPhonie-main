@@ -15,7 +15,7 @@ export function mountReader(root, {mode = 'book', urls = [], at = 0, rtl = false
   const old = root.querySelector('.album-stage');
   old.hidden = true;
   const stage = doc.createElement('div');
-  stage.className = 'cm-rd-stage'; if (rtl) stage.dataset.rtl = '1';
+  stage.className = 'cm-rd-stage'; if (mode !== 'book') stage.dataset.fill = '1';
   root.prepend(stage);
   const count = root.querySelector('[data-av-count]');
   const art = i => `<div class="cm-rd-art"><img src="${esc(urls[i])}" alt="第 ${i + 1} 页" draggable="false"></div>`;

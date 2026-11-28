@@ -32,7 +32,7 @@ test('单图单格 and 上下两格 fix the panels of every page', () => {
   assert.deepEqual(two.pages.map(p => [p.kind, p.panels.length]), [['page', 2], ['page', 1]]);
   assert.deepEqual(parseComic(board(4)).pages.map(p => [p.kind, p.panels.length]), [['page', 4], ['splash', 1]]);
 });
-test('canvasOptions', () => assert.deepEqual(canvasOptions({textSize: 'large', textHide: true, bubble: 'oval'}), {textSize: 'large', hide: true, bubble: 'oval'}));
+test('canvasOptions', () => assert.deepEqual(canvasOptions({textSize: 'large', textHide: true, bubble: 'oval'}), {textSize: 'large', hide: true, bubble: 'oval', rtl: false}));
 
 test('单图单格 / 上下两格: the request no longer also says "2–6 格 / splash 一成"', () => {
   const sys = comicRequest({story: 'x', comic: {style: 'single'}})[0].content;
@@ -45,7 +45,7 @@ test('额外要求 reaches the request', () => {
 });
 test('presets are lists of entries: save, edit, switch off, remove', () => {
   let c = normalizeComic({});
-  const made = newPreset('我的分镜'); made.entries[0].text = '多用特写';
+  const made = newPreset('我的分镜'); made.entries.length = 1; made.entries[0].title = '分镜要求'; made.entries[0].text = '多用特写'; delete made.replace;
   made.entries.push({id: 'e2', title: '前缀', enabled: true, to: 'tags', text: 'masterpiece, '}, {id: 'e3', title: '负面', enabled: true, to: 'negative', text: 'text'}, {id: 'e4', title: '关着', enabled: false, to: 'story', text: '不会发'});
   c = savePreset(c, made);
   assert.equal(c.preset, made.id); assert.equal(c.presets[0].entries.length, 4);
@@ -57,7 +57,7 @@ test('presets are lists of entries: save, edit, switch off, remove', () => {
   c = removePreset(c, made.id); assert.deepEqual([c.presets.length, c.preset], [0, '']);
 });
 test('a preset file: out and back (new id), bare preset, wrong kind, empty', () => {
-  const p = newPreset('导出'); p.entries[0].text = '写得紧凑';
+  const p = newPreset('导出'); p.entries.length = 1; p.entries[0].text = '写得紧凑';
   const back = readPresetFile(presetFile(p));
   assert.equal(back.name, '导出'); assert.notEqual(back.id, p.id); assert.equal(back.entries[0].text, '写得紧凑');
   assert.equal(JSON.parse(presetFile(p)).kind, 'comic');
@@ -82,4 +82,21 @@ test('new options: unknown values drop, comic-own NovelAI parameters keep only g
   assert.match(m.comicTags({artist: 'artist:foo, '}).tags, /^artist:foo$/);
   assert.ok(m.comicRules({perPage: '4', variety: 'bold'}).some(r => /每页 4 格/.test(r)) && m.comicRules({variety: 'bold'}).some(r => /大胆/.test(r)));
   assert.ok(!m.comicRules({style: 'single', perPage: '4'}).some(r => /每页 4 格/.test(r)));
+});
+
+test('默认分镜预设: the default entries make the request; a copy stands in for them; direction rtl reaches rules, tags, rects', async () => {
+  const m = await import('../core/comic-settings.js'), k = await import('../core/comic.js');
+  const base = k.comicRequest({story: 'x'})[0].content;
+  for (const e of m.DEFAULT_COMIC_ENTRIES) assert.ok(base.includes(e.text.split('{')[0].slice(0, 12)), e.id);
+  const mine = m.newPreset('改'); mine.entries.find(e => e.id.length && e.title === '镜头变化').text = '全部用特写'; 
+  const c = m.savePreset({}, mine);
+  const req = k.comicRequest({story: 'x', comic: c})[0].content;
+  assert.match(req, /全部用特写/); assert.doesNotMatch(req, /远景、近景、特写交替/);
+  const off = structuredClone(c.presets[0]); off.entries.forEach(e => { if (e.title === '版式') e.enabled = false; });
+  assert.doesNotMatch(k.comicRequest({story: 'x', comic: m.savePreset(c, off)})[0].content, /splash/);
+  const rtl = {direction: 'rtl'};
+  assert.match(k.comicRequest({story: 'x', comic: rtl})[0].content, /从右往左/);
+  assert.match(k.pageTags({kind: 'page', panels: [{scene: 'a'}, {scene: 'b'}]}, rtl), /right to left/);
+  const l = k.panelRects(4, 100, 100), r = k.panelRects(4, 100, 100, 0.02, true);
+  assert.ok(l[0].x < l[1].x && r[0].x > r[1].x); assert.ok(Math.abs(l[0].x - (100 - r[0].x - r[0].w)) < 1e-9);
 });

@@ -48,7 +48,7 @@ function normalizeEntries(list) {
   return (Array.isArray(list) ? list : []).filter(e => e && typeof e === 'object').slice(0, COMIC_ENTRY_MAX).map(e => {
     let id = typeof e.id === 'string' && /^[\w-]{1,64}$/.test(e.id) && !ids.has(e.id) ? e.id : newId() + ids.size;
     ids.add(id);
-    return {id, title: String(e.title ?? '').slice(0, 80), enabled: e.enabled !== false, to: pick(COMIC_ENTRY_TO, e.to, 'story'), text: typeof e.text === 'string' ? e.text.slice(0, COMIC_ENTRY_TEXT) : ''};
+    return {id, title: String(e.title ?? '').slice(0, 80), enabled: e.enabled !== false, to: pick(COMIC_ENTRY_TO, e.to, 'story'), text: typeof e.text === 'string' ? e.text.slice(0, COMIC_ENTRY_TEXT) : '', ...(e.skipFixed === true ? {skipFixed: true} : {})};
   });
 }
 /** Only the numbers and words that are given; '' / missing means the 绘图 App's own. */
@@ -64,7 +64,7 @@ function naiOf(value) {
 export function normalizeComic(value) {
   const v = value && typeof value === 'object' ? value : {}, base = defaultComic(), seen = new Set();
   const presets = (Array.isArray(v.presets) ? v.presets : []).filter(p => p && typeof p === 'object' && typeof p.id === 'string' && p.id && !seen.has(p.id) && seen.add(p.id))
-    .slice(0, COMIC_PRESET_MAX).map(p => ({id: p.id, name: String(p.name ?? '').trim().slice(0, 60) || '未命名', entries: normalizeEntries(p.entries)}));
+    .slice(0, COMIC_PRESET_MAX).map(p => ({id: p.id, name: String(p.name ?? '').trim().slice(0, 60) || '未命名', entries: normalizeEntries(p.entries), ...(p.replace === true ? {replace: true} : {})}));
   return {
     color: pick(COMIC_COLORS, v.color, base.color), style: pick(COMIC_STYLES, v.style, base.style), lang: pick(COMIC_LANGS, v.lang, base.lang),
     textSize: pick(COMIC_TEXT_SIZES, v.textSize, base.textSize), textHide: v.textHide === true, bubble: pick(COMIC_BUBBLES, v.bubble, base.bubble), gutter: pick(COMIC_GUTTERS, v.gutter, base.gutter),
@@ -76,8 +76,21 @@ export function normalizeComic(value) {
 }
 /** The preset in use, or null. */
 export const activePreset = comic => { const c = normalizeComic(comic); return c.presets.find(p => p.id === c.preset) || null; };
-/** A new preset with one empty entry. */
-export const newPreset = (name = '新漫画预设') => ({id: newId(), name, entries: [{id: newId() + '0', title: '分镜要求', enabled: true, to: 'story', text: ''}]});
+// 默认分镜预设: what the storyboard request says besides its fixed frame (the JSON shape, the people, the page count).
+// {splash} and {lang} are filled in when the request is made. skipFixed: left out when the 分镜风格 fixes the panels per page.
+export const DEFAULT_COMIC_ENTRIES = Object.freeze([
+  {id: 'layout', title: '版式', to: 'story', enabled: true, skipFixed: true, text: '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。\n像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，{splash}。'},
+  {id: 'scene', title: '画面写法', to: 'story', enabled: true, text: 'scene 是给画图模型的英文标签，逗号分隔，写构图、动作、表情、场景、光线；不要写人物外貌，不要写台词，不要写文字。'},
+  {id: 'lines', title: '台词写法', to: 'story', enabled: true, text: 'lines 是这一格的台词数组，最多 3 句；每句 {who, text, kind}，kind 是 say（说话）、think（心里话）、narr（旁白）之一；text 用{lang}，短，不超过 24 个字；旁白的 who 写「旁白」。'},
+  {id: 'variety', title: '镜头变化', to: 'story', enabled: true, text: '格子要有变化：远景、近景、特写交替，不要每格都是同一个镜头。'}
+]);
+/** A new preset: a copy of the 默认分镜预设 to change. It stands in for the default entries (replace), as a 绘图预设 does. */
+export const newPreset = (name = '我的分镜预设') => ({id: newId(), name, replace: true, entries: DEFAULT_COMIC_ENTRIES.map((e, i) => ({...e, id: newId() + i}))});
+/** The entries that tell the text model how to write the storyboard: the preset's when it stands in for the default, else the default. */
+export function storyEntries(comic) {
+  const p = activePreset(comic);
+  return (p?.replace ? p.entries : DEFAULT_COMIC_ENTRIES).filter(e => e.enabled && e.to === 'story' && e.text.trim());
+}
 /** The preset saved (a new one is added, one with the same id is replaced) and made the one in use. Throws when there is no room. */
 export function savePreset(comic, preset) {
   const c = normalizeComic(comic), p = normalizeComic({presets: [preset]}).presets[0];
@@ -114,7 +127,8 @@ export function comicRules(comic) {
   if (c.color === 'mono') rules.push('黑白漫画：scene 里只用灰阶明暗，不写任何颜色词（blue、red、brown 等一律不写）；写光源方向、明暗对比和网点（screentone）。');
   if (c.gutter !== 'none') rules.push('页面留白：' + GUTTER_WORDS[c.gutter]);
   if (c.note.trim()) rules.push('额外要求（来自用户，照着做）：' + c.note.trim());
-  for (const e of entryTexts(c, 'story')) rules.push(e.title.trim() ? '【' + e.title.trim() + '】\n' + e.text.trim() : e.text.trim());
+  if (c.direction === 'rtl') rules.push('日漫（从右往左读）：每页格子的先后顺序是从右上到左下，同一行里右边的格在前；scene 里人物的视线、动作和镜头的方向也按从右往左的阅读顺序安排。');
+  if (!activePreset(c)?.replace) for (const e of entryTexts(c, 'story')) rules.push(e.title.trim() ? '【' + e.title.trim() + '】\n' + e.text.trim() : e.text.trim());
   return rules;
 }
 /** What the 绘图 App is told on top of a page's tags: [before, negative]. */
@@ -129,7 +143,7 @@ export function comicTags(comic) {
 }
 /** What the words laid on a page look like: the font is the page's width divided by this. */
 export const TEXT_DIVISOR = {xsmall: 46, small: 38, auto: 30, large: 24};
-export const canvasOptions = comic => { const c = normalizeComic(comic); return {textSize: c.textSize, hide: c.textHide, bubble: c.bubble}; };
+export const canvasOptions = comic => { const c = normalizeComic(comic); return {textSize: c.textSize, hide: c.textHide, bubble: c.bubble, rtl: c.direction === 'rtl'}; };
 /** The drawing parameters this comic sets itself, over the 绘图 App's: only for NovelAI (the other engines are left as they are). */
 export const comicDrawParams = (comic, engine) => engine === 'nai' ? normalizeComic(comic).nai : {};
 /** 竖 / 横 / 方 for sizeFor; '' = the 绘图 App's own size. */

@@ -38,21 +38,24 @@ export function comicApp(ctx) {
 
   // ---------- pictures ----------
   /** The page as it is read: the drawn picture with the words laid on (kept per page until it is drawn again). */
+  /** How the words go onto the pages of `d`: the 漫画设置 now, and the direction the comic was made with. */
+  const opts = d => ({...canvasOptions(cfg()), rtl: d.direction === 'rtl'});
+  const settingsOf = d => ({...cfg(), direction: d.direction === 'rtl' ? 'rtl' : 'ltr'});
   async function pageUrl(d, i) {
     const p = d.pages[i];
     if (!p.photo) return '';
-    const key = d.id + ':' + i + ':' + p.photo + ':' + JSON.stringify(canvasOptions(cfg()));
+    const key = d.id + ':' + i + ':' + p.photo + ':' + JSON.stringify(opts(d));
     if (urls.has(key)) return urls.get(key);
     const photo = await api.getPhoto(p.photo).catch(() => null);
     if (!photo?.blob) return '';
-    const url = ctx.win.URL.createObjectURL(await composePage(photo.blob, p, {doc: ctx.doc, ...canvasOptions(cfg())}));
+    const url = ctx.win.URL.createObjectURL(await composePage(photo.blob, p, {doc: ctx.doc, ...opts(d)}));
     urls.set(key, url);
     return url;
   }
   async function pageBlob(d, i) {
     const photo = await api.getPhoto(d.pages[i].photo);
     if (!photo?.blob) throw Error('第 ' + (i + 1) + ' 页的图不在相册里了');
-    return composePage(photo.blob, d.pages[i], {doc: ctx.doc, ...canvasOptions(cfg())});
+    return composePage(photo.blob, d.pages[i], {doc: ctx.doc, ...opts(d)});
   }
 
   // ---------- the shelf ----------
@@ -67,7 +70,7 @@ export function comicApp(ctx) {
   }
 
   // ---------- 设置 ----------
-  const presetChoices = c => [['', c.presets.length ? '（不用预设）' : '（还没有预设）'], ...c.presets.map(p => [p.id, p.name])];
+  const presetChoices = c => [['', '默认分镜预设（内置）'], ...c.presets.map(p => [p.id, p.name])];
   const store = next => { try { api.saveComic(next); } catch (e) { ctx.notify(e.message, {error: true}); } };
   // ---------- 漫画预设: like the 绘图预设, a list of entries, each switched on or off and edited as text ----------
   let editing = null;
@@ -112,10 +115,10 @@ export function comicApp(ctx) {
     const styleNote = COMIC_STYLES.find(([k]) => k === c.style)?.[2] || '';
     v.draw(heading('漫画设置', '', 'Comic')
       + `<div class="group pad bk-setup">
-        <div class="field"><span>漫画预设${help('出图和分镜的预设：一条一条的要求，每条可开关，写分镜、出图时加进去（和绘图预设一样的做法）。这里选使用哪一个；下面的色彩、分镜风格等选项照常生效，预设是在它们之上再加的。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
-          <div class="actions">${btn('cm-preset-new', '新建', 'secondary')}${c.preset ? btn('cm-preset-edit', '编辑', 'secondary') + btn('cm-preset-export', '导出', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}<label class="chip-button">导入<input type="file" data-cm-import accept=".json,application/json,text/plain" hidden aria-label="选择漫画预设文件"></label></div></div>
+        <div class="field"><span>漫画预设${help('出图和分镜的预设：一条一条的要求，每条可开关，写分镜、出图时加进去（和绘图预设一样的做法）。默认分镜预设是内置的（写分镜的版式、画面、台词、镜头变化这几条），不能直接改；点「复制默认来改」得到一份自己的，改了保存并使用，它就代替默认。下面的色彩、分镜风格等选项照常生效。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
+          <div class="actions">${btn('cm-preset-new', '复制默认来改', 'secondary')}${c.preset ? btn('cm-preset-edit', '编辑', 'secondary') + btn('cm-preset-export', '导出', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}<label class="chip-button">导入<input type="file" data-cm-import accept=".json,application/json,text/plain" hidden aria-label="选择漫画预设文件"></label></div></div>
         <div class="field"><span>阅读方式${help('看漫画时怎么翻。顶栏、底栏都是书架那一套，这里只换页面怎么动。阅读界面的「设置」里也能改。')}</span>${seg('reading', COMIC_READING, c.reading, ' cm-wrap')}</div>
-        <div class="field"><span>阅读方向${help('从右往左：日漫的翻法。只对「翻页（书架）」生效：第 1 页在最右，往右滑是下一页；翻书、卡片堆、上下滑不受影响。')}</span>${seg('direction', COMIC_DIRECTIONS)}</div>
+        <div class="field"><span>阅读方向${help('从右往左：日漫的画法和读法。做新漫画时：分镜里格子从右上排到左下，画图标签写明从右往左，对白框按这个顺序摆；翻页（书架）时第 1 页在最右，往右滑是下一页。已经做好的漫画保持它当时的方向。翻书、卡片堆、上下滑的翻页方向不变。')}</span>${seg('direction', COMIC_DIRECTIONS)}</div>
         <div class="field"><span>每次画几页${help('做一本漫画时「页数」栏的默认值。空：由文字模型按故事长短定。')}</span>${seg('pagesEach', COMIC_PAGES_EACH.map(k => [k, k || '自动']), c.pagesEach, ' cm-wrap')}</div>
         <div class="field"><span>每页几格${help('空：由文字模型定。单图单格、上下两格这两个分镜风格会固定格数，这一项就不管用。')}</span>${seg('perPage', COMIC_PER_PAGE.map(k => [k, k || '自动']), c.perPage, ' cm-wrap')}</div>
         <div class="field"><span>分镜变化${help('写进分镜要求里，决定各页的格数、景别是规整还是有起伏。')}</span>${seg('variety', COMIC_VARIETY.map(([k, l]) => [k, l]), c.variety, ' cm-wrap')}</div>
@@ -149,7 +152,7 @@ export function comicApp(ctx) {
       + `<div class="group pad bk-setup">
         <div class="field"><span>故事来源</span>${seg('kind', SOURCES)}</div>
         ${source}
-        ${cfg().presets.length ? `<div class="field"><span>漫画预设${help('用哪一个漫画预设（一条条分镜、出图要求）。在右上角「设置」里新建、编辑。')}</span>${select('cm-make-preset', cfg().preset, presetChoices(cfg()))}</div>` : ''}
+        <div class="field"><span>漫画预设${help('用哪一个漫画预设（一条条分镜、出图要求）。在右上角「设置」里新建、编辑。')}</span>${select('cm-make-preset', cfg().preset, presetChoices(cfg()))}</div>
         <div class="field"><span>页数${help('不填：文字模型按故事长短定（' + COMIC_PAGES.min + '–' + COMIC_PAGES.max + ' 页）。填了：就画这么多页。高潮的地方会单独占一整页（一格大图），其余每页 2–6 格。')}</span><input data-cm-field="pages" type="number" inputmode="numeric" min="${COMIC_PAGES.min}" max="${COMIC_PAGES.max}" value="${esc(form.pages)}" placeholder="不填：按故事长短"></div>
         <div class="field"><span>出图${help('自动出图：分镜写好后，一页接一页地画，进度显示在页面上。手动出图：只排出页面，你想画哪一页就点那一页的「画」。两种都可以随时再画。')}</span>${seg('how', MODES)}</div>
         <div class="field"><span>漫画名（可以不填）</span><input data-cm-field="title" value="${esc(form.title)}" maxlength="40" placeholder="让文字模型起"></div></div>
@@ -178,7 +181,7 @@ export function comicApp(ctx) {
       const reply = await api.bookWrite(request[0].content, request[1].content, {length: 3500});
       if (job.stop || v.disposed) return;
       const comic = parseComic(reply, {maxPages: count || undefined, comic: cfg()});
-      draft = {id: 'c-' + Date.now().toString(36), title: title || comic.title || '漫画', at: Date.now(), how, pages: comic.pages};
+      draft = {id: 'c-' + Date.now().toString(36), direction: cfg().direction, title: title || comic.title || '漫画', at: Date.now(), how, pages: comic.pages};
       drafts.unshift(draft); save();
       job = null;
       work(draft);
@@ -195,7 +198,7 @@ export function comicApp(ctx) {
     const n = d.pages.length, m = drawn(d), busy = !!job;
     const status = job ? `正在画第 ${(job.current ?? 0) + 1}/${n} 页 · 已画 ${m}/${n}${job.queue?.length ? ` · 还排着 ${job.queue.length} 页` : ''}` : `已画 ${m}/${n} 页`;
     const holder = (p, i) => {
-      const rects = panelRects(p.panels.length, 200, 300);
+      const rects = panelRects(p.panels.length, 200, 300, 0.02, d.direction === 'rtl');
       return `<span class="cm-sheet" style="aspect-ratio:2/3">${rects.map((r, k) => `<i class="cm-panel" style="left:${r.x / 2}%;top:${r.y / 3}%;width:${r.w / 2}%;height:${r.h / 3}%"><small>${esc((p.panels[k].lines || []).map(l => l.text).join(' ').slice(0, 40))}</small></i>`).join('')}</span>`;
     };
     const page = (p, i) => {
@@ -216,7 +219,7 @@ export function comicApp(ctx) {
   /** One page drawn by the 绘图 App (people with their looks, 画风 as in the 绘图 App, a tall picture). */
   async function drawPage(d, i) {
     const p = d.pages[i], names = pageCharacters(p);
-    const inputs = pictureInputs(api.getState(), {prompt: pageTags(p, cfg()), characters: names}, '');
+    const inputs = pictureInputs(api.getState(), {prompt: pageTags(p, settingsOf(d)), characters: names}, '');
     const state = api.getState(), word = comicSizeWord(cfg());
     inputs.params = {...inputs.params, ...(word ? sizeFor(inputs.params, word) : {})};
     const own = comicDrawParams(cfg(), state.draw?.engine);
@@ -300,7 +303,7 @@ export function comicApp(ctx) {
   /** Opens the comic of `d` at page `at` (an index among the drawn pages), the way 漫画设置 says (阅读方式 / 阅读方向 / 字幕). */
   async function read(at = 0, d = draft) {
     if (!d || readingOpen()) return;
-    const ids = d.pages.map((_, i) => i).filter(i => d.pages[i].photo), mode = cfg().reading, rtl = cfg().direction === 'rtl' && mode === 'page';
+    const ids = d.pages.map((_, i) => i).filter(i => d.pages[i].photo), mode = cfg().reading, rtl = d.direction === 'rtl' && mode === 'page';
     if (!ids.length) { ctx.notify('还没有画好的页'); return; }
     at = Math.max(0, Math.min(ids.length - 1, at));
     const order = rtl ? ids.map((_, n) => ids.length - 1 - n) : ids.map((_, n) => n);   // positions in the album → logical page n
@@ -318,7 +321,7 @@ export function comicApp(ctx) {
     const options = () => {
       const c = cfg();
       const seg = (key, list, cur) => `<div class="segmented">${list.map(([k, l]) => `<button type="button" data-cm-opt="${key}" data-value="${k}" aria-pressed="${String(cur) === String(k)}">${l}</button>`).join('')}</div>`;
-      const dlg = ctx.dialog('阅读设置', field('阅读方式', seg('reading', COMIC_READING, c.reading)) + field('阅读方向', seg('direction', COMIC_DIRECTIONS, c.direction)) + field('对白字幕', seg('textHide', [['false', '显示'], ['true', '隐藏']], String(c.textHide))));
+      const dlg = ctx.dialog('阅读设置', field('阅读方式', seg('reading', COMIC_READING, c.reading)) + field('对白字幕', seg('textHide', [['false', '显示'], ['true', '隐藏']], String(c.textHide))));
       dlg.body.addEventListener('click', e => {
         const b = e.target.closest('[data-cm-opt]'); if (!b) return;
         const at = now(); store({[b.dataset.cmOpt]: b.dataset.cmOpt === 'textHide' ? b.dataset.value === 'true' : b.dataset.value}); dlg.close(); again(at);

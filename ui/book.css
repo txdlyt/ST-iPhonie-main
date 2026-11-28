@@ -179,3 +179,10 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 .cm-nai{display:grid;gap:3px;min-width:0}.cm-nai small{font-size:11px;opacity:.7}
 .cm-nai input,.cm-nai select{width:100%;min-width:0}
 .cm-rd-stage .cm-rd-scroll{touch-action:pan-y}
+/* 卡片堆 / 上下滑: the pictures fill the screen */
+.cm-rd-stage[data-fill]{inset:0}
+.cm-rd-stage[data-fill] .cm-rd-art{background:transparent}
+.cm-rd-stage[data-fill] .cm-rd-card{width:min(100vw,calc(100vh * .684));height:min(100vh,calc(100vw / .684));aspect-ratio:auto}
+.cm-rd-stage[data-fill] .cm-rd-card .cm-rd-art{border-radius:0;box-shadow:none}
+.cm-rd-stage[data-fill] .cm-rd-vpage{padding:0}
+.cm-rd-stage[data-fill] .cm-rd-vpage .holder{height:100%;width:100%;max-width:none;aspect-ratio:auto;border-radius:0}

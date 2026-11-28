@@ -21,11 +21,11 @@ function box(ctx, x, y, w, h, kind, shape = 'round') {
   ctx.setLineDash(kind === 'think' ? [ctx.lineWidth * 3, ctx.lineWidth * 2] : []); ctx.stroke(); ctx.setLineDash([]);
 }
 /** `blob` (the page as drawn) with `page`'s words on it → a PNG blob. doc: the document to make the canvas in. */
-export async function composePage(blob, page, {doc = globalThis.document, size = 0, textSize = 'auto', hide = false, bubble = 'round'} = {}) {
+export async function composePage(blob, page, {doc = globalThis.document, size = 0, textSize = 'auto', hide = false, bubble = 'round', rtl = false} = {}) {
   const bitmap = await globalThis.createImageBitmap(blob), w = bitmap.width, h = bitmap.height;
   const canvas = doc.createElement('canvas'); canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0); bitmap.close?.();
-  const font = size || Math.max(16, Math.round(w / (TEXT_DIVISOR[textSize] || 30))), pad = Math.round(font * .6), cells = panelRects(page.panels.length, w, h);
+  const font = size || Math.max(16, Math.round(w / (TEXT_DIVISOR[textSize] || 30))), pad = Math.round(font * .6), cells = panelRects(page.panels.length, w, h, 0.02, rtl);
   ctx.font = `700 ${font}px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif`; ctx.textBaseline = 'top';
   if (!hide) page.panels.forEach((panel, i) => {
     const cell = cells[i] || cells[cells.length - 1]; let y = cell.y + pad;
