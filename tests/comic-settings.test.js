@@ -6,7 +6,7 @@ import {comicRequest, parseComic, pageTags} from '../core/comic.js';
 const board = n => JSON.stringify({pages: [{kind: 'page', panels: Array.from({length: n}, (_, i) => ({scene: 's' + i, who: [], lines: []}))}, {kind: 'splash', panels: [{scene: 'big', who: [], lines: []}]}]});
 
 test('defaults change nothing: the request and tags are as before the settings existed', () => {
-  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, note: '', preset: '', presets: []});
+  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, drawStyle: '', stripNeg: true, note: '', preset: '', presets: []});
   assert.deepEqual(comicRules(null), []);
   assert.deepEqual(comicTags(null), {tags: '', negative: ''});
   assert.equal(comicRequest({story: 'x'})[0].content, comicRequest({story: 'x', comic: defaultComic()})[0].content);
@@ -113,4 +113,14 @@ test('默认分镜预设 switches: grouped, one pacing style at a time, kept in 
   assert.match(k.comicRequest({story: 'x', comic: c})[0].content, /少年热血/); assert.doesNotMatch(k.comicRequest({story: 'x', comic: c})[0].content, /轻松日常/);
   assert.equal(m.newPreset('x', c).entries.find(e => e.id.length && e.title === '少年热血').enabled, true);
   const off = m.normalizeComic({defaultOn: {s_x: 1, grammar: false}}); assert.doesNotMatch(k.comicRequest({story: 'x', comic: off})[0].content, /主格/);
+});
+
+test('per-page ranges, comic-only strip of negative words that undo the layout', async () => {
+  const m = await import('../core/comic-settings.js'), k = await import('../core/comic.js');
+  assert.equal(m.normalizeComic({perPage: '3-4'}).perPage, '3-4'); assert.equal(m.normalizeComic({perPage: '7-9'}).perPage, '');
+  assert.ok(m.comicRules({perPage: '3-4'}).some(r => /每页 3-4 格/.test(r)));
+  assert.equal(m.normalizeComic({stripNeg: false}).stripNeg, false); assert.equal(m.normalizeComic({}).stripNeg, true);
+  assert.equal(k.stripComicNegative('lowres, 1.2::border::, Comic Panel, margins, bad hands'), 'lowres, bad hands');
+  assert.equal(k.stripComicNegative('lowres, monochrome, screentone', {mono: true}), 'lowres'); assert.equal(k.stripComicNegative('lowres, monochrome'), 'lowres, monochrome');
+  assert.equal(k.stripComicNegative('text, speech bubble'), 'text, speech bubble');
 });

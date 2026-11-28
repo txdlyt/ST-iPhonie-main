@@ -189,3 +189,15 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 .cm-group{margin:16px 4px 6px;font-size:13px;opacity:.7;font-weight:600}
 .cm-entry .switch-label{display:grid;gap:2px}.cm-entry .switch-label small{font-weight:400;opacity:.65;font-size:12px}
 .cm-pre{white-space:pre-wrap;font:inherit;font-size:13px;line-height:1.55;margin:8px 0 0;padding:10px;border-radius:10px;background:rgba(127,127,127,.12);user-select:text}
+.cm-set{min-height:54px}
+.cm-set>span:first-child{flex:1;min-width:0}
+.cm-set .select{flex:0 0 auto;min-width:132px;max-width:54%}
+.cm-set .select select{width:100%}
+.cm-note{margin:-4px 0 8px;font-size:12px}
+.cm-adv{margin-top:8px;padding-top:10px;border-top:1px solid var(--line)}
+.cm-adv>summary{cursor:pointer;font-size:14px;font-weight:700;display:flex;align-items:center;gap:6px;min-height:40px}
+.cm-state{font-size:13px;opacity:.7}
+.cm-using{pointer-events:none;opacity:.7}
+.cm-reply{margin-top:10px}.cm-reply summary{cursor:pointer;font-size:13px;font-weight:700}
+.group .field+.field,.group .setting-row+.field,.group .field+.setting-row{border-top:1px solid var(--line);padding-top:10px;margin-top:6px}
+.cm-dlg{margin-bottom:8px}

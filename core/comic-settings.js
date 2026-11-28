@@ -19,7 +19,7 @@ export const COMIC_LANGS = [['zh', '简体中文'], ['ja', '日文']];
 export const COMIC_TEXT_SIZES = [['xsmall', '特小'], ['small', '小'], ['auto', '中'], ['large', '大']];
 export const COMIC_SIZES = [['portrait', '竖'], ['landscape', '横'], ['square', '方'], ['follow', '跟绘图设置']];
 export const COMIC_PAGES_EACH = ['', '1', '2', '3', '4', '6', '8', '12'];
-export const COMIC_PER_PAGE = ['', '1', '2', '3', '4', '5', '6'];
+export const COMIC_PER_PAGE = ['', '1-2', '3-4', '5-6', '1', '2', '3', '4', '5', '6'];
 export const COMIC_VARIETY = [['normal', '不指定', ''],
   ['varied', '有变化', '分镜变化：各页的格数和格的大小要有变化，不要每页都排成同一个样子；特写、中景、全景交替。'],
   ['bold', '大胆', '分镜变化：大胆的分镜，景别反差大，该用大画面的地方就用大画面（高潮用 splash 整页），小格用来加快节奏。'],
@@ -35,7 +35,7 @@ export const COMIC_GUTTERS = [['none', '不指定'], ['white', '白边'], ['blac
 const GUTTER_TAGS = {white: 'white border', black: 'black border, thick black panel borders, no white margin', bleed: 'full bleed, no border'};
 const GUTTER_WORDS = {white: 'Every panel sits inside an even white margin.', black: 'The panels touch each other and are separated only by thick black lines.', bleed: 'Every panel extends to the edges of the page with no margin.'};
 
-export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, note: '', preset: '', presets: []});
+export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, drawStyle: '', stripNeg: true, note: '', preset: '', presets: []});
 const pick = (list, value, fallback) => list.some(([k]) => k === value) ? value : fallback;
 export const COMIC_NOTE_MAX = 2000;
 // 漫画预设: like the 绘图预设, a named list of entries, each one switched on or off and edited as text. Where an entry goes:
@@ -74,6 +74,7 @@ export function normalizeComic(value) {
     pagesEach: COMIC_PAGES_EACH.includes(String(v.pagesEach ?? '')) ? String(v.pagesEach ?? '') : '', perPage: COMIC_PER_PAGE.includes(String(v.perPage ?? '')) ? String(v.perPage ?? '') : '',
     variety: pick(COMIC_VARIETY, v.variety, base.variety), direction: pick(COMIC_DIRECTIONS, v.direction, base.direction), reading: pick(COMIC_READING, v.reading, base.reading),
     defaultOn: Object.fromEntries(Object.entries(v.defaultOn && typeof v.defaultOn === 'object' ? v.defaultOn : {}).filter(([k, x]) => DEFAULT_COMIC_ENTRIES.some(e => e.id === k) && typeof x === 'boolean')),
+    drawStyle: typeof v.drawStyle === 'string' ? v.drawStyle.slice(0, 80) : '', stripNeg: v.stripNeg !== false,
     note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : '', preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets
   };
 }
@@ -164,7 +165,7 @@ export function comicTags(comic) {
   return {tags: [...before, ...tags].join(', '), negative: negative.join(', ')};
 }
 /** What the words laid on a page look like: the font is the page's width divided by this. */
-export const TEXT_DIVISOR = {xsmall: 46, small: 38, auto: 30, large: 24};
+export const TEXT_DIVISOR = {xsmall: 52, small: 42, auto: 34, large: 28};
 export const canvasOptions = comic => { const c = normalizeComic(comic); return {textSize: c.textSize, hide: c.textHide, bubble: c.bubble, rtl: c.direction === 'rtl'}; };
 /** The drawing parameters this comic sets itself, over the 绘图 App's: only for NovelAI (the other engines are left as they are). */
 export const comicDrawParams = (comic, engine) => engine === 'nai' ? normalizeComic(comic).nai : {};

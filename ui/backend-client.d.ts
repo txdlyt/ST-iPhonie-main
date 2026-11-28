@@ -337,7 +337,7 @@ export interface DrawCharacter { prompt: string; negative?: string; /** 0-24 on 
 export interface ComicEntry { id: string; title: string; enabled: boolean; to: 'story' | 'tags' | 'negative'; text: string; /** base | pacing | story | look | other */ group?: string; desc?: string; skipFixed?: boolean; }
 export interface ComicValues { color: 'full' | 'mono'; style: string; lang: 'zh' | 'ja'; textSize: 'small' | 'auto' | 'large'; textHide: boolean; bubble: 'round' | 'oval' | 'box'; gutter: 'none' | 'white' | 'black' | 'bleed'; note: string; }
 /** defaultOn: the person's on/off for the built-in 默认分镜预设 entries; a preset with replace stands in for them. */
-export interface ComicSettings extends ComicValues { preset: string; defaultOn: Record<string, boolean>; presets: Array<{ id: string; name: string; replace?: boolean; entries: ComicEntry[] }>; }
+export interface ComicSettings extends ComicValues { drawStyle: string; stripNeg: boolean; perPage: string; preset: string; defaultOn: Record<string, boolean>; presets: Array<{ id: string; name: string; replace?: boolean; entries: ComicEntry[] }>; }
 export interface DrawInput { prompt: string; negative?: string; characters?: DrawCharacter[]; params?: Partial<DrawParams>; allowPaid?: boolean; name?: string; /** Queue key; the same key joins the waiting job. */ key?: string; label?: string;
     /** GPT: the 角色参考图 of the people in it (pictureInputs), by the characters' order; null for one with none. */
     roleRefs?: Array<{ name: string; path: string } | null>;

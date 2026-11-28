@@ -5,6 +5,15 @@
 /** What a page must not hold: the words and balloons are laid on by the plugin. */
 import {comicRules, comicTags, fixedPanels, normalizeComic, storyEntries} from './comic-settings.js';
 
+/** Words that must not be in the negative of a comic page: they take the panels, the margins and the screentone away. (Words about text and bubbles are not here: the words are put on by this plugin, so those stay out of the picture.) */
+const NEG_FORBIDDEN = ['comic', 'comic panel', 'panels', 'multiple views', 'multiple scenes', '4koma', '2koma', 'sequence', 'full page comic', 'cut-in', 'border', 'white border', 'black border', 'ornate border', 'lace border', 'outside border', 'frame', 'outline', 'margins', 'negative space'];
+const NEG_MONO = ['screentone', 'halftone', 'monochrome', 'greyscale', 'grayscale'];
+const bareTag = t => String(t || '').trim().replace(/^-?\d+(?:\.\d+)?::/, '').replace(/::$/, '').replace(/[{}\[\]]/g, '').replace(/_/g, ' ').trim().toLowerCase();
+/** The negative without the words that would undo the comic's own layout (and, for 黑白, the screentone words). */
+export function stripComicNegative(negative, {mono = false} = {}) {
+  const bad = new Set([...NEG_FORBIDDEN, ...(mono ? NEG_MONO : [])]);
+  return String(negative || '').split(/[,\n]/).map(t => t.trim()).filter(t => t && !bad.has(bareTag(t))).join(', ');
+}
 export const COMIC_NEGATIVE = 'text, speech bubble, english text, chinese text, watermark';
 export const COMIC_PAGES = {min: 1, max: 12, usual: 4};
 export const clampPages = n => Math.max(COMIC_PAGES.min, Math.min(COMIC_PAGES.max, Math.round(Number(n)) || COMIC_PAGES.usual));
