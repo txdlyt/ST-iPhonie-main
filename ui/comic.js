@@ -16,6 +16,7 @@ import {openAlbum} from './album-viewer.js';
 import {normalizeDrawParams} from '../core/novelai.js';
 import {saveFile} from '../download.js';
 import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO, COMIC_SIZES, COMIC_PAGES_EACH, COMIC_PER_PAGE, COMIC_VARIETY, COMIC_DIRECTIONS, COMIC_READING, comicDrawParams, comicSizeWord, COMIC_GROUPS, defaultEntries, setEntryOn} from '../core/comic-settings.js';
+import {normalizeText} from '../core/llm.js';
 import {NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SAMPLER_NAMES, NAI_SCHEDULES} from '../core/novelai.js';
 import {bookRange, rangeMarkup, pickBookRange, readBookSource, bookForm, BOOK_SOURCES, BOOK_TEXT_LIMIT} from './book-setup.js';
 
@@ -71,6 +72,12 @@ export function comicApp(ctx) {
   }
 
   // ---------- 设置 ----------
+  // 文字模型 for 写分镜: '' follows 引擎 → 文字模型; 'tavern' or a custom connection kept there is used for this comic only
+  const textChoices = () => {
+    const t = normalizeText(api.getState().text), now = t.source === 'custom' ? (t.presets.find(p => p.id === t.active)?.name || '自定义接口') : '酒馆的模型';
+    return [['', '跟随引擎设置（现在：' + now + '）'], ['tavern', '酒馆的模型'], ...t.presets.map(p => [p.id, p.name + (p.model ? ' · ' + p.model : '（还没填写）')])];
+  };
+  const textChoice = () => { const c = cfg().textModel; return textChoices().some(([k]) => k === c) ? c : ''; };
   const presetChoices = c => [['', '默认分镜预设（内置）'], ...c.presets.map(p => [p.id, p.name])];
   const store = next => { try { api.saveComic(next); } catch (e) { ctx.notify(e.message, {error: true}); } };
   // ---------- 漫画预设: like the 绘图预设, a list of entries, each switched on or off and edited as text ----------
@@ -192,6 +199,7 @@ export function comicApp(ctx) {
         <div class="field"><span>故事来源</span>${seg('kind', SOURCES)}</div>
         ${source}
         <div class="field"><span>漫画预设${help('用哪一个漫画预设（一条条分镜、出图要求）。在右上角「设置」里新建、编辑。')}</span>${select('cm-make-preset', cfg().preset, presetChoices(cfg()))}</div>
+        <div class="field"><span>文字模型${help('写分镜用哪个文字模型。跟随引擎设置：用「引擎 → 文字模型」里现在选的。也可以只给漫画选酒馆的模型，或引擎里存好的某一套接口；选的会记住，下次做漫画还是它，不会改动引擎里的设置。')}</span>${select('cm-make-text', textChoice(), textChoices())}</div>
         <div class="field"><span>页数${help('不填：文字模型按故事长短定（' + COMIC_PAGES.min + '–' + COMIC_PAGES.max + ' 页）。填了：就画这么多页。高潮的地方会单独占一整页（一格大图），其余每页 2–6 格。')}</span><input data-cm-field="pages" type="number" inputmode="numeric" min="${COMIC_PAGES.min}" max="${COMIC_PAGES.max}" value="${esc(form.pages)}" placeholder="不填：按故事长短"></div>
         <div class="field"><span>出图${help('自动出图：分镜写好后，一页接一页地画，进度显示在页面上。手动出图：只排出页面，你想画哪一页就点那一页的「画」。两种都可以随时再画。')}</span>${seg('how', MODES)}</div>
         <div class="field"><span>漫画名（可以不填）</span><input data-cm-field="title" value="${esc(form.title)}" maxlength="40" placeholder="让文字模型起"></div></div>
@@ -218,7 +226,7 @@ export function comicApp(ctx) {
     let reply = '';
     try {
       const request = comicRequest({story, names: roleNames(), pages: count, comic: cfg()});
-      reply = await api.bookWrite(request[0].content, request[1].content, {length: 3500});
+      reply = await api.bookWrite(request[0].content, request[1].content, {length: 3500, connection: textChoice()});
       if (!job || job.stop || v.disposed) return;
       const comic = parseComic(reply, {maxPages: count || undefined, comic: cfg()});
       draft = {id: 'c-' + Date.now().toString(36), direction: cfg().direction, title: title || comic.title || '漫画', at: Date.now(), how, pages: comic.pages};
@@ -351,6 +359,7 @@ export function comicApp(ctx) {
   });
   v.on('change', '[data-cm-note]', el => { store({...cfg(), note: el.value}); settings(); });
   v.on('change', '[data-field=cm-make-preset]', el => { store({...cfg(), preset: el.value}); make(); });
+  v.on('change', '[data-field=cm-make-text]', el => { store({...cfg(), textModel: el.value}); make(); });
   v.on('change', '[data-cm-nai]', el => { const k = el.dataset.cmNai, nai = {...cfg().nai}; if (el.value === '') delete nai[k]; else nai[k] = el.type === 'number' ? Number(el.value) : el.value; store({nai}); settings(); });
   v.on('change', '[data-cm-artist]', el => { store({artist: el.value}); });
   v.on('click', '[data-cm-cfg]', el => { try { api.saveComic({[el.dataset.cmCfg]: el.dataset.cmCfg === 'textHide' ? el.dataset.value === 'true' : el.dataset.value}); } catch (e) { ctx.notify(e.message, {error: true}); } settings(); });

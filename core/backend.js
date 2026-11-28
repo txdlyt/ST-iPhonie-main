@@ -1287,8 +1287,20 @@ export class TTSBackend {
      * when the source is the tavern's model. request: {prompt, responseLength?, ...} as for generateRaw.
      */
     /** signal: the request is let go (停止回复). Kept out of the request log, which keeps copies of the request. */
-    async generateText(context, { use = 'other', signal, ...request }) {
-        const job = this.requestLog.run('文字模型', {source: this.settings.text.source, model: activeText(this.settings.text).model, ...request}, () => this.generateTextRaw(context, {...request, background: ['moments','forum'].includes(use)}, signal, use === 'chat'));
+    /**
+     * The connection that writes one request. connection: '' = the one in 引擎 → 文字模型; 'tavern' = the tavern's model;
+     * otherwise the id of a custom connection kept there. A connection that is gone falls back to the one in use.
+     */
+    textFor(connection) {
+        const base = activeText(this.settings.text), id = String(connection || '');
+        if (!id) return base;
+        if (id === 'tavern') return { ...base, source: 'tavern' };
+        const preset = normalizeText(this.settings.text).presets.find(p => p.id === id);
+        return preset ? { source: 'custom', ...preset } : base;
+    }
+    async generateText(context, { use = 'other', signal, connection = '', ...request }) {
+        const text = this.textFor(connection);
+        const job = this.requestLog.run('文字模型', {source: text.source, model: text.model, ...request}, () => this.generateTextRaw(context, {...request, background: ['moments','forum'].includes(use)}, signal, use === 'chat', text));
         // A model that never answers must not keep a reply "being voiced / drawn" for ever: after this long the request is given up
         // (the state is freed and the floor can be tried again).
         let timer, result;
@@ -1299,8 +1311,7 @@ export class TTSBackend {
         this.ledger.text(use, request.prompt, answer);
         return answer;
     }
-    async generateTextRaw(context, request, signal, details = false) {
-        const text = activeText(this.settings.text);
+    async generateTextRaw(context, request, signal, details = false, text = activeText(this.settings.text)) {
         if (text.source === 'custom') return customRequest({ text, key: this.textKeys.get(text.id) || '', prompt: request.prompt, responseLength: request.responseLength, fetch: this.textFetch, signal, details });
         if (!context?.generateRaw) throw Error('当前酒馆版本不支持后台生成');
         const valid = this.spaceGuard(), visit = this.space;

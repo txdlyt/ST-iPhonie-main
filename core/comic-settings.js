@@ -35,7 +35,7 @@ export const COMIC_GUTTERS = [['none', '不指定'], ['white', '白边'], ['blac
 const GUTTER_TAGS = {white: 'white border', black: 'black border, thick black panel borders, no white margin', bleed: 'full bleed, no border'};
 const GUTTER_WORDS = {white: 'Every panel sits inside an even white margin.', black: 'The panels touch each other and are separated only by thick black lines.', bleed: 'Every panel extends to the edges of the page with no margin.'};
 
-export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, drawStyle: '', stripNeg: true, note: '', preset: '', presets: []});
+export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, drawStyle: '', stripNeg: true, note: '', preset: '', presets: [], textModel: ''});
 const pick = (list, value, fallback) => list.some(([k]) => k === value) ? value : fallback;
 export const COMIC_NOTE_MAX = 2000;
 // 漫画预设: like the 绘图预设, a named list of entries, each one switched on or off and edited as text. Where an entry goes:
@@ -75,7 +75,9 @@ export function normalizeComic(value) {
     variety: pick(COMIC_VARIETY, v.variety, base.variety), direction: pick(COMIC_DIRECTIONS, v.direction, base.direction), reading: pick(COMIC_READING, v.reading, base.reading),
     defaultOn: Object.fromEntries(Object.entries(v.defaultOn && typeof v.defaultOn === 'object' ? v.defaultOn : {}).filter(([k, x]) => DEFAULT_COMIC_ENTRIES.some(e => e.id === k) && typeof x === 'boolean')),
     drawStyle: typeof v.drawStyle === 'string' ? v.drawStyle.slice(0, 80) : '', stripNeg: v.stripNeg !== false,
-    note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : '', preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets
+    note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : '', preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets,
+    // 文字模型 for 写分镜: '' = the one in 引擎 → 文字模型, 'tavern', or the id of a custom connection kept there
+    textModel: typeof v.textModel === 'string' && /^[\w-]{1,64}$/.test(v.textModel) ? v.textModel : ''
   };
 }
 /** The preset in use, or null. */
