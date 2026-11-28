@@ -35,12 +35,14 @@ export const COMIC_GUTTERS = [['none', '不指定'], ['white', '白边'], ['blac
 const GUTTER_TAGS = {white: 'white border', black: 'black border, thick black panel borders, no white margin', bleed: 'full bleed, no border'};
 const GUTTER_WORDS = {white: 'Every panel sits inside an even white margin.', black: 'The panels touch each other and are separated only by thick black lines.', bleed: 'Every panel extends to the edges of the page with no margin.'};
 
-export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', note: '', preset: '', presets: []});
+export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, note: '', preset: '', presets: []});
 const pick = (list, value, fallback) => list.some(([k]) => k === value) ? value : fallback;
 export const COMIC_NOTE_MAX = 2000;
 // 漫画预设: like the 绘图预设, a named list of entries, each one switched on or off and edited as text. Where an entry goes:
 // to the text model that writes the storyboard, or to the 绘图 App with every page (before the page's tags / in its negative).
-export const COMIC_ENTRY_TO = [['story', '给分镜的要求'], ['tags', '画面前缀'], ['negative', '负面词']];
+export const COMIC_ENTRY_TO = [['story', '告诉写分镜的 AI'], ['tags', '加到每页画图提示词前'], ['negative', '加到每页的负面词']];
+/** The groups entries sit in. one: only one entry of the group is on at a time (turning one on turns the rest off). */
+export const COMIC_GROUPS = [['base', '分镜基础', false], ['pacing', '分镜风格（选一个）', true], ['story', '承接剧情', false], ['look', '画面与人物', false], ['other', '我加的', false]];
 export const COMIC_PRESET_MAX = 30, COMIC_ENTRY_MAX = 60, COMIC_ENTRY_TEXT = 8000;
 const newId = () => 'cp-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 function normalizeEntries(list) {
@@ -48,7 +50,7 @@ function normalizeEntries(list) {
   return (Array.isArray(list) ? list : []).filter(e => e && typeof e === 'object').slice(0, COMIC_ENTRY_MAX).map(e => {
     let id = typeof e.id === 'string' && /^[\w-]{1,64}$/.test(e.id) && !ids.has(e.id) ? e.id : newId() + ids.size;
     ids.add(id);
-    return {id, title: String(e.title ?? '').slice(0, 80), enabled: e.enabled !== false, to: pick(COMIC_ENTRY_TO, e.to, 'story'), text: typeof e.text === 'string' ? e.text.slice(0, COMIC_ENTRY_TEXT) : '', ...(e.skipFixed === true ? {skipFixed: true} : {})};
+    return {id, title: String(e.title ?? '').slice(0, 80), enabled: e.enabled !== false, to: pick(COMIC_ENTRY_TO, e.to, 'story'), text: typeof e.text === 'string' ? e.text.slice(0, COMIC_ENTRY_TEXT) : '', group: COMIC_GROUPS.some(g => g[0] === e.group) ? e.group : 'other', desc: String(e.desc ?? '').slice(0, 120), ...(e.skipFixed === true ? {skipFixed: true} : {})};
   });
 }
 /** Only the numbers and words that are given; '' / missing means the 绘图 App's own. */
@@ -71,6 +73,7 @@ export function normalizeComic(value) {
     size: pick(COMIC_SIZES, v.size, base.size), artist: typeof v.artist === 'string' ? v.artist.slice(0, 500) : '', nai: naiOf(v.nai),
     pagesEach: COMIC_PAGES_EACH.includes(String(v.pagesEach ?? '')) ? String(v.pagesEach ?? '') : '', perPage: COMIC_PER_PAGE.includes(String(v.perPage ?? '')) ? String(v.perPage ?? '') : '',
     variety: pick(COMIC_VARIETY, v.variety, base.variety), direction: pick(COMIC_DIRECTIONS, v.direction, base.direction), reading: pick(COMIC_READING, v.reading, base.reading),
+    defaultOn: Object.fromEntries(Object.entries(v.defaultOn && typeof v.defaultOn === 'object' ? v.defaultOn : {}).filter(([k, x]) => DEFAULT_COMIC_ENTRIES.some(e => e.id === k) && typeof x === 'boolean')),
     note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : '', preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets
   };
 }
@@ -79,17 +82,36 @@ export const activePreset = comic => { const c = normalizeComic(comic); return c
 // 默认分镜预设: what the storyboard request says besides its fixed frame (the JSON shape, the people, the page count).
 // {splash} and {lang} are filled in when the request is made. skipFixed: left out when the 分镜风格 fixes the panels per page.
 export const DEFAULT_COMIC_ENTRIES = Object.freeze([
-  {id: 'layout', title: '版式', to: 'story', enabled: true, skipFixed: true, text: '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。\n像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，{splash}。'},
-  {id: 'scene', title: '画面写法', to: 'story', enabled: true, text: 'scene 是给画图模型的英文标签，逗号分隔，写构图、动作、表情、场景、光线；不要写人物外貌，不要写台词，不要写文字。'},
-  {id: 'lines', title: '台词写法', to: 'story', enabled: true, text: 'lines 是这一格的台词数组，最多 3 句；每句 {who, text, kind}，kind 是 say（说话）、think（心里话）、narr（旁白）之一；text 用{lang}，短，不超过 24 个字；旁白的 who 写「旁白」。'},
-  {id: 'variety', title: '镜头变化', to: 'story', enabled: true, text: '格子要有变化：远景、近景、特写交替，不要每格都是同一个镜头。'}
+  {id: 'layout', group: 'base', title: '页面版式', desc: '一页分几格，什么时候用整页大图', to: 'story', enabled: true, skipFixed: true, text: '每页有 kind：「page」= 一页里有 2 到 6 格（panels 里写几格）；「splash」= 高潮页，整页只有一格大图（panels 里只写 1 格）。\n像真的漫画那样：平常的内容用 page，最有冲击或最动情的地方才用 splash，{splash}。'},
+  {id: 'grammar', group: 'base', title: '通用分镜文法', desc: '主格、景别、一格一个瞬间', to: 'story', enabled: true, text: '每页先定一个主格（面积最大、戏剧重心所在），其余格按信息量分大小，同一页的格不要一样大。\n景别按目的选：远景交代空间，中景写人物互动，近景和特写突出细节；连续的反应镜头可以用同一景别。\n俯视、仰视、透视变形用来表现尺度和压迫感，但人物比例要看得出来。\n换地点或隔了一段时间，要有一格交代环境。\n每格只选一个明确的瞬间，围绕一个主要的视觉事件构图；先后发生的动作分到不同的格。'},
+  {id: 'variety', group: 'base', title: '镜头变化', desc: '远近交替，不要一个镜头到底', to: 'story', enabled: true, text: '格子要有变化：远景、近景、特写交替，不要每格都是同一个镜头。'},
+  {id: 'state', group: 'base', title: '状态接得上', desc: '手里拿的、穿的、站的位置跨格不变', to: 'story', enabled: true, text: '人物手里拿的东西、衣着、站位，从一格到下一格、一页到下一页要接得上。镜头切到局部时只写看得见的，画面外的部分仍然成立。剧情里真的发生了变化，才改。'},
+  {id: 'p-suspense', group: 'pacing', title: '悬疑推理', desc: '凝重克制，眼神和物证的特写', to: 'story', enabled: false, text: '分镜风格是悬疑推理：节奏凝重克制。多用宽幅的横长格，眼神和微表情的特写，关键物证的细节格；用格子的大小和数量把紧张的停顿拉长；视线和物件的位置要交代清楚。'},
+  {id: 'p-daily', group: 'pacing', title: '轻松日常', desc: '规整横格，铺垫—铺垫—反差', to: 'story', enabled: false, text: '分镜风格是轻松日常：以规整的横读格为主，间距均匀宽松；节奏是「铺垫、铺垫、反应落差」三拍；人物的表情是视觉重点；不用斜格和重叠格，格的边界清楚稳定。'},
+  {id: 'p-shoujo', group: 'pacing', title: '恋爱少女（装饰）', desc: '花与蕾丝的画框，人物溢出格外', to: 'story', enabled: false, text: '分镜风格是装饰系少女漫画：画格的边框用花、藤蔓、羽毛、星屑、蕾丝之类的纹样代替直线；格与格之间散落花瓣和光点；人物可以溢出画格；多用竖向的全身构图，突出衣饰和发丝；情绪最高处用没有边框的满版格。scene 里可以用 ornate border、lace border、falling petals 这类标签。'},
+  {id: 'p-action', group: 'pacing', title: '少年热血', desc: '大动势格，斜切对撞', to: 'story', enabled: false, text: '分镜风格是少年热血：核心的动势格要明显放大，占半页以上；相邻的格强烈对撞，至少两格用大角度的斜切边框；动作和冲击力优先于背景；scene 里可以用 motion lines、speed lines、emphasis lines。'},
+  {id: 'p-comedy', group: 'pacing', title: '喜剧日常', desc: '方正的格，笑点落在表情反差', to: 'story', enabled: false, text: '分镜风格是喜剧日常：画格方正规整，排布服务于笑点，不靠格形抢戏；每页有起承转结，笑点落点明确；格数适中偏多，对话密集，吐槽一环扣一环；表情反差要大，正常脸和崩坏脸快速切换；背景简化甚至省略；花、闪光这类少女漫装饰只用来反讽。'},
+  {id: 'p-koma', group: 'pacing', title: '经典四格', desc: '每页竖排四个等宽格，起承转结', to: 'story', enabled: false, text: '分镜风格是经典四格：每页就是竖排的四个等宽矩形格，严格按起、承、转、结的节奏。'},
+  {id: 's-follow', group: 'story', title: '只画故事里有的', desc: '按原顺序，不加戏不跳过', to: 'story', enabled: true, text: '只画故事里写了的事，从第一个画面画到最后一个画面，按原来的顺序分到各页；不要自己加情节，不要跳过，也不要提前。每页最后一格的动作和物品要能接到下一页的第一格。'},
+  {id: 's-words', group: 'story', title: '台词用原话', desc: '不改写，长句拆成短句', to: 'story', enabled: true, text: '台词用故事里的原话，保留语气和标点，不要改写。一句话里含好几段、不是一口气说完的，拆成几句短的，各写成 lines 里的一条。'},
+  {id: 's-show', group: 'story', title: '能画的不要写成旁白', desc: '动作表情优先画出来', to: 'story', enabled: true, text: '动作、姿态、表情、距离、物品的位置、环境的变化，优先画成画面，不要写成旁白。故事里的比喻和夸张只取看得见的本体（身体、器物、空间），不要把喻体画进去。旁白只留理解事件必需、画面和对白又表达不了的完整短句。'},
+  {id: 'scene', group: 'look', title: '画面（scene）怎么写', desc: '给画图模型的英文标签', to: 'story', enabled: true, text: 'scene 是给画图模型的英文标签，逗号分隔，写构图、动作、表情、场景、光线；不要写人物外貌，不要写台词，不要写文字。'},
+  {id: 'lines', group: 'look', title: '台词（lines）怎么写', desc: '每格最多 3 句，分说话/心里话/旁白', to: 'story', enabled: true, text: 'lines 是这一格的台词数组，最多 3 句；每句 {who, text, kind}，kind 是 say（说话）、think（心里话）、narr（旁白）之一；text 用{lang}，短，不超过 24 个字；旁白的 who 写「旁白」。'},
+  {id: 'cast', group: 'look', title: '人物出场', desc: '只写这一格里看得见的人', to: 'story', enabled: true, text: 'who 只写这一格里看得见的人。人物的外貌和衣着由绘图 App 按名字补上，scene 里不要写。人物的表情、姿态、视线，对应故事里已经写明的情绪和态度，不要自己加戏。'}
 ]);
+/** The default entries as they are now: the person's on/off choices (comic.defaultOn) over the built-in ones. */
+export const defaultEntries = comic => { const on = normalizeComic(comic).defaultOn; return DEFAULT_COMIC_ENTRIES.map(e => ({...e, enabled: e.id in on ? on[e.id] : e.enabled})); };
+/** Turn entry `id` of `list` on or off; turning one on in a one-at-a-time group turns the others of it off. Returns the new list. */
+export function setEntryOn(list, id, on) {
+  const hit = list.find(e => e.id === id), one = COMIC_GROUPS.find(g => g[0] === hit?.group)?.[2];
+  return list.map(e => e.id === id ? {...e, enabled: on} : on && one && e.group === hit.group ? {...e, enabled: false} : e);
+}
 /** A new preset: a copy of the 默认分镜预设 to change. It stands in for the default entries (replace), as a 绘图预设 does. */
-export const newPreset = (name = '我的分镜预设') => ({id: newId(), name, replace: true, entries: DEFAULT_COMIC_ENTRIES.map((e, i) => ({...e, id: newId() + i}))});
+export const newPreset = (name = '我的分镜预设', comic = null) => ({id: newId(), name, replace: true, entries: defaultEntries(comic).map((e, i) => ({...e, id: newId() + i}))});
 /** The entries that tell the text model how to write the storyboard: the preset's when it stands in for the default, else the default. */
 export function storyEntries(comic) {
   const p = activePreset(comic);
-  return (p?.replace ? p.entries : DEFAULT_COMIC_ENTRIES).filter(e => e.enabled && e.to === 'story' && e.text.trim());
+  return (p?.replace ? p.entries : defaultEntries(comic)).filter(e => e.enabled && e.to === 'story' && e.text.trim());
 }
 /** The preset saved (a new one is added, one with the same id is replaced) and made the one in use. Throws when there is no room. */
 export function savePreset(comic, preset) {

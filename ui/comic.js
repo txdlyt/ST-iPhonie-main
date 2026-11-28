@@ -14,7 +14,7 @@ import {mountReader} from './comic-reader.js';
 import {openAlbum} from './album-viewer.js';
 import {normalizeDrawParams} from '../core/novelai.js';
 import {saveFile} from '../download.js';
-import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO, COMIC_SIZES, COMIC_PAGES_EACH, COMIC_PER_PAGE, COMIC_VARIETY, COMIC_DIRECTIONS, COMIC_READING, comicDrawParams, comicSizeWord} from '../core/comic-settings.js';
+import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO, COMIC_SIZES, COMIC_PAGES_EACH, COMIC_PER_PAGE, COMIC_VARIETY, COMIC_DIRECTIONS, COMIC_READING, comicDrawParams, comicSizeWord, COMIC_GROUPS, defaultEntries, setEntryOn} from '../core/comic-settings.js';
 import {NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SAMPLER_NAMES, NAI_SCHEDULES} from '../core/novelai.js';
 import {bookRange, rangeMarkup, pickBookRange, readBookSource, bookForm, BOOK_SOURCES, BOOK_TEXT_LIMIT} from './book-setup.js';
 
@@ -74,19 +74,32 @@ export function comicApp(ctx) {
   const store = next => { try { api.saveComic(next); } catch (e) { ctx.notify(e.message, {error: true}); } };
   // ---------- 漫画预设: like the 绘图预设, a list of entries, each switched on or off and edited as text ----------
   let editing = null;
+  const opened = new Set();
+  /** The built-in entries, as switches in groups: a short line each, and the words behind 「看内容」. */
+  const defaultList = () => COMIC_GROUPS.map(([id, name, one]) => {
+    const rows = defaultEntries(cfg()).filter(e => e.group === id);
+    return rows.length ? `<h3 class="cm-group">${esc(name)}</h3>` + rows.map(e => `<div class="group pad cm-entry"><div class="setting-row"><span class="switch-label"><strong>${esc(e.title)}</strong><small>${esc(e.desc)}</small></span><input class="switch" aria-label="启用：${esc(e.title)}" type="checkbox" data-cm-def="${esc(e.id)}"${e.enabled ? ' checked' : ''}></div><div class="actions">${btn('cm-open', opened.has(e.id) ? '收起' : '看内容', 'secondary', `data-id="${esc(e.id)}"`)}</div>${opened.has(e.id) ? `<pre class="cm-pre">${esc(e.text)}</pre>` : ''}</div>`).join('') : '';
+  }).join('');
   function editPreset(preset) { editing = structuredClone(preset); presetEditor(); }
   function presetEditor() {
     view = 'preset'; draft = null; form = null;
     const p = editing, last = p.entries.length - 1;
     const entry = (e, i) => `<div class="group pad cm-entry">
-        <div class="setting-row"><span class="switch-label">启用这一条</span><input class="switch" aria-label="启用这一条" type="checkbox" data-cm-entry="enabled" data-i="${i}"${e.enabled ? ' checked' : ''}></div>
-        <div class="field"><span>标题</span><input data-cm-entry="title" data-i="${i}" value="${esc(e.title)}" maxlength="80" placeholder="这一条是什么"></div>
-        <div class="field"><span>发给谁${help('给分镜的要求：写分镜时发给文字模型，比如镜头、节奏、对白怎么写。画面前缀：加在每一页画面提示词的最前面。负面词：加进每一页的负面提示词。')}</span>${select('cm-entry-to', e.to, COMIC_ENTRY_TO, `data-cm-entry="to" data-i="${i}"`)}</div>
+        <div class="setting-row"><span class="switch-label"><strong>${esc(e.title || '（没有标题）')}</strong>${e.desc ? `<small>${esc(e.desc)}</small>` : ''}</span><input class="switch" aria-label="启用：${esc(e.title)}" type="checkbox" data-cm-entry="enabled" data-i="${i}"${e.enabled ? ' checked' : ''}></div>
+        <div class="actions">${btn('cm-open', opened.has(e.id) ? '收起' : '展开看内容、改', 'secondary', `data-id="${esc(e.id)}"`)}</div>
+        ${opened.has(e.id) ? `<div class="field"><span>标题</span><input data-cm-entry="title" data-i="${i}" value="${esc(e.title)}" maxlength="80" placeholder="这一条是什么"></div>
+        <div class="field"><span>一句话说明</span><input data-cm-entry="desc" data-i="${i}" value="${esc(e.desc || '')}" maxlength="120" placeholder="给自己看的，可以不写"></div>
+        <div class="field"><span>放在哪一组${help('只是分类，方便找。「分镜风格」那一组一次只能开一个。')}</span>${select('cm-entry-group', e.group || 'other', COMIC_GROUPS.map(g => [g[0], g[1]]), `data-cm-entry="group" data-i="${i}"`)}</div>
+        <div class="field"><span>作用${help('「告诉写分镜的 AI」：写分镜时一起发给文字模型，比如镜头、节奏、台词怎么写。「加到每页画图提示词前」：画每一页时放在提示词最前面。「加到每页的负面词」：画每一页时加进负面提示词。')}</span>${select('cm-entry-to', e.to, COMIC_ENTRY_TO, `data-cm-entry="to" data-i="${i}"`)}</div>
         <div class="field"><span>内容</span><textarea rows="7" data-cm-entry="text" data-i="${i}" placeholder="写在这里">${esc(e.text)}</textarea></div>
-        <div class="actions">${i > 0 ? btn('cm-entry-up', '上移', 'secondary', `data-i="${i}"`) : ''}${i < last ? btn('cm-entry-down', '下移', 'secondary', `data-i="${i}"`) : ''}${btn('cm-entry-del', '删除这一条', 'secondary', `data-i="${i}"`)}</div></div>`;
-    v.draw(heading('编辑漫画预设', help('一条一条写分镜和出图的要求，每条可以单独开关；使用中的预设里打开的条目，会在每次写分镜、每次出图时加进去。可以导出成文件，也可以把文件交给 AI 改好再导入。'), 'Comic Preset')
+        <div class="actions">${i > 0 ? btn('cm-entry-up', '上移', 'secondary', `data-i="${i}"`) : ''}${i < last ? btn('cm-entry-down', '下移', 'secondary', `data-i="${i}"`) : ''}${btn('cm-entry-del', '删除这一条', 'secondary', `data-i="${i}"`)}</div>` : ''}</div>`;
+    const grouped = COMIC_GROUPS.map(([id, name, one]) => {
+      const rows = p.entries.map((e, i) => [e, i]).filter(([e]) => (e.group || 'other') === id);
+      return rows.length ? `<h3 class="cm-group">${esc(name)}</h3>` + rows.map(([e, i]) => entry(e, i)).join('') : '';
+    }).join('');
+    v.draw(heading('编辑漫画预设', help('一条一条写分镜和出图的要求，分成几组，每条可以单独开关（「分镜风格」那一组一次只开一个）；使用中的预设里打开的条目，会在每次写分镜、每次出图时加进去。可以导出成文件，也可以把文件交给 AI 改好再导入。'), 'Comic Preset')
       + `<div class="group pad bk-setup"><div class="field"><span>预设名</span><input data-cm-pname value="${esc(p.name)}" maxlength="60"></div></div>`
-      + p.entries.map(entry).join('')
+      + grouped
       + `<div class="actions">${btn('cm-entry-add', icon('add') + '加一条', 'secondary')}</div>
       <div class="actions"><button type="button" class="secondary" data-action="cm-preset-cancel">取消</button><button type="button" class="primary" data-action="cm-preset-save">保存并使用</button></div>`);
   }
@@ -117,6 +130,7 @@ export function comicApp(ctx) {
       + `<div class="group pad bk-setup">
         <div class="field"><span>漫画预设${help('出图和分镜的预设：一条一条的要求，每条可开关，写分镜、出图时加进去（和绘图预设一样的做法）。默认分镜预设是内置的（写分镜的版式、画面、台词、镜头变化这几条），不能直接改；点「复制默认来改」得到一份自己的，改了保存并使用，它就代替默认。下面的色彩、分镜风格等选项照常生效。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
           <div class="actions">${btn('cm-preset-new', '复制默认来改', 'secondary')}${c.preset ? btn('cm-preset-edit', '编辑', 'secondary') + btn('cm-preset-export', '导出', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}<label class="chip-button">导入<input type="file" data-cm-import accept=".json,application/json,text/plain" hidden aria-label="选择漫画预设文件"></label></div></div>
+        ${c.preset ? `<p class="hint">正在用你的预设「${esc(activePreset(c)?.name || '')}」，它代替下面这些内置条目（选「默认分镜预设（内置）」就看到它们）。</p>` : `<p class="hint">下面是内置的条目，开关就是它们要不要告诉写分镜的 AI；「看内容」能看到原话。想改原话，点上面的「复制默认来改」。</p>` + defaultList()}
         <div class="field"><span>阅读方式${help('看漫画时怎么翻。顶栏、底栏都是书架那一套，这里只换页面怎么动。阅读界面的「设置」里也能改。')}</span>${seg('reading', COMIC_READING, c.reading, ' cm-wrap')}</div>
         <div class="field"><span>阅读方向${help('从右往左：日漫的画法和读法。做新漫画时：分镜里格子从右上排到左下，画图标签写明从右往左，对白框按这个顺序摆；翻页（书架）时第 1 页在最右，往右滑是下一页。已经做好的漫画保持它当时的方向。翻书、卡片堆、上下滑的翻页方向不变。')}</span>${seg('direction', COMIC_DIRECTIONS)}</div>
         <div class="field"><span>每次画几页${help('做一本漫画时「页数」栏的默认值。空：由文字模型按故事长短定。')}</span>${seg('pagesEach', COMIC_PAGES_EACH.map(k => [k, k || '自动']), c.pagesEach, ' cm-wrap')}</div>
@@ -266,7 +280,9 @@ export function comicApp(ctx) {
   v.on('click', '[data-action=cm-new]', () => { newForm(); make(); });
   v.on('click', '[data-action=cm-shelf]', () => shelf());
   v.on('click', '[data-action=cm-settings]', () => settings());
-  v.on('click', '[data-action=cm-preset-new]', () => editPreset(newPreset()));
+  v.on('click', '[data-action=cm-preset-new]', () => editPreset(newPreset('我的分镜预设', cfg())));
+  v.on('click', '[data-action=cm-open]', el => { const id = el.dataset.id; opened.has(id) ? opened.delete(id) : opened.add(id); if (view === 'preset') presetEditor(); else settings(); });
+  v.on('change', '[data-cm-def]', el => { const list = setEntryOn(defaultEntries(cfg()), el.dataset.cmDef, el.checked); store({defaultOn: Object.fromEntries(list.map(e => [e.id, e.enabled]))}); settings(); });
   v.on('click', '[data-action=cm-preset-edit]', () => { const now = activePreset(cfg()); if (now) editPreset(now); });
   v.on('click', '[data-action=cm-preset-export]', exportPreset);
   v.on('click', '[data-action=cm-preset-delete]', deletePreset);
@@ -282,9 +298,13 @@ export function comicApp(ctx) {
     if (!editing || view !== 'preset') return;
     const t = e.target;
     if (t.dataset?.cmPname !== undefined) editing.name = t.value;
-    else if (t.dataset?.cmEntry) editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.dataset.cmEntry === 'enabled' ? t.checked : t.value;
+    else if (t.dataset?.cmEntry && t.dataset.cmEntry !== 'enabled' && t.dataset.cmEntry !== 'group') editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.value;
   });
-  v.root.addEventListener('change', e => { const t = e.target; if (editing && view === 'preset' && t.dataset?.cmEntry) editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.dataset.cmEntry === 'enabled' ? t.checked : t.value; });
+  v.root.addEventListener('change', e => {
+    const t = e.target; if (!editing || view !== 'preset' || !t.dataset?.cmEntry) return;
+    const i = Number(t.dataset.i), k = t.dataset.cmEntry;
+    if (k === 'enabled') { editing.entries = setEntryOn(editing.entries, editing.entries[i].id, t.checked); presetEditor(); } else { editing.entries[i][k] = t.value; if (k === 'group') presetEditor(); }
+  });
   v.on('change', '[data-cm-note]', el => { store({...cfg(), note: el.value}); settings(); });
   v.on('change', '[data-field=cm-make-preset]', el => { store({...cfg(), preset: el.value}); make(); });
   v.on('change', '[data-cm-nai]', el => { const k = el.dataset.cmNai, nai = {...cfg().nai}; if (el.value === '') delete nai[k]; else nai[k] = el.type === 'number' ? Number(el.value) : el.value; store({nai}); settings(); });

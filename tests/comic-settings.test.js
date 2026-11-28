@@ -6,7 +6,7 @@ import {comicRequest, parseComic, pageTags} from '../core/comic.js';
 const board = n => JSON.stringify({pages: [{kind: 'page', panels: Array.from({length: n}, (_, i) => ({scene: 's' + i, who: [], lines: []}))}, {kind: 'splash', panels: [{scene: 'big', who: [], lines: []}]}]});
 
 test('defaults change nothing: the request and tags are as before the settings existed', () => {
-  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', note: '', preset: '', presets: []});
+  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', defaultOn: {}, note: '', preset: '', presets: []});
   assert.deepEqual(comicRules(null), []);
   assert.deepEqual(comicTags(null), {tags: '', negative: ''});
   assert.equal(comicRequest({story: 'x'})[0].content, comicRequest({story: 'x', comic: defaultComic()})[0].content);
@@ -87,16 +87,30 @@ test('new options: unknown values drop, comic-own NovelAI parameters keep only g
 test('默认分镜预设: the default entries make the request; a copy stands in for them; direction rtl reaches rules, tags, rects', async () => {
   const m = await import('../core/comic-settings.js'), k = await import('../core/comic.js');
   const base = k.comicRequest({story: 'x'})[0].content;
-  for (const e of m.DEFAULT_COMIC_ENTRIES) assert.ok(base.includes(e.text.split('{')[0].slice(0, 12)), e.id);
-  const mine = m.newPreset('改'); mine.entries.find(e => e.id.length && e.title === '镜头变化').text = '全部用特写'; 
+  for (const e of m.DEFAULT_COMIC_ENTRIES.filter(e => e.enabled)) assert.ok(base.includes(e.text.split('{')[0].slice(0, 12)), e.id);
+  const mine = m.newPreset('改'); mine.entries.find(e => e.title === '镜头变化').text = '全部用特写'; 
   const c = m.savePreset({}, mine);
   const req = k.comicRequest({story: 'x', comic: c})[0].content;
   assert.match(req, /全部用特写/); assert.doesNotMatch(req, /远景、近景、特写交替/);
-  const off = structuredClone(c.presets[0]); off.entries.forEach(e => { if (e.title === '版式') e.enabled = false; });
+  const off = structuredClone(c.presets[0]); off.entries.forEach(e => { if (e.title === '页面版式') e.enabled = false; });
   assert.doesNotMatch(k.comicRequest({story: 'x', comic: m.savePreset(c, off)})[0].content, /splash/);
   const rtl = {direction: 'rtl'};
   assert.match(k.comicRequest({story: 'x', comic: rtl})[0].content, /从右往左/);
   assert.match(k.pageTags({kind: 'page', panels: [{scene: 'a'}, {scene: 'b'}]}, rtl), /right to left/);
   const l = k.panelRects(4, 100, 100), r = k.panelRects(4, 100, 100, 0.02, true);
   assert.ok(l[0].x < l[1].x && r[0].x > r[1].x); assert.ok(Math.abs(l[0].x - (100 - r[0].x - r[0].w)) < 1e-9);
+});
+
+test('默认分镜预设 switches: grouped, one pacing style at a time, kept in comic.defaultOn, copies keep the switches', async () => {
+  const m = await import('../core/comic-settings.js'), k = await import('../core/comic.js');
+  assert.ok(m.DEFAULT_COMIC_ENTRIES.every(e => m.COMIC_GROUPS.some(g => g[0] === e.group) && e.desc));
+  assert.equal(m.defaultEntries({}).filter(e => e.group === 'pacing' && e.enabled).length, 0);
+  let list = m.setEntryOn(m.defaultEntries({}), 'p-daily', true); list = m.setEntryOn(list, 'p-action', true);
+  assert.deepEqual(list.filter(e => e.group === 'pacing' && e.enabled).map(e => e.id), ['p-action']);
+  assert.equal(list.find(e => e.id === 'grammar').enabled, true);   // other groups are left as they are
+  const c = m.normalizeComic({defaultOn: Object.fromEntries(list.map(e => [e.id, e.enabled]).concat([['nope', true]]))});
+  assert.ok(!('nope' in c.defaultOn));
+  assert.match(k.comicRequest({story: 'x', comic: c})[0].content, /少年热血/); assert.doesNotMatch(k.comicRequest({story: 'x', comic: c})[0].content, /轻松日常/);
+  assert.equal(m.newPreset('x', c).entries.find(e => e.id.length && e.title === '少年热血').enabled, true);
+  const off = m.normalizeComic({defaultOn: {s_x: 1, grammar: false}}); assert.doesNotMatch(k.comicRequest({story: 'x', comic: off})[0].content, /主格/);
 });

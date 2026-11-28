@@ -186,3 +186,6 @@ button.bk-range-preview{width:100%;border:1px solid var(--line);cursor:pointer}
 .cm-rd-stage[data-fill] .cm-rd-card .cm-rd-art{border-radius:0;box-shadow:none}
 .cm-rd-stage[data-fill] .cm-rd-vpage{padding:0}
 .cm-rd-stage[data-fill] .cm-rd-vpage .holder{height:100%;width:100%;max-width:none;aspect-ratio:auto;border-radius:0}
+.cm-group{margin:16px 4px 6px;font-size:13px;opacity:.7;font-weight:600}
+.cm-entry .switch-label{display:grid;gap:2px}.cm-entry .switch-label small{font-weight:400;opacity:.65;font-size:12px}
+.cm-pre{white-space:pre-wrap;font:inherit;font-size:13px;line-height:1.55;margin:8px 0 0;padding:10px;border-radius:10px;background:rgba(127,127,127,.12);user-select:text}
