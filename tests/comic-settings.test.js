@@ -6,7 +6,7 @@ import {comicRequest, parseComic, pageTags} from '../core/comic.js';
 const board = n => JSON.stringify({pages: [{kind: 'page', panels: Array.from({length: n}, (_, i) => ({scene: 's' + i, who: [], lines: []}))}, {kind: 'splash', panels: [{scene: 'big', who: [], lines: []}]}]});
 
 test('defaults change nothing: the request and tags are as before the settings existed', () => {
-  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', note: '', preset: '', presets: []});
+  assert.deepEqual(defaultComic(), {color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', note: '', preset: '', presets: []});
   assert.deepEqual(comicRules(null), []);
   assert.deepEqual(comicTags(null), {tags: '', negative: ''});
   assert.equal(comicRequest({story: 'x'})[0].content, comicRequest({story: 'x', comic: defaultComic()})[0].content);
@@ -70,4 +70,16 @@ test('a preset in saved settings that is broken is cleaned up', () => {
   const c = normalizeComic({preset: 'a', presets: [{id: 'a', name: '', entries: [{text: 5}, {title: 't', to: 'zz', text: 'ok'}]}, {id: 'a', name: 'dup'}, null, {name: 'noid'}]});
   assert.equal(c.presets.length, 1); assert.equal(c.presets[0].name, '未命名'); assert.equal(c.preset, 'a');
   assert.deepEqual(c.presets[0].entries.map(e => [e.to, e.text]), [['story', ''], ['story', 'ok']]);
+});
+
+test('new options: unknown values drop, comic-own NovelAI parameters keep only given numbers/words, they reach tags and rules', async () => {
+  const m = await import('../core/comic-settings.js');
+  const c = m.normalizeComic({size: 'x', reading: 'y', direction: 'z', perPage: '9', pagesEach: '5', variety: 'q', nai: {steps: '28', scale: '', model: 'nai-diffusion-4-5-full', bad: 1, cfgRescale: 'abc'}});
+  assert.equal(c.size, 'portrait'); assert.equal(c.reading, 'page'); assert.equal(c.direction, 'ltr'); assert.equal(c.perPage, ''); assert.equal(c.pagesEach, ''); assert.equal(c.variety, 'normal');
+  assert.deepEqual(c.nai, {steps: 28, model: 'nai-diffusion-4-5-full'});
+  assert.deepEqual(m.comicDrawParams(c, 'nai'), c.nai); assert.deepEqual(m.comicDrawParams(c, 'comfy'), {});
+  assert.equal(m.comicSizeWord({size: 'follow'}), ''); assert.equal(m.comicSizeWord({size: 'landscape'}), '横');
+  assert.match(m.comicTags({artist: 'artist:foo, '}).tags, /^artist:foo$/);
+  assert.ok(m.comicRules({perPage: '4', variety: 'bold'}).some(r => /每页 4 格/.test(r)) && m.comicRules({variety: 'bold'}).some(r => /大胆/.test(r)));
+  assert.ok(!m.comicRules({style: 'single', perPage: '4'}).some(r => /每页 4 格/.test(r)));
 });

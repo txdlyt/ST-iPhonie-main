@@ -10,10 +10,12 @@ import {openBook} from '../core/bookshelf.js';
 import {pictureInputs, sizeFor} from '../core/draw.js';
 import {comicRequest, parseComic, panelRects, pageTags, pageCharacters, COMIC_NEGATIVE, COMIC_PAGES, clampPages} from '../core/comic.js';
 import {composePage} from '../core/comic-canvas.js';
-import {openComicReader, readingMode, setReadingMode, READING_MODES} from './comic-reader.js';
+import {mountReader} from './comic-reader.js';
 import {openAlbum} from './album-viewer.js';
+import {normalizeDrawParams} from '../core/novelai.js';
 import {saveFile} from '../download.js';
-import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO} from '../core/comic-settings.js';
+import {COMIC_COLORS, COMIC_STYLES, COMIC_LANGS, COMIC_TEXT_SIZES, COMIC_BUBBLES, COMIC_GUTTERS, COMIC_NOTE_MAX, normalizeComic, comicTags, canvasOptions, activePreset, newPreset, savePreset, removePreset, presetFile, readPresetFile, COMIC_ENTRY_TO, COMIC_SIZES, COMIC_PAGES_EACH, COMIC_PER_PAGE, COMIC_VARIETY, COMIC_DIRECTIONS, COMIC_READING, comicDrawParams, comicSizeWord} from '../core/comic-settings.js';
+import {NAI_MODELS, NAI_MODEL_NAMES, NAI_SAMPLERS, NAI_SAMPLER_NAMES, NAI_SCHEDULES} from '../core/novelai.js';
 import {bookRange, rangeMarkup, pickBookRange, readBookSource, bookForm, BOOK_SOURCES, BOOK_TEXT_LIMIT} from './book-setup.js';
 
 const KEY = 'stiphonie.comic.drafts';
@@ -32,7 +34,7 @@ export function comicApp(ctx) {
   const roleNames = () => [...new Set([...routes().map(r => r.name), ...(infoOf()?.roles || [])])].filter(Boolean);
   const drawn = d => d.pages.filter(p => p.photo).length;
   const safe = d => (d.title || '漫画').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 30) || '漫画';
-  function newForm() { form = {...bookForm(infoOf()), pages: '', how: 'auto', title: ''}; if (form.kind === 'theater') form.kind = infoOf()?.length ? 'chat' : 'paste'; }
+  function newForm() { form = {...bookForm(infoOf()), pages: cfg().pagesEach, how: 'auto', title: ''}; if (form.kind === 'theater') form.kind = infoOf()?.length ? 'chat' : 'paste'; }
 
   // ---------- pictures ----------
   /** The page as it is read: the drawn picture with the words laid on (kept per page until it is drawn again). */
@@ -96,6 +98,13 @@ export function comicApp(ctx) {
     const now = activePreset(cfg()); if (!now || !await ctx.confirm('删除预设「' + now.name + '」？', '这个预设和它的条目会删掉。')) return;
     store(removePreset(cfg(), now.id)); settings();
   }
+  const naiFields = c => {
+    const n = c.nai, opt = (list, now) => list.map(([k, l]) => `<option value="${esc(k)}"${String(now ?? '') === String(k) ? ' selected' : ''}>${esc(l)}</option>`).join('');
+    const num = (k, label, attrs) => `<label class="cm-nai"><small>${label}</small><input type="number" data-cm-nai="${k}" value="${n[k] ?? ''}" placeholder="跟绘图" ${attrs}></label>`;
+    const sel = (k, label, list) => `<label class="cm-nai"><small>${label}</small><span class="select"><select data-cm-nai="${k}">${opt([['', '跟绘图设置'], ...list], n[k])}</select></span></label>`;
+    const engine = api.getState().draw?.engine;
+    return `<div class="cm-nai-grid">${sel('model', '模型', NAI_MODELS.map(m => [m, NAI_MODEL_NAMES[m] || m]))}${num('steps', '步数', 'min="1" max="50" step="1"')}${num('scale', '提示词相关度 CFG', 'min="0" max="10" step="0.1"')}${num('cfgRescale', 'CFG Rescale', 'min="0" max="1" step="0.02"')}${sel('sampler', '采样器', NAI_SAMPLERS.map(m => [m, NAI_SAMPLER_NAMES[m] || m]))}${sel('schedule', '噪声调度', NAI_SCHEDULES.map(m => [m, m]))}</div>${engine && engine !== 'nai' ? '<small>绘图 App 现在用的不是 NovelAI，这几项暂时不生效。</small>' : ''}`;
+  };
   function settings() {
     view = 'settings'; draft = null; form = null;
     const c = cfg();
@@ -105,6 +114,14 @@ export function comicApp(ctx) {
       + `<div class="group pad bk-setup">
         <div class="field"><span>漫画预设${help('出图和分镜的预设：一条一条的要求，每条可开关，写分镜、出图时加进去（和绘图预设一样的做法）。这里选使用哪一个；下面的色彩、分镜风格等选项照常生效，预设是在它们之上再加的。')}</span>${select('cm-preset', c.preset, presetChoices(c))}
           <div class="actions">${btn('cm-preset-new', '新建', 'secondary')}${c.preset ? btn('cm-preset-edit', '编辑', 'secondary') + btn('cm-preset-export', '导出', 'secondary') + btn('cm-preset-delete', '删除', 'secondary') : ''}<label class="chip-button">导入<input type="file" data-cm-import accept=".json,application/json,text/plain" hidden aria-label="选择漫画预设文件"></label></div></div>
+        <div class="field"><span>阅读方式${help('看漫画时怎么翻。顶栏、底栏都是书架那一套，这里只换页面怎么动。阅读界面的「设置」里也能改。')}</span>${seg('reading', COMIC_READING, c.reading, ' cm-wrap')}</div>
+        <div class="field"><span>阅读方向${help('从右往左：日漫的翻法。只对「翻页（书架）」生效：第 1 页在最右，往右滑是下一页；翻书、卡片堆、上下滑不受影响。')}</span>${seg('direction', COMIC_DIRECTIONS)}</div>
+        <div class="field"><span>每次画几页${help('做一本漫画时「页数」栏的默认值。空：由文字模型按故事长短定。')}</span>${seg('pagesEach', COMIC_PAGES_EACH.map(k => [k, k || '自动']), c.pagesEach, ' cm-wrap')}</div>
+        <div class="field"><span>每页几格${help('空：由文字模型定。单图单格、上下两格这两个分镜风格会固定格数，这一项就不管用。')}</span>${seg('perPage', COMIC_PER_PAGE.map(k => [k, k || '自动']), c.perPage, ' cm-wrap')}</div>
+        <div class="field"><span>分镜变化${help('写进分镜要求里，决定各页的格数、景别是规整还是有起伏。')}</span>${seg('variety', COMIC_VARIETY.map(([k, l]) => [k, l]), c.variety, ' cm-wrap')}</div>
+        <div class="field"><span>画面尺寸${help('每页图的方向。竖：竖版漫画页（默认）；跟绘图设置：用绘图 App 里设的宽高。')}</span>${seg('size', COMIC_SIZES, c.size, ' cm-wrap')}</div>
+        <div class="field"><span>漫画画师串${help('加在每一页画面标签最前面的画师／画风标签。空：不加，用绘图 App 当前的画风。')}</span><textarea rows="2" data-cm-artist maxlength="500" placeholder="可以不写">${esc(c.artist)}</textarea></div>
+        <div class="field"><span>画图参数${help('漫画自己用的 NovelAI 参数，不改绘图 App 里的。留空：用绘图 App 的。只有绘图 App 用 NovelAI 引擎时才生效。')}</span>${naiFields(c)}</div>
         <div class="field"><span>色彩${help('黑白：分镜里不写颜色，画图时加 monochrome、greyscale、screentone，并排除 color。')}</span>${seg('color', COMIC_COLORS)}</div>
         <div class="field"><span>分镜风格${help('影响文字模型怎么写分镜（每页几格、景别、节奏）。版式仍是插件固定的排法，斜切格、宽屏格画不出来。单图单格、上下两格会固定每页的格数。')}</span>${seg('style', COMIC_STYLES.map(([k, l]) => [k, l]), c.style, ' cm-wrap')}${styleNote ? `<small>${esc(styleNote)}</small>` : ''}</div>
         <div class="field"><span>对白语言${help('文字模型写分镜时，台词用这个语言。')}</span>${seg('lang', COMIC_LANGS)}</div>
@@ -200,7 +217,10 @@ export function comicApp(ctx) {
   async function drawPage(d, i) {
     const p = d.pages[i], names = pageCharacters(p);
     const inputs = pictureInputs(api.getState(), {prompt: pageTags(p, cfg()), characters: names}, '');
-    inputs.params = {...inputs.params, ...sizeFor(inputs.params, '竖')};
+    const state = api.getState(), word = comicSizeWord(cfg());
+    inputs.params = {...inputs.params, ...(word ? sizeFor(inputs.params, word) : {})};
+    const own = comicDrawParams(cfg(), state.draw?.engine);
+    if (Object.keys(own).length) inputs.params = normalizeDrawParams({...inputs.params, ...own});
     inputs.negative = [inputs.negative, COMIC_NEGATIVE, comicTags(cfg()).negative].filter(Boolean).join(', ');
     const {names: _n, ...request} = inputs;
     const result = await api.generateImage({...request, allowPaid: true, name: '漫画-' + safe(d), key: `comic:${d.id}:${i}:${Date.now()}`, label: `漫画 · ${d.title} · 第 ${i + 1} 页`});
@@ -264,6 +284,8 @@ export function comicApp(ctx) {
   v.root.addEventListener('change', e => { const t = e.target; if (editing && view === 'preset' && t.dataset?.cmEntry) editing.entries[Number(t.dataset.i)][t.dataset.cmEntry] = t.dataset.cmEntry === 'enabled' ? t.checked : t.value; });
   v.on('change', '[data-cm-note]', el => { store({...cfg(), note: el.value}); settings(); });
   v.on('change', '[data-field=cm-make-preset]', el => { store({...cfg(), preset: el.value}); make(); });
+  v.on('change', '[data-cm-nai]', el => { const k = el.dataset.cmNai, nai = {...cfg().nai}; if (el.value === '') delete nai[k]; else nai[k] = el.type === 'number' ? Number(el.value) : el.value; store({nai}); settings(); });
+  v.on('change', '[data-cm-artist]', el => { store({artist: el.value}); });
   v.on('click', '[data-cm-cfg]', el => { try { api.saveComic({[el.dataset.cmCfg]: el.dataset.cmCfg === 'textHide' ? el.dataset.value === 'true' : el.dataset.value}); } catch (e) { ctx.notify(e.message, {error: true}); } settings(); });
   v.on('click', '[data-action=cm-range]', pickRange);
   v.on('click', '[data-action=cm-start]', start);
@@ -273,51 +295,58 @@ export function comicApp(ctx) {
   v.on('click', '[data-action=cm-shelve]', shelve);
   // ---------- 阅读: the 书架's way (ui/album-viewer.js: a page full screen, swipe, 目录 / 书签 / 设置 on the bar) ----------
   const marksOf = d => Array.isArray(d.marks) ? d.marks : (d.marks = []);
-  const closeReading = () => { const a = album, r = reader; album = reader = null; a?.close(); r?.close(); };
-  const readingOpen = () => !!(album?.open || (reader && !reader.closed));
-  /** Opens the comic of `d` at page `at` (an index among the drawn pages), the way the person reads (设置). */
-  function read(at = 0, d = draft) {
+  const closeReading = () => { const a = album; album = reader = null; a?.close(); };
+  const readingOpen = () => !!album?.open;
+  /** Opens the comic of `d` at page `at` (an index among the drawn pages), the way 漫画设置 says (阅读方式 / 阅读方向 / 字幕). */
+  async function read(at = 0, d = draft) {
     if (!d || readingOpen()) return;
-    const ids = d.pages.map((_, i) => i).filter(i => d.pages[i].photo);
+    const ids = d.pages.map((_, i) => i).filter(i => d.pages[i].photo), mode = cfg().reading, rtl = cfg().direction === 'rtl' && mode === 'page';
     if (!ids.length) { ctx.notify('还没有画好的页'); return; }
     at = Math.max(0, Math.min(ids.length - 1, at));
+    const order = rtl ? ids.map((_, n) => ids.length - 1 - n) : ids.map((_, n) => n);   // positions in the album → logical page n
+    const now = () => reader ? reader.at : order[album?.index ?? 0] ?? at;
     const again = n => { closeReading(); read(n, d); };
-    const caption = {get: () => !cfg().textHide, set: on => store({...cfg(), textHide: !on})};
     const toc = () => {
-      const dlg = ctx.dialog('目录与书签', '<div data-cm-toc></div>');
-      (async () => {
-        const rows = await Promise.all(ids.map(async (page, n) => `<button type="button" class="bs-row-link" data-cm-go="${n}"><strong>第 ${n + 1} 页${marksOf(d).includes(page) ? ' ★' : ''}</strong><small>${d.pages[page].kind === 'splash' ? '高潮大图' : d.pages[page].panels.length + ' 格'}</small></button>`));
-        const box = dlg.body.querySelector('[data-cm-toc]'); if (box) box.innerHTML = rows.join('');
-      })();
+      const dlg = ctx.dialog('目录与书签', ids.map((page, n) => `<button type="button" class="bs-row-link" data-cm-go="${n}"><strong>第 ${n + 1} 页${marksOf(d).includes(page) ? ' ★' : ''}</strong><small>${d.pages[page].kind === 'splash' ? '高潮大图' : d.pages[page].panels.length + ' 格'}</small></button>`).join(''));
       dlg.body.addEventListener('click', e => { const b = e.target.closest('[data-cm-go]'); if (!b) return; dlg.close(); again(Number(b.dataset.cmGo)); });
     };
     const bookmark = () => {
-      const page = ids[album?.index ?? at], marks = marksOf(d), found = marks.indexOf(page);
+      const page = ids[now()], marks = marksOf(d), found = marks.indexOf(page);
       if (found < 0) marks.push(page); else marks.splice(found, 1);
       save(); ctx.notify(found < 0 ? '已加书签' : '已移除书签');
     };
     const options = () => {
-      const now = readingMode(ctx.win), on = caption.get();
+      const c = cfg();
       const seg = (key, list, cur) => `<div class="segmented">${list.map(([k, l]) => `<button type="button" data-cm-opt="${key}" data-value="${k}" aria-pressed="${String(cur) === String(k)}">${l}</button>`).join('')}</div>`;
-      const dlg = ctx.dialog('阅读设置', field('阅读方式' , seg('mode', READING_MODES, now)) + field('对白字幕', seg('caption', [['1', '显示'], ['0', '隐藏']], on ? '1' : '0')));
+      const dlg = ctx.dialog('阅读设置', field('阅读方式', seg('reading', COMIC_READING, c.reading)) + field('阅读方向', seg('direction', COMIC_DIRECTIONS, c.direction)) + field('对白字幕', seg('textHide', [['false', '显示'], ['true', '隐藏']], String(c.textHide))));
       dlg.body.addEventListener('click', e => {
         const b = e.target.closest('[data-cm-opt]'); if (!b) return;
-        if (b.dataset.cmOpt === 'caption') { caption.set(b.dataset.value === '1'); dlg.close(); again(album?.index ?? at); return; }
-        setReadingMode(ctx.win, b.dataset.value); dlg.close(); again(album?.index ?? at);
+        const at = now(); store({[b.dataset.cmOpt]: b.dataset.cmOpt === 'textHide' ? b.dataset.value === 'true' : b.dataset.value}); dlg.close(); again(at);
       });
     };
-    if (readingMode(ctx.win) !== 'page') {
-      reader = openComicReader(ctx, {title: d.title, parent: ctx.doc.body, start: at, caption, options, toc, bookmark,
-        load: async () => Promise.all(ids.map(i => pageUrl(d, i)))});
-      return;
-    }
-    album = openAlbum({ctx, host: v.root.closest('.screen') || v.root, ids: ids.map(String), index: at, preload: true,
+    album = openAlbum({ctx, host: v.root.closest('.screen') || v.root, ids: order.map(n => String(ids[n])), index: rtl ? ids.length - 1 - at : at, preload: true,
       load: async id => ({blob: await pageBlob(d, Number(id)), name: '第 ' + (ids.indexOf(Number(id)) + 1) + ' 页'}),
-      onPullDown: bookmark, onClose: () => { album = null; },
+      onPullDown: bookmark, onClose: () => { album = null; reader = null; },
       actions: [{key: 'toc', icon: 'book', label: '目录', run: toc}, {key: 'bookmark', icon: 'star', label: '书签', run: bookmark}, {key: 'settings', icon: 'sliders', label: '设置', run: options}]});
-    album.root.setAttribute('aria-label', d.title); album.root.querySelector('[data-av=close]').setAttribute('aria-label', '返回漫画');
+    const mine = album;
+    mine.root.setAttribute('aria-label', d.title); mine.root.querySelector('[data-av=close]').setAttribute('aria-label', '返回漫画');
     const slider = ctx.doc.createElement('input'); slider.type = 'range'; slider.min = '0'; slider.max = String(ids.length - 1); slider.value = String(at); slider.setAttribute('aria-label', '漫画进度'); slider.className = 'reading-comic-progress';
-    slider.onchange = () => again(Number(slider.value)); album.root.querySelector('.album-bar').before(slider);
+    if (rtl) {
+      slider.style.direction = 'rtl';
+      // The album counts its own row (the last page first); the page number shown is the comic's.
+      const num = mine.root.querySelector('[data-av-count]'), fix = () => { const t = `${now() + 1} / ${ids.length}`; if (num.textContent !== t) num.textContent = t; };
+      new ctx.win.MutationObserver(fix).observe(num, {childList: true, characterData: true, subtree: true}); fix();
+    }
+    slider.onchange = () => { if (!reader) again(Number(slider.value)); };
+    slider.oninput = () => { if (reader) reader.setAt(Number(slider.value)); };
+    mine.root.querySelector('.album-bar').before(slider);
+    if (mode !== 'page') {
+      try {
+        const urls = await Promise.all(ids.map(i => pageUrl(d, i)));
+        if (album !== mine || !mine.open) return;
+        reader = mountReader(mine.root, {mode, urls, at, onAt: n => { slider.value = String(n); }});
+      } catch (e) { ctx.notify(e.message, {error: true, logged: true}); }
+    }
   }
   v.on('click', '[data-action=cm-read]', () => read(0));
   /** From the tavern page (the 楼层 menu's 画成漫画): the making form with that message and page count filled in. */

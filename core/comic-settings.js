@@ -16,14 +16,26 @@ export const COMIC_STYLES = [
   ['two', '上下两格', '页面形式：每页恰好 2 格，上下各一格、大小相同；每页都用 page，不用 splash。']
 ];
 export const COMIC_LANGS = [['zh', '简体中文'], ['ja', '日文']];
-export const COMIC_TEXT_SIZES = [['small', '小'], ['auto', '自动'], ['large', '大']];
+export const COMIC_TEXT_SIZES = [['xsmall', '特小'], ['small', '小'], ['auto', '中'], ['large', '大']];
+export const COMIC_SIZES = [['portrait', '竖'], ['landscape', '横'], ['square', '方'], ['follow', '跟绘图设置']];
+export const COMIC_PAGES_EACH = ['', '1', '2', '3', '4', '6', '8', '12'];
+export const COMIC_PER_PAGE = ['', '1', '2', '3', '4', '5', '6'];
+export const COMIC_VARIETY = [['normal', '不指定', ''],
+  ['varied', '有变化', '分镜变化：各页的格数和格的大小要有变化，不要每页都排成同一个样子；特写、中景、全景交替。'],
+  ['bold', '大胆', '分镜变化：大胆的分镜，景别反差大，该用大画面的地方就用大画面（高潮用 splash 整页），小格用来加快节奏。'],
+  ['art', '艺术感', '分镜变化：有艺术感的分镜，重视构图与留白，镜头角度与取景不落俗套（仰视、俯视、框中框、局部特写），画面之间用意象衔接。'],
+  ['tidy', '规整', '分镜变化：规整的分镜，每页格数相近，格的大小接近，节奏平稳，镜头变化克制。']];
+export const COMIC_DIRECTIONS = [['ltr', '从左往右'], ['rtl', '从右往左（日漫）']];
+export const COMIC_READING = [['page', '翻页（书架）'], ['book', '翻书'], ['flow', '卡片堆'], ['scroll', '上下滑']];
+// NovelAI parameters a comic may keep of its own ('' = what the 绘图 App has); read from core/novelai.js when used.
+export const COMIC_NAI_KEYS = ['model', 'steps', 'scale', 'cfgRescale', 'sampler', 'schedule'];
 export const COMIC_BUBBLES = [['round', '圆角框'], ['oval', '椭圆'], ['box', '方框']];
 export const COMIC_GUTTERS = [['none', '不指定'], ['white', '白边'], ['black', '黑线无白边'], ['bleed', '无边全出血']];
 
 const GUTTER_TAGS = {white: 'white border', black: 'black border, thick black panel borders, no white margin', bleed: 'full bleed, no border'};
 const GUTTER_WORDS = {white: 'Every panel sits inside an even white margin.', black: 'The panels touch each other and are separated only by thick black lines.', bleed: 'Every panel extends to the edges of the page with no margin.'};
 
-export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', note: '', preset: '', presets: []});
+export const defaultComic = () => ({color: 'full', style: 'general', lang: 'zh', textSize: 'auto', textHide: false, bubble: 'round', gutter: 'none', size: 'portrait', artist: '', nai: {}, pagesEach: '', perPage: '', variety: 'normal', direction: 'ltr', reading: 'page', note: '', preset: '', presets: []});
 const pick = (list, value, fallback) => list.some(([k]) => k === value) ? value : fallback;
 export const COMIC_NOTE_MAX = 2000;
 // 漫画预设: like the 绘图预设, a named list of entries, each one switched on or off and edited as text. Where an entry goes:
@@ -39,6 +51,16 @@ function normalizeEntries(list) {
     return {id, title: String(e.title ?? '').slice(0, 80), enabled: e.enabled !== false, to: pick(COMIC_ENTRY_TO, e.to, 'story'), text: typeof e.text === 'string' ? e.text.slice(0, COMIC_ENTRY_TEXT) : ''};
   });
 }
+/** Only the numbers and words that are given; '' / missing means the 绘图 App's own. */
+function naiOf(value) {
+  const v = value && typeof value === 'object' ? value : {}, out = {};
+  for (const k of COMIC_NAI_KEYS) {
+    const x = v[k];
+    if (x === undefined || x === null || x === '') continue;
+    if (['steps', 'scale', 'cfgRescale'].includes(k)) { const n = Number(x); if (Number.isFinite(n)) out[k] = n; } else if (typeof x === 'string') out[k] = x.slice(0, 60);
+  }
+  return out;
+}
 export function normalizeComic(value) {
   const v = value && typeof value === 'object' ? value : {}, base = defaultComic(), seen = new Set();
   const presets = (Array.isArray(v.presets) ? v.presets : []).filter(p => p && typeof p === 'object' && typeof p.id === 'string' && p.id && !seen.has(p.id) && seen.add(p.id))
@@ -46,6 +68,9 @@ export function normalizeComic(value) {
   return {
     color: pick(COMIC_COLORS, v.color, base.color), style: pick(COMIC_STYLES, v.style, base.style), lang: pick(COMIC_LANGS, v.lang, base.lang),
     textSize: pick(COMIC_TEXT_SIZES, v.textSize, base.textSize), textHide: v.textHide === true, bubble: pick(COMIC_BUBBLES, v.bubble, base.bubble), gutter: pick(COMIC_GUTTERS, v.gutter, base.gutter),
+    size: pick(COMIC_SIZES, v.size, base.size), artist: typeof v.artist === 'string' ? v.artist.slice(0, 500) : '', nai: naiOf(v.nai),
+    pagesEach: COMIC_PAGES_EACH.includes(String(v.pagesEach ?? '')) ? String(v.pagesEach ?? '') : '', perPage: COMIC_PER_PAGE.includes(String(v.perPage ?? '')) ? String(v.perPage ?? '') : '',
+    variety: pick(COMIC_VARIETY, v.variety, base.variety), direction: pick(COMIC_DIRECTIONS, v.direction, base.direction), reading: pick(COMIC_READING, v.reading, base.reading),
     note: typeof v.note === 'string' ? v.note.slice(0, COMIC_NOTE_MAX) : '', preset: presets.some(p => p.id === v.preset) ? v.preset : '', presets
   };
 }
@@ -83,6 +108,9 @@ export function comicRules(comic) {
   const c = normalizeComic(comic), rules = [];
   const style = COMIC_STYLES.find(([k]) => k === c.style)?.[2];
   if (style) rules.push(style);
+  const variety = COMIC_VARIETY.find(([k]) => k === c.variety)?.[2];
+  if (variety && !fixedPanels(c)) rules.push(variety);
+  if (c.perPage && !fixedPanels(c)) rules.push('每页 ' + c.perPage + ' 格（高潮的 splash 整页除外）。');
   if (c.color === 'mono') rules.push('黑白漫画：scene 里只用灰阶明暗，不写任何颜色词（blue、red、brown 等一律不写）；写光源方向、明暗对比和网点（screentone）。');
   if (c.gutter !== 'none') rules.push('页面留白：' + GUTTER_WORDS[c.gutter]);
   if (c.note.trim()) rules.push('额外要求（来自用户，照着做）：' + c.note.trim());
@@ -92,6 +120,7 @@ export function comicRules(comic) {
 /** What the 绘图 App is told on top of a page's tags: [before, negative]. */
 export function comicTags(comic) {
   const c = normalizeComic(comic), tags = [];
+  if (c.artist.trim()) tags.push(c.artist.trim().replace(/[\s,，]+$/, ''));
   if (c.color === 'mono') tags.push('monochrome', 'greyscale', 'screentone');
   if (c.gutter !== 'none') tags.push(GUTTER_TAGS[c.gutter]);
   const before = entryTexts(c, 'tags').map(e => e.text.trim().replace(/[\s,，]+$/, ''));
@@ -99,5 +128,9 @@ export function comicTags(comic) {
   return {tags: [...before, ...tags].join(', '), negative: negative.join(', ')};
 }
 /** What the words laid on a page look like: the font is the page's width divided by this. */
-export const TEXT_DIVISOR = {small: 38, auto: 30, large: 24};
+export const TEXT_DIVISOR = {xsmall: 46, small: 38, auto: 30, large: 24};
 export const canvasOptions = comic => { const c = normalizeComic(comic); return {textSize: c.textSize, hide: c.textHide, bubble: c.bubble}; };
+/** The drawing parameters this comic sets itself, over the 绘图 App's: only for NovelAI (the other engines are left as they are). */
+export const comicDrawParams = (comic, engine) => engine === 'nai' ? normalizeComic(comic).nai : {};
+/** 竖 / 横 / 方 for sizeFor; '' = the 绘图 App's own size. */
+export const comicSizeWord = comic => ({portrait: '竖', landscape: '横', square: '方', follow: ''}[normalizeComic(comic).size]);
